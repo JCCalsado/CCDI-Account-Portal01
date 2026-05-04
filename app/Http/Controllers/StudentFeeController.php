@@ -177,7 +177,7 @@ class StudentFeeController extends Controller
             'discount_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
         ]);
 
-        $validated['lec_units']           = (int) $validated['lec_units'];
+        $validated['lec_units']           = (float) $validated['lec_units'];
         $validated['lab_units']           = (int) $validated['lab_units'];
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
@@ -226,6 +226,7 @@ class StudentFeeController extends Controller
                     'semester'            => $validated['semester'],
                     'school_year'         => $validated['school_year'],
                     'lec_units'           => $validated['lec_units'],
+                    'nstp_lec_units'      => $validated['nstp_lec_units'],
                     'lab_units'           => $validated['lab_units'],
                     'discount_type'       => $validated['discount_percentage'] > 0 ? 'percentage' : 'none',
                     'discount_percentage' => $validated['discount_percentage'],
@@ -513,7 +514,7 @@ class StudentFeeController extends Controller
             'discount_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
         ]);
 
-        $validated['lec_units']           = (int) $validated['lec_units'];
+        $validated['lec_units']           = (float) $validated['lec_units'];
         $validated['lab_units']           = (int) $validated['lab_units'];
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
@@ -546,6 +547,7 @@ class StudentFeeController extends Controller
                 'semester'            => $validated['semester'],
                 'school_year'         => $validated['school_year'],
                 'lec_units'           => $validated['lec_units'],
+                'nstp_lec_units'      => $validated['nstp_lec_units'],
                 'lab_units'           => $validated['lab_units'],
                 'discount_type'       => $validated['discount_percentage'] > 0 ? 'percentage' : 'none',
                 'discount_percentage' => $validated['discount_percentage'],

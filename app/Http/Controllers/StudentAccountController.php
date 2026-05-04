@@ -56,7 +56,7 @@ class StudentAccountController extends Controller
                             'category' => 'Tuition',
                             'name'     => 'Tuition Fee',
                             'code'     => 'TUI',
-                            'units'    => $a->lec_units,
+                            'units'    => $a->lec_units + ($a->nstp_lec_units ?? 0),
                             'amount'   => $feeBreakdown['tuitionFee'],
                         ],
                         [

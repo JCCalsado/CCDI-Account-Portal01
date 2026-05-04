@@ -46,6 +46,7 @@ class Payment extends Model
         'proof_of_payment',
         'notes',
         'meta',
+        'or_number',
     ];
 
     protected $casts = [

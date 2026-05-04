@@ -27,12 +27,14 @@ class StudentAssessment extends Model
         'misc_fee',
         'total_assessment',
         'status',
+        'nstp_lec_units',
     ];
 
     public const MINIMUM_UNITS = 1.5;
 
     protected $casts = [
-        'lec_units'            => 'integer',
+        'lec_units'            => 'decimal:1',
+        'nstp_lec_units'       => 'decimal:1',
         'lab_units'            => 'integer',
         'lab_subjects'         => 'integer',
         'discount_percentage'  => 'decimal:2',
@@ -59,7 +61,7 @@ class StudentAssessment extends Model
 
     // ─── Computed Attributes ──────────────────────────────────────────────────
 
-    public function getTotalUnitsAttribute(): int
+    public function getTotalUnitsAttribute(): float
     {
         return $this->lec_units + $this->lab_units;
     }

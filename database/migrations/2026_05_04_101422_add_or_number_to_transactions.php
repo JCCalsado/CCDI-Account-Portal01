@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('transactions', function (Blueprint $table) {
-            $table->string('or_number')->nullable()->after('reference');
+            $table->string('or_number')->nullable()->unique()->after('reference');
         });
 
         Schema::table('payments', function (Blueprint $table) {
@@ -23,10 +23,12 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('transactions', function (Blueprint $table) {
+            $table->dropUnique(['or_number']);
             $table->dropColumn('or_number');
         });
 
         Schema::table('payments', function (Blueprint $table) {
+            $table->dropUnique(['or_number']);
             $table->dropColumn('or_number');
         });
     }
