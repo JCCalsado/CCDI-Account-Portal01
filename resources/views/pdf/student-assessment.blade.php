@@ -322,7 +322,7 @@
                             ];
                         });
 
-                        $totalUnits = $subjectRows->sum('units');
+                        $totalUnits = (float)$assessment->lec_units + (float)$assessment->lab_units;
                         $minRows    = 12;
                         $emptyRows  = max(0, $minRows - $subjectRows->count());
                     @endphp

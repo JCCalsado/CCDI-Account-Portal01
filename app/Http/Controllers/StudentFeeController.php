@@ -301,8 +301,10 @@ class StudentFeeController extends Controller
             ->get();
 
         $assessment = $user->latestAssessment;
+        $tuitionPerUnit = (float) (\App\Models\FeeSetting::where('key', 'tuition_per_unit')->value('amount') ?? 364.00);
 
-        $allAssessmentsFormatted = $allAssessmentsRaw->map(function ($a) use ($user) {
+        // FIX 1: capture $tuitionPerUnit in the closure via `use ($user, $tuitionPerUnit)`
+        $allAssessmentsFormatted = $allAssessmentsRaw->map(function ($a) use ($user, $tuitionPerUnit) {
             return [
                 'id'               => $a->id,
                 'course'           => $user->course,
@@ -311,6 +313,7 @@ class StudentFeeController extends Controller
                 'year_level'       => $a->year_level ?? $user->year_level,
                 'total_assessment' => (float) $a->total_assessment,
                 'tuition_fee'      => (float) $a->tuition_fee,
+                'tuition_per_unit' => $tuitionPerUnit,
                 'lab_fee'          => (float) $a->lab_fee,
                 'misc_fee'         => (float) $a->misc_fee,
                 'other_fees'       => (float) ($a->lab_fee + $a->misc_fee),
@@ -324,7 +327,16 @@ class StudentFeeController extends Controller
                     ['category' => 'Miscellaneous', 'name' => 'Miscellaneous Fee', 'code' => 'MISC','units' => null,           'amount' => (float) $a->misc_fee],
                 ],
                 'status'       => $a->status,
-                'paymentTerms' => $a->paymentTerms->sortBy('term_order')->values(),
+                'paymentTerms' => $a->paymentTerms->sortBy('term_order')->map(fn($t) => [
+                    'id'         => $t->id,
+                    'term_name'  => $t->term_name,
+                    'term_order' => $t->term_order,
+                    'percentage' => $t->percentage,
+                    'amount'     => (float) $t->amount,
+                    'balance'    => max(0, (float) $t->balance),
+                    'status'     => $t->status,
+                    'due_date'   => $t->due_date,
+                ])->values()->all(),
             ];
         })->values()->all();
 
@@ -368,6 +380,8 @@ class StudentFeeController extends Controller
                 'created_at' => $t->created_at?->toDateTimeString(),
             ])->all();
 
+        // FIX 2: paymentTerms in activeAssessmentFormatted now mapped to plain arrays,
+        // matching the structure used in allAssessmentsFormatted
         $activeAssessmentFormatted = $assessment ? [
             'id'               => $assessment->id,
             'course'           => $user->course,
@@ -386,8 +400,18 @@ class StudentFeeController extends Controller
                 ['category' => 'Laboratory',    'name' => 'Laboratory Fee',    'code' => 'LAB', 'units' => $assessment->lab_units, 'amount' => (float) $assessment->lab_fee],
                 ['category' => 'Miscellaneous', 'name' => 'Miscellaneous Fee', 'code' => 'MISC','units' => null,                   'amount' => (float) $assessment->misc_fee],
             ],
-            'status'       => $assessment->status,
-            'paymentTerms' => $assessment->paymentTerms->sortBy('term_order')->values(),
+            'status'           => $assessment->status,
+            'tuition_per_unit' => $tuitionPerUnit,
+            'paymentTerms'     => $assessment->paymentTerms->sortBy('term_order')->map(fn($t) => [
+                'id'         => $t->id,
+                'term_name'  => $t->term_name,
+                'term_order' => $t->term_order,
+                'percentage' => $t->percentage,
+                'amount'     => (float) $t->amount,
+                'balance'    => max(0, (float) $t->balance),
+                'status'     => $t->status,
+                'due_date'   => $t->due_date,
+            ])->values()->all(),
         ] : null;
 
         // Load misc items from fee_settings (not config)
@@ -399,21 +423,33 @@ class StudentFeeController extends Controller
             ->map(fn ($s) => ['label' => $s->label, 'amount' => (float) $s->amount])
             ->all();
 
+        $enrolledSubjectsByAssessment = [];
+        foreach ($allAssessmentsRaw as $a) {
+            $ids = \DB::table('student_enrollments')
+                ->where('user_id', $userId)
+                ->where('school_year', $a->school_year)
+                ->where('semester', $a->semester)
+                ->where('status', 'enrolled')
+                ->pluck('subject_id')
+                ->toArray();
+            $enrolledSubjectsByAssessment[$a->id] = $ids;
+        }
+
         return Inertia::render('StudentFees/Show', [
             'student' => [
-                'id'           => $user->id,
-                'student_db_id'  => $user->student?->id, 
-                'name'         => $this->buildStudentName($user),
-                'account_id'   => $user->account_id,
-                'course'       => $user->course,
-                'year_level'   => $user->year_level,
-                'email'        => $user->email,
-                'birthday'     => $user->birthday,
-                'phone'        => $user->phone,
-                'status'       => $user->status,
-                'is_irregular' => (bool) $user->is_irregular,
-                'avatar'       => $user->avatar ?? null,
-                'account'      => $user->account ? ['balance' => max(0, (float) $user->account->balance)] : null,
+                'id'            => $user->id,
+                'student_db_id' => $user->student?->id,
+                'name'          => $this->buildStudentName($user),
+                'account_id'    => $user->account_id,
+                'course'        => $user->course,
+                'year_level'    => $user->year_level,
+                'email'         => $user->email,
+                'birthday'      => $user->birthday,
+                'phone'         => $user->phone,
+                'status'        => $user->status,
+                'is_irregular'  => (bool) $user->is_irregular,
+                'avatar'        => $user->avatar ?? null,
+                'account'       => $user->account ? ['balance' => max(0, (float) $user->account->balance)] : null,
             ],
             'assessment'     => $activeAssessmentFormatted,
             'allAssessments' => $allAssessmentsFormatted,
@@ -424,9 +460,9 @@ class StudentFeeController extends Controller
                 ['category' => 'Laboratory',    'total' => (float) $assessment->lab_fee,     'items' => 1],
                 ['category' => 'Miscellaneous', 'total' => (float) $assessment->misc_fee,    'items' => 1],
             ] : [],
-            'miscItems'                   => $miscItems,
-            'backUrl'                     => route('student-fees.index'),
-            'enrolledSubjectsByAssessment' => [],
+            'miscItems'                    => $miscItems,
+            'backUrl'                      => route('student-fees.index'),
+            'enrolledSubjectsByAssessment' => $enrolledSubjectsByAssessment,
         ]);
     }
 
@@ -696,8 +732,8 @@ class StudentFeeController extends Controller
         }
 
         return response()->json([
-            'found'       => true,
-            'lec_units'   => $latest->lec_units,
+            'found'        => true,
+            'lec_units'    => $latest->lec_units,
             'lab_subjects' => $latest->lab_units,
         ]);
     }
@@ -778,9 +814,9 @@ class StudentFeeController extends Controller
                 abort(404, 'No paid transaction found for this assessment.');
             }
 
-            $receiptUser    = $latestPayment->user->load('account', 'student');
-            $currentBalance = (float) ($receiptUser->account->balance ?? 0);
-            $paymentAmount  = (float) $latestPayment->amount;
+            $receiptUser      = $latestPayment->user->load('account', 'student');
+            $currentBalance   = (float) ($receiptUser->account->balance ?? 0);
+            $paymentAmount    = (float) $latestPayment->amount;
             $balanceBefore    = round($currentBalance + $paymentAmount, 2);
             $remainingBalance = round($currentBalance, 2);
 
@@ -896,7 +932,7 @@ class StudentFeeController extends Controller
     {
         // Explicitly load user relationship
         $student->load('user');
-        
+
         if (!$student->user) {
             abort(404, 'Student user information not found.');
         }
@@ -918,15 +954,15 @@ class StudentFeeController extends Controller
     public function updateStudent(Request $request, Student $student)
     {
         $validated = $request->validate([
-            'student_id'    => 'required|string|unique:students,student_id,' . $student->id,
-            'first_name'    => 'required|string|max:255',
-            'last_name'     => 'required|string|max:255',
-            'middle_initial' => 'nullable|string|max:10',
-            'email'         => 'required|email|unique:users,email,' . $student->user_id,
-            'course'        => 'required|string|max:255',
-            'year_level'    => 'required|string|max:50',
-            'birthday'      => 'nullable|date',
-            'phone'         => 'nullable|string|max:20',
+            'student_id'                => 'required|string|unique:students,student_id,' . $student->id,
+            'first_name'                => 'required|string|max:255',
+            'last_name'                 => 'required|string|max:255',
+            'middle_initial'            => 'nullable|string|max:10',
+            'email'                     => 'required|email|unique:users,email,' . $student->user_id,
+            'course'                    => 'required|string|max:255',
+            'year_level'                => 'required|string|max:50',
+            'birthday'                  => 'nullable|date',
+            'phone'                     => 'nullable|string|max:20',
             'address_house_lot_unit'    => 'nullable|string|max:255',
             'address_street_name'       => 'nullable|string|max:255',
             'address_barangay'          => 'nullable|string|max:255',
@@ -936,19 +972,19 @@ class StudentFeeController extends Controller
 
         if ($student->user) {
             $student->user->update([
-                'first_name'     => $validated['first_name'],
-                'last_name'      => $validated['last_name'],
-                'middle_initial' => $validated['middle_initial'],
-                'email'          => $validated['email'],
-                'course'         => $validated['course'],
-                'year_level'     => $validated['year_level'],
-                'birthday'       => $validated['birthday'],
-                'phone'          => $validated['phone'],
-                'address_house_no'    => $validated['address_house_lot_unit'] ?? null,
-                'address_street'      => $validated['address_street_name'] ?? null,
-                'address_barangay'    => $validated['address_barangay'] ?? null,
-                'address_municipality'=> $validated['address_municipality_city'] ?? null,
-                'address_province'    => $validated['address_province'] ?? null,
+                'first_name'           => $validated['first_name'],
+                'last_name'            => $validated['last_name'],
+                'middle_initial'       => $validated['middle_initial'],
+                'email'                => $validated['email'],
+                'course'               => $validated['course'],
+                'year_level'           => $validated['year_level'],
+                'birthday'             => $validated['birthday'],
+                'phone'                => $validated['phone'],
+                'address_house_no'     => $validated['address_house_lot_unit'] ?? null,
+                'address_street'       => $validated['address_street_name'] ?? null,
+                'address_barangay'     => $validated['address_barangay'] ?? null,
+                'address_municipality' => $validated['address_municipality_city'] ?? null,
+                'address_province'     => $validated['address_province'] ?? null,
             ]);
         }
 
@@ -960,6 +996,10 @@ class StudentFeeController extends Controller
             ->route('student-fees.show', $student->user_id)
             ->with('success', 'Student information updated successfully.');
     }
+
+    // ─────────────────────────────────────────────────────────────
+    //  STORE PAYMENT
+    // ─────────────────────────────────────────────────────────────
 
     public function storePayment(Request $request, int $userId)
     {
@@ -979,7 +1019,7 @@ class StudentFeeController extends Controller
             'payment_method' => 'required|string|in:cash,gcash,bank_transfer,credit_card,debit_card',
             'assessment_id'  => 'required|exists:student_assessments,id',
             'payment_date'   => 'required|date',
-            'or_number'      => 'required|string|max:100', 
+            'or_number'      => 'required|string|max:100',
         ]);
 
         try {

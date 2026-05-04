@@ -60,6 +60,7 @@ interface Assessment {
     year_level: string;
     total_assessment: number;
     tuition_fee: number;
+    tuition_per_unit?: number;
     other_fees: number;
     fee_breakdown: FeeBreakdownItem[];
     paymentTerms?: PaymentTerm[];
@@ -371,15 +372,16 @@ const feeCalculationSummary = computed(() => {
 
     if (totalUnits <= 0) return '';
 
-    const parts = [];
-    if (totalUnits > 0)
-        parts.push(
-            `${totalUnits.toFixed(1)} LEC unit${totalUnits !== 1 ? 's' : ''} × ₱364.00`,
-        );
+    const parts: string[] = [];
+
+    // Read the rate directly — never reverse-engineer it from tuition_fee / units
+    const lecRate = ((selectedAssessment.value as any)?.tuition_per_unit ?? 364.00).toFixed(2);
+
+    parts.push(`${totalUnits.toFixed(1)} LEC unit${totalUnits !== 1 ? 's' : ''} × ₱${lecRate}`);
+
     if (labCount > 0)
-        parts.push(
-            `${labCount.toFixed(1)} LAB unit${labCount !== 1 ? 's' : ''} × ₱1,656.00`,
-        );
+        parts.push(`${labCount.toFixed(1)} LAB unit${labCount !== 1 ? 's' : ''} × ₱1,656.00`);
+
     if (totalMiscellaneous.value > 0)
         parts.push(`₱${totalMiscellaneous.value.toFixed(2)} misc`);
 
