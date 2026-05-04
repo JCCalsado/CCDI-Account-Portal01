@@ -919,11 +919,7 @@ const formatPaymentMethod = (m: string): string => {
                                 </DialogDescription>
                             </DialogHeader>
 
-                            <!-- ✅ FIX: removed <form> tag — use @submit.prevent on div is wrong.
-                                 Inertia useForm.post() does not need a native form submit.
-                                 Using a plain div with button onClick avoids any native
-                                 form submission that could bypass Inertia's CSRF handling. -->
-                            <div class="space-y-4">
+                            <div class="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
                                 <div class="space-y-2">
                                     <Label for="amount">Amount *</Label>
                                     <Input
@@ -1088,34 +1084,31 @@ const formatPaymentMethod = (m: string): string => {
                                     {{ paymentForm.errors.payment }}
                                 </p>
 
-                                <!-- ✅ FIX: was paymentForm.errors.error — the controller
-                                     returns back()->withErrors(['payment' => '...'])
-                                     so the key is 'payment', not 'error'. -->
                                 <p
                                     v-if="(paymentForm.errors as any).error"
                                     class="text-sm font-medium text-red-600"
                                 >
                                     {{ (paymentForm.errors as any).error }}
                                 </p>
-
-                                <DialogFooter>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        @click="showPaymentDialog = false"
-                                        >Cancel</Button
-                                    >
-                                    <Button
-                                        type="button"
-                                        :disabled="!canSubmitPayment"
-                                        :class="{ 'cursor-not-allowed opacity-50': !canSubmitPayment }"
-                                        @click="submitPayment"
-                                    >
-                                        <span v-if="paymentForm.processing">Recording…</span>
-                                        <span v-else>Record Payment</span>
-                                    </Button>
-                                </DialogFooter>
                             </div>
+
+                            <DialogFooter>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    @click="showPaymentDialog = false"
+                                    >Cancel</Button
+                                >
+                                <Button
+                                    type="button"
+                                    :disabled="!canSubmitPayment"
+                                    :class="{ 'cursor-not-allowed opacity-50': !canSubmitPayment }"
+                                    @click="submitPayment"
+                                >
+                                    <span v-if="paymentForm.processing">Recording…</span>
+                                    <span v-else>Record Payment</span>
+                                </Button>
+                            </DialogFooter>
                         </DialogContent>
                     </Dialog>
                 </div>
@@ -1398,10 +1391,9 @@ const formatPaymentMethod = (m: string): string => {
                                     >
                                         Date
                                     </th>
-                                    <th
-                                        class="px-6 py-3 text-left text-xs font-semibold tracking-wider text-gray-500 uppercase"
-                                    >
-                                        Reference
+                                    <th 
+                                        class="px-6 py-3 text-left text-xs font-semibold tracking-wider text-gray-500 uppercase">
+                                        OR No.
                                     </th>
                                     <th
                                         class="px-6 py-3 text-left text-xs font-semibold tracking-wider text-gray-500 uppercase"
@@ -1596,7 +1588,7 @@ const formatPaymentMethod = (m: string): string => {
                                         class="border-b border-gray-100 transition-colors hover:bg-gray-50"
                                     >
                                         <td class="px-4 py-3 font-mono text-xs text-gray-700">
-                                            {{ t.reference }}
+                                            {{ t.or_number ?? t.reference }}
                                         </td>
                                         <td class="px-4 py-3">
                                             <span

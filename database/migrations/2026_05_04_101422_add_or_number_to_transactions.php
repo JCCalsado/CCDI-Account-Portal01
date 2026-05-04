@@ -14,11 +14,19 @@ return new class extends Migration
         Schema::table('transactions', function (Blueprint $table) {
             $table->string('or_number')->nullable()->after('reference');
         });
+
+        Schema::table('payments', function (Blueprint $table) {
+            $table->string('or_number')->nullable()->after('id');
+        });
     }
 
     public function down(): void
     {
         Schema::table('transactions', function (Blueprint $table) {
+            $table->dropColumn('or_number');
+        });
+
+        Schema::table('payments', function (Blueprint $table) {
             $table->dropColumn('or_number');
         });
     }
