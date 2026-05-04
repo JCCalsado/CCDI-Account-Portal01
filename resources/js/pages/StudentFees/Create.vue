@@ -202,11 +202,16 @@ const tuitionAndLab = computed(() =>
   discountedBillable.value + nstpTuition.value + labFee.value + entrepreneurFee.value
 )
 
-const displayLecUnits = computed(() =>
-  hasNstp.value
-    ? Number(form.lec_units) + nstpLecUnits.value
-    : Number(form.lec_units)
-)
+const displayLecUnits = computed({
+  get() {
+    return hasNstp.value
+      ? Number(form.lec_units) + nstpLecUnits.value
+      : Number(form.lec_units)
+  },
+  set(val: number) {
+    form.lec_units = Math.max(0, Number(val) - nstpLecUnits.value)
+  },
+})
 
 // Editable percentages for non-registration terms (Prelim, Midterm, etc.)
 const tlTermNames = props.feeRates.payment_terms
@@ -409,9 +414,8 @@ function submit() {
                   <span class="text-xs text-muted-foreground">(billable only)</span>
                 </Label>
                 <Input id="lec_units" type="number"
-                  :value="displayLecUnits"
-                  @change="form.lec_units = Math.max(0, Number(($event.target as HTMLInputElement).value) - nstpLecUnits)"
-                  min="0" max="50" class="text-center text-lg font-semibold" />
+                  v-model.number="displayLecUnits"
+                  min="0" max="50" step="0.5" class="text-center text-lg font-semibold" />
                 <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.tuition_per_unit) }} / unit</p>
                 <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
               </div>

@@ -86,6 +86,7 @@ class StudentPaymentService
             $transaction = Transaction::create([
                 'user_id'         => $user->id,
                 'reference'       => $reference,
+                'or_number'       => $options['or_number'] ?? null,
                 'kind'            => 'payment',
                 'type'            => $options['term_name'] ?? $term->term_name,
                 'amount'          => $amount,

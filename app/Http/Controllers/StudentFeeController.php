@@ -341,6 +341,7 @@ class StudentFeeController extends Controller
                     'reference_number' => $p->paymongo_payment_id
                         ?? ($p->meta['reference_number'] ?? null)
                         ?? ('PAY-' . strtoupper(substr(md5($p->id . $p->created_at), 0, 8))),
+                    'or_number'        => $p->or_number ?? null,
                     'description'      => $p->description ?? 'Payment',
                     'status'           => $p->status,
                     'paid_at'          => $p->created_at?->toDateString(),
@@ -359,6 +360,7 @@ class StudentFeeController extends Controller
                 'type'       => $t->type ?? ucfirst($t->kind),
                 'amount'     => (float) $t->amount,
                 'reference'  => $t->reference,
+                'or_number'  => $t->or_number ?? null,
                 'status'     => $t->status,
                 'year'       => $t->year,
                 'semester'   => $t->semester,
@@ -976,6 +978,7 @@ class StudentFeeController extends Controller
             'payment_method' => 'required|string|in:cash,gcash,bank_transfer,credit_card,debit_card',
             'assessment_id'  => 'required|exists:student_assessments,id',
             'payment_date'   => 'required|date',
+            'or_number'      => 'required|string|max:100', 
         ]);
 
         try {
@@ -1019,6 +1022,7 @@ class StudentFeeController extends Controller
                 'term_name'        => $term->term_name,
                 'year'             => explode('-', $assessment->school_year)[0],
                 'semester'         => $assessment->semester,
+                'or_number'        => $validated['or_number'],
             ], false);
 
             return back()->with('success', 'Payment of ₱' . number_format($paidAmount, 2) . ' recorded for ' . $this->buildStudentName($student) . '.');

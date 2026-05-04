@@ -125,7 +125,7 @@ class StudentAccountController extends Controller
                          ->whereNull('user_ids')
                          ->where('target_role', 'student');
                   })
-                  ->orWhereRaw('JSON_CONTAINS(user_ids, ?)', [$user->id]);
+                  ->orWhereRaw('JSON_CONTAINS(user_ids, JSON_ARRAY(?))', [$user->id]);
             })
             ->get();
 

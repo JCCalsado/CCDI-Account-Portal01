@@ -638,6 +638,7 @@ const paymentForm = useForm({
     payment_method: 'cash',
     assessment_id: null as number | null,
     payment_date: new Date().toISOString().split('T')[0],
+    or_number: '',
 });
 
 const paymentAmountError = computed(() => {
@@ -689,6 +690,7 @@ const canSubmitPayment = computed(
         parseFloat(paymentForm.amount) > 0 &&
         !paymentAmountError.value &&
         paymentForm.assessment_id !== null &&
+        paymentForm.or_number.trim() !== '' && 
         !paymentForm.processing,
 );
 
@@ -977,6 +979,23 @@ const formatPaymentMethod = (m: string): string => {
                                         class="text-sm text-red-500"
                                     >
                                         {{ paymentForm.errors.payment_date }}
+                                    </p>
+                                </div>
+
+                                <div class="space-y-2">
+                                    <Label for="or_number">OR Number *</Label>
+                                    <Input
+                                        id="or_number"
+                                        v-model="paymentForm.or_number"
+                                        type="text"
+                                        placeholder="e.g. 2025-00123"
+                                        :class="{ 'border-red-500': paymentForm.errors.or_number }"
+                                    />
+                                    <p v-if="paymentForm.errors.or_number" class="text-sm text-red-500">
+                                        {{ paymentForm.errors.or_number }}
+                                    </p>
+                                    <p v-else class="text-xs text-gray-500">
+                                        Enter the Official Receipt number from the cashier.
                                     </p>
                                 </div>
 
@@ -1433,7 +1452,7 @@ const formatPaymentMethod = (m: string): string => {
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
                                         <span class="font-mono text-xs text-gray-700">{{
-                                            payment.reference_number
+                                             payment.or_number ?? payment.reference_number ?? '—' 
                                         }}</span>
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
@@ -1561,7 +1580,7 @@ const formatPaymentMethod = (m: string): string => {
                             <table class="w-full border-collapse text-left">
                                 <thead>
                                     <tr class="bg-gray-50 text-xs text-gray-500 uppercase">
-                                        <th class="px-4 py-3 font-semibold">Reference</th>
+                                        <th class="px-4 py-3 font-semibold">OR No.</th>
                                         <th class="px-4 py-3 font-semibold">Type</th>
                                         <th class="px-4 py-3 font-semibold">Category</th>
                                         <th class="px-4 py-3 font-semibold">Year & Semester</th>
