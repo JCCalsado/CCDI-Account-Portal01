@@ -202,29 +202,62 @@ const tuitionAndLab = computed(() =>
   discountedBillable.value + nstpTuition.value + labFee.value + entrepreneurFee.value
 )
 
+const displayLecUnits = computed(() =>
+  hasNstp.value
+    ? Number(form.lec_units) + nstpLecUnits.value
+    : Number(form.lec_units)
+)
+
+// Editable percentages for non-registration terms (Prelim, Midterm, etc.)
+const tlTermNames = props.feeRates.payment_terms
+  .filter((t) => t.term_name !== 'Upon Registration')
+  .map((t) => t.term_name)
+
+const termPercentageDefaults: Record<string, number> = {
+  'Prelim':     30,
+  'Midterm':    30,
+  'Semi-Final': 25,
+  'Final':      15,
+}
+
+const editablePercentages = ref<Record<string, number>>(
+  Object.fromEntries(
+    props.feeRates.payment_terms
+      .filter((t) => t.term_name !== 'Upon Registration')
+      .map((t) => [t.term_name, termPercentageDefaults[t.term_name] ?? t.percentage])
+  )
+)
+
+const tlPercentageTotal = computed(() =>
+  tlTermNames.reduce((sum, name) => sum + (Number(editablePercentages.value[name]) || 0), 0)
+)
+
 const paymentTermBreakdown = computed(() => {
-  const tl      = tuitionAndLab.value
-  const misc    = miscFee.value
-  const tlTerms = props.feeRates.payment_terms.filter((t) => t.term_name !== 'Upon Registration')
+  const tl   = tuitionAndLab.value
+  const misc = miscFee.value
   let runningTL = 0
 
-  return props.feeRates.payment_terms.map((t, idx) => {
+  return props.feeRates.payment_terms.map((t) => {
     let amount: number
     if (t.term_name === 'Upon Registration') {
       amount = misc
     } else if (tl === 0) {
       amount = 0
     } else {
-      const tlIdx = tlTerms.findIndex((x) => x.term_name === t.term_name)
-      const isLastTL = tlIdx === tlTerms.length - 1
+      const pct      = Number(editablePercentages.value[t.term_name]) || 0
+      const tlIdx    = tlTermNames.indexOf(t.term_name)
+      const isLastTL = tlIdx === tlTermNames.length - 1
       if (isLastTL) {
         amount = Math.round((tl - runningTL) * 100) / 100
       } else {
-        amount = Math.round(tl * (t.percentage / 100) * 100) / 100
+        amount = Math.round(tl * (pct / 100) * 100) / 100
         runningTL += amount
       }
     }
-    return { term_name: t.term_name, term_order: t.term_order, percentage: t.percentage, amount }
+    const pct = t.term_name === 'Upon Registration'
+      ? null
+      : (Number(editablePercentages.value[t.term_name]) || 0)
+    return { term_name: t.term_name, term_order: t.term_order, percentage: pct, amount }
   })
 })
 
@@ -375,7 +408,9 @@ function submit() {
                   Lecture Units
                   <span class="text-xs text-muted-foreground">(billable only)</span>
                 </Label>
-                <Input id="lec_units" type="number" v-model.number="form.lec_units"
+                <Input id="lec_units" type="number"
+                  :value="displayLecUnits"
+                  @change="form.lec_units = Math.max(0, Number(($event.target as HTMLInputElement).value) - nstpLecUnits)"
                   min="0" max="50" class="text-center text-lg font-semibold" />
                 <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.tuition_per_unit) }} / unit</p>
                 <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
@@ -392,15 +427,6 @@ function submit() {
                 <p v-if="form.errors.lab_units" class="text-sm text-destructive">{{ form.errors.lab_units }}</p>
               </div>
             </CardContent>
-            <div class="px-6 pb-4">
-              <div class="flex items-start gap-2 rounded-md bg-blue-50 p-3 text-xs text-blue-800">
-                <Info class="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                <span>
-                  <strong>NSTP and PATHFIT/PE</strong> subjects are excluded from lecture units per CHED.
-                  Lab fee is charged once per subject with a lab component, not per lab unit.
-                </span>
-              </div>
-            </div>
           </Card>
 
           <!-- ── Discount / Scholarship ─────────────────────────────────────── -->
@@ -554,13 +580,9 @@ function submit() {
               <div class="space-y-2">
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
-                    Tuition ({{ form.lec_units }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
+                    Tuition ({{ displayLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
                   </span>
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
-                </div>
-                <div v-if="hasNstp && nstpLecUnits > 0" class="flex justify-between text-xs text-amber-700 pl-2">
-                  <span>incl. NSTP {{ nstpLecUnits }}u × {{ formatCurrency(feeRates.tuition_per_unit) }} (full)</span>
-                  <span>{{ formatCurrency(nstpTuition) }}</span>
                 </div>
                 <div v-if="discountSaving > 0" class="flex justify-between text-xs text-green-600 pl-2">
                   <span>− {{ form.discount_percentage }}% discount saved</span>
@@ -592,11 +614,26 @@ function submit() {
                   Payment Schedule ({{ feeRates.payment_terms.length }} terms)
                 </p>
                 <div class="space-y-1.5">
-                  <div v-for="term in paymentTermBreakdown" :key="term.term_order" class="flex justify-between text-xs">
-                    <span class="text-muted-foreground">{{ term.term_name }} ({{ term.percentage }}%)</span>
-                    <span class="font-medium">{{ formatCurrency(term.amount) }}</span>
+                  <div v-for="term in paymentTermBreakdown" :key="term.term_order" class="flex items-center justify-between text-xs gap-2">
+                    <span v-if="term.term_name === 'Upon Registration'" class="text-muted-foreground flex-1">
+                      {{ term.term_name }}
+                    </span>
+                    <template v-else>
+                      <span class="text-muted-foreground flex-1">{{ term.term_name }}</span>
+                      <input
+                        type="number"
+                        :value="editablePercentages[term.term_name]"
+                        @change="editablePercentages[term.term_name] = Math.max(0, Math.min(100, Number(($event.target as HTMLInputElement).value)))"
+                        min="0" max="100" step="0.01"
+                        class="w-14 text-right border border-input rounded px-1 py-0.5 text-xs bg-background text-foreground"
+                      /><span class="text-muted-foreground">%</span>
+                    </template>
+                    <span class="font-medium ml-1">{{ formatCurrency(term.amount) }}</span>
                   </div>
                 </div>
+                <p v-if="tlPercentageTotal !== 100" class="mt-2 text-xs text-destructive font-medium">
+                  ⚠ Percentages sum to {{ tlPercentageTotal }}% — must total 100%
+                </p>
               </div>
 
               <div v-else class="text-center py-6 text-muted-foreground text-sm">
