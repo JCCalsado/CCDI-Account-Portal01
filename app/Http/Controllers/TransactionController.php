@@ -40,7 +40,21 @@ class TransactionController extends Controller
                 ->orderByDesc('year')
                 ->orderByDesc('semester')
                 ->get()
-                ->groupBy(fn ($txn) => $this->getTransactionGroupKey($txn));
+                ->map(fn ($t) => [
+                    'id'         => $t->id,
+                    'kind'       => $t->kind,
+                    'type'       => $t->type ?? ucfirst($t->kind),
+                    'amount'     => (float) $t->amount,
+                    'reference'  => $t->reference,
+                    'or_number'  => $t->or_number ?? null,
+                    'status'     => $t->status,
+                    'year'       => $t->year,
+                    'semester'   => $t->semester,
+                    'meta'       => $t->meta,
+                    'created_at' => $t->created_at?->toDateTimeString(),
+                    'user'       => $t->user,
+                ])
+                ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
 
             $currentTerm = $this->getCurrentTerm();
             $allAssessments = [];
@@ -51,7 +65,21 @@ class TransactionController extends Controller
                 ->orderByDesc('year')
                 ->orderByDesc('semester')
                 ->get()
-                ->groupBy(fn ($txn) => $this->getTransactionGroupKey($txn));
+                ->map(fn ($t) => [
+                    'id'         => $t->id,
+                    'kind'       => $t->kind,
+                    'type'       => $t->type ?? ucfirst($t->kind),
+                    'amount'     => (float) $t->amount,
+                    'reference'  => $t->reference,
+                    'or_number'  => $t->or_number ?? null,
+                    'status'     => $t->status,
+                    'year'       => $t->year,
+                    'semester'   => $t->semester,
+                    'meta'       => $t->meta,
+                    'created_at' => $t->created_at?->toDateTimeString(),
+                    'user'       => $t->user,
+                ])
+                ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
 
             // For students, resolve currentTerm from their latest assessment so the
             // correct term group is auto-expanded even when server-time semester
@@ -494,7 +522,7 @@ class TransactionController extends Controller
         $this->workflowService->startWorkflow($workflow, $transaction, $userId);
     }
 
-    private function getTransactionGroupKey(Transaction $txn): string
+    private function getTransactionGroupKey(object $txn): string
     {
         if (!empty($txn->year) && !empty($txn->semester)) {
             return "{$txn->year} {$txn->semester}";

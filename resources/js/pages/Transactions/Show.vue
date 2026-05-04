@@ -9,6 +9,7 @@ interface Props {
     transaction: {
         id: number;
         reference: string;
+        or_number?: string | null; 
         amount: number;
         status: string;
         type: string;
@@ -140,6 +141,10 @@ const downloadReceipt = () => {
                         <div>
                             <p class="text-xs font-medium text-gray-500 uppercase">Payment Date</p>
                             <p class="mt-1 font-medium">{{ transaction.paid_at ? formatDate(transaction.paid_at) : 'N/A' }}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 uppercase">OR Number</p>
+                            <p class="mt-1 font-mono font-medium">{{ transaction.or_number ?? '—' }}</p>
                         </div>
                         <div v-if="transaction.meta?.term_name">
                             <p class="text-xs font-medium text-gray-500 uppercase">Applied to Term</p>

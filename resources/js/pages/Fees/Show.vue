@@ -117,7 +117,7 @@ const formatDate = (date: string) => {
                             <div class="flex items-start justify-between">
                                 <div>
                                     <p class="font-medium">{{ txn.user?.name || 'N/A' }}</p>
-                                    <p class="text-sm text-gray-600">{{ txn.reference }}</p>
+                                    <p class="text-sm text-gray-600">OR: {{ txn.or_number ?? txn.reference }}</p>
                                 </div>
                                 <div class="text-right">
                                     <p class="font-semibold">{{ formatCurrency(txn.amount) }}</p>

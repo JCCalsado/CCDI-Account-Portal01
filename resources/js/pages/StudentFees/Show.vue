@@ -208,6 +208,7 @@ const tuitionItems = computed(() => {
         .filter((item: any) => item.category === 'Tuition')
         .map((item: any) => ({
             ...item,
+            units: parseFloat(String(item.units ?? 0)),
             displayName: item.name || item.code || 'Subject',
             amount: parseFloat(String(item.amount)),
         }));
@@ -360,11 +361,11 @@ const totalMiscellaneous = computed(() => {
 
 const feeCalculationSummary = computed(() => {
     const totalUnits = tuitionItems.value.reduce(
-        (sum: number, item: any) => sum + (item.units || 0),
+        (sum: number, item: any) => sum + (parseFloat(String(item.units ?? 0)) || 0),
         0,
     );
     const labCount = labItems.value.reduce(
-        (sum: number, item: any) => sum + (item.units || 0),
+        (sum: number, item: any) => sum + (parseFloat(String(item.units ?? 0)) || 0),
         0,
     );
 
@@ -1444,7 +1445,7 @@ const formatPaymentMethod = (m: string): string => {
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
                                         <span class="font-mono text-xs text-gray-700">{{
-                                             payment.or_number ?? payment.reference_number ?? '—' 
+                                             payment.or_number ?? '—'
                                         }}</span>
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
@@ -1588,7 +1589,7 @@ const formatPaymentMethod = (m: string): string => {
                                         class="border-b border-gray-100 transition-colors hover:bg-gray-50"
                                     >
                                         <td class="px-4 py-3 font-mono text-xs text-gray-700">
-                                            {{ t.or_number ?? t.reference }}
+                                            {{ t.or_number ?? '—' }}
                                         </td>
                                         <td class="px-4 py-3">
                                             <span

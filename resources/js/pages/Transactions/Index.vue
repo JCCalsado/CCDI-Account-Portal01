@@ -13,6 +13,7 @@ const { formatCurrency } = useDataFormatting();
 interface Transaction {
     id: number;
     reference: string;
+    or_number?: string | null;
     user?: {
         id: number;
         name: string;
@@ -252,6 +253,7 @@ const filteredTransactionsByTerm = computed(() => {
         const matched = txns.filter(
             (t) =>
                 t.reference?.toLowerCase().includes(q) ||
+                t.or_number?.toLowerCase().includes(q) ||
                 t.type?.toLowerCase().includes(q) ||
                 t.user?.name?.toLowerCase().includes(q) ||
                 t.user?.account_id?.toLowerCase().includes(q),
@@ -466,7 +468,7 @@ const formatPaymentMethod = (m: string): string => {
                         <table class="w-full border-collapse text-left">
                             <thead>
                                 <tr class="bg-gray-100 text-xs text-gray-600 uppercase">
-                                    <th class="p-3 font-semibold">Reference</th>
+                                    <th class="p-3 font-semibold">OR No.</th>
                                     <th v-if="isStaff" class="p-3 font-semibold">Student</th>
                                     <th class="p-3 font-semibold">Method</th>
                                     <th class="p-3 font-semibold">Category</th>
@@ -479,7 +481,9 @@ const formatPaymentMethod = (m: string): string => {
                             </thead>
                             <tbody>
                                 <tr v-for="t in transactions" :key="t.id" class="border-b transition-colors hover:bg-gray-50">
-                                    <td class="p-3 font-mono text-xs text-gray-700">{{ t.reference }}</td>
+                                    <td class="p-3 font-mono text-xs">
+                                        <p class="font-medium text-gray-800">{{ t.or_number ?? '—' }}</p>
+                                    </td>
                                     <td v-if="isStaff" class="p-3 text-sm">
                                         <div>
                                             <p class="font-medium">{{ t.user?.name }}</p>
@@ -488,7 +492,7 @@ const formatPaymentMethod = (m: string): string => {
                                     </td>
                                     <td class="p-3 text-sm">
                                         <span v-if="t.kind === 'charge'" class="text-gray-400 italic text-xs">—</span>
-                                        <span v-else>{{ formatPaymentMethod(t.payment_method) }}</span>
+                                        <span v-else>{{ formatPaymentMethod(t.payment_channel) }}</span>
                                     </td>
                                     <td class="p-3 text-sm">
                                         <!-- Show term_name from meta if available (e.g. "Prelim"), otherwise type -->
@@ -705,9 +709,9 @@ const formatPaymentMethod = (m: string): string => {
                         <div>
                             <h3 class="mb-3 border-b pb-2 text-base font-semibold">Basic Information</h3>
                             <div class="grid grid-cols-2 gap-3">
-                                <div>
-                                    <p class="text-xs text-gray-500">Reference</p>
-                                    <p class="font-mono text-sm font-medium">{{ selectedTransaction.reference }}</p>
+                                <div v-if="selectedTransaction.kind === 'payment'">
+                                    <p class="text-xs text-gray-500">OR Number</p>
+                                    <p class="font-mono text-sm font-medium">{{ selectedTransaction.or_number ?? '—' }}</p>
                                 </div>
                                 <div>
                                     <p class="text-xs text-gray-500">Date</p>

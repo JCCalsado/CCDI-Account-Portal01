@@ -60,7 +60,7 @@ const breadcrumbs = [
 // nstp_lec_units comes from assessment.nstp_units (stored at creation time)
 // or falls back to is_taking_nstp legacy field
 const nstpLecUnits = props.assessment.nstp_units
-  ?? (props.assessment.is_taking_nstp ? 2 : 0) // legacy fallback: approximate with 2 units
+  ?? (props.assessment.is_taking_nstp ? 1.5 : 0) // legacy fallback: approximate with 2 units
 
 const form = useForm({
   semester:            props.assessment.semester,

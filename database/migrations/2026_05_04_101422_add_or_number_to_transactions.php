@@ -28,7 +28,7 @@ return new class extends Migration
         });
 
         Schema::table('payments', function (Blueprint $table) {
-            $table->dropUnique(['or_number']);
+            // no unique constraint was added, so just drop the column
             $table->dropColumn('or_number');
         });
     }

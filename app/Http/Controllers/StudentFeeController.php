@@ -340,8 +340,7 @@ class StudentFeeController extends Controller
                     'amount'           => (float) $p->amount,
                     'payment_method'   => $p->payment_method,
                     'reference_number' => $p->paymongo_payment_id
-                        ?? ($p->meta['reference_number'] ?? null)
-                        ?? ('PAY-' . strtoupper(substr(md5($p->id . $p->created_at), 0, 8))),
+                        ?? ($p->meta['reference_number'] ?? null),
                     'or_number'        => $p->or_number ?? null,
                     'description'      => $p->description ?? 'Payment',
                     'status'           => $p->status,
@@ -489,8 +488,8 @@ class StudentFeeController extends Controller
                 'id'             => $assessment->id,
                 'semester'       => $assessment->semester,
                 'school_year'    => $assessment->school_year,
-                'lec_units'      => $assessment->lec_units,
-                'nstp_units'     => (int) $nstpUnits,
+                'lec_units'      => (float) $assessment->lec_units,
+                'nstp_units'     => (float) $nstpUnits,
                 'lab_units'      => $assessment->lab_units,
                 'discount_type'  => $assessment->discount_type ?? 'none',
                 'is_taking_nstp' => $assessment->is_taking_nstp ?? false,

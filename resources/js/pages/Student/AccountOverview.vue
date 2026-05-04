@@ -17,6 +17,7 @@ type Fee = { name: string; amount: number; category?: string };
 type Transaction = {
     id: number;
     reference: string;
+    or_number?: string | null;
     type: string;
     kind: string;
     amount: number;
@@ -694,7 +695,7 @@ onUnmounted(() => {
                                     <div>
                                         <p class="text-sm font-medium text-gray-900">{{ payment.term_name }}</p>
                                         <p class="text-xs text-gray-600">
-                                            {{ payment.reference }} · {{ formatDate(payment.created_at) }}
+                                            OR: {{ payment.or_number ?? payment.reference }} · {{ formatDate(payment.created_at) }}
                                         </p>
                                     </div>
                                     <div class="text-right">
@@ -737,7 +738,7 @@ onUnmounted(() => {
                                         <p class="text-sm text-gray-600">
                                             {{ payment.created_at ? formatDate(payment.created_at) : '—' }}
                                         </p>
-                                        <p class="text-xs text-gray-500">{{ payment.reference || 'N/A' }}</p>
+                                        <p class="text-xs text-gray-500">OR: {{ payment.or_number ?? payment.reference ?? 'N/A' }}</p>
                                     </div>
                                 </div>
                                 <div class="text-right">
