@@ -227,7 +227,7 @@ class AssessmentService
      * @param  array|null $rates               Output of loadRates(). Loaded fresh if null.
      */
     public static function compute(
-        int    $lecUnits,
+        float  $lecUnits,
         int    $labSubjects,
         float  $nstpLecUnits       = 0,
         float  $discountPercentage = 0.0,

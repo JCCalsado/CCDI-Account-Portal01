@@ -318,11 +318,11 @@
                             return [
                                 'code'  => $s->code,
                                 'name'  => $s->name,
-                                'units' => (float)($s->units ?? 0),
+                                'units' => (float)($s->lec_units ?? $s->units ?? 0) + (float)($s->lab_units ?? 0),
                             ];
                         });
 
-                        $totalUnits = (float)$assessment->lec_units + (float)$assessment->lab_units;
+                        $totalUnits = (float)$assessment->lec_units + (float)($assessment->nstp_lec_units ?? 0) + (float)$assessment->lab_units;
                         $minRows    = 12;
                         $emptyRows  = max(0, $minRows - $subjectRows->count());
                     @endphp
