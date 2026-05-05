@@ -175,6 +175,8 @@ class StudentFeeController extends Controller
             'lab_units'           => ['required', 'integer', 'min:0', 'max:20'],
             'nstp_lec_units'      => ['nullable', 'numeric', 'min:0', 'max:10'],
             'discount_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'term_percentages'   => ['nullable', 'array'],
+            'term_percentages.*' => ['numeric', 'min:0', 'max:100'],
         ]);
 
         $validated['lec_units']           = (float) $validated['lec_units'];
@@ -206,6 +208,16 @@ class StudentFeeController extends Controller
 
                 // Load fee rates from fee_settings table (single source of truth)
                 $rates = AssessmentService::loadRates();
+
+                if (!empty($validated['term_percentages'])) {
+                    $rates['payment_terms'] = array_map(function ($term) use ($validated) {
+                        $name = $term['term_name'];
+                        if (isset($validated['term_percentages'][$name])) {
+                            $term['percentage'] = (float) $validated['term_percentages'][$name];
+                        }
+                        return $term;
+                    }, $rates['payment_terms']);
+                }
 
                 // Compute fees — discount applies only to billable tuition, never NSTP portion
                 $fees = AssessmentService::compute(

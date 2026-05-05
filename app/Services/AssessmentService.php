@@ -110,7 +110,10 @@ class AssessmentService
         }
 
         if (empty($paymentTerms)) {
-            $paymentTerms = config('fees.payment_terms', []);
+            throw new \RuntimeException(
+                'Payment term percentages are missing from fee_settings. ' .
+                'Run: php artisan db:seed --class=FeeSettingsSeeder'
+            );
         }
 
         return [
@@ -342,14 +345,24 @@ class AssessmentService
         $miscFee          ??= round($rates['misc_total'], 2);
         $tuitionAndLabFee ??= round($total - $miscFee, 2);
 
-        // Term percentages for Tuition+Lab base (must sum to 100)
-        $termPcts = [
-            ['term_name' => 'Upon Registration', 'term_order' => 1, 'percentage' => 0,    'base' => 'misc'],
-            ['term_name' => 'Prelim',            'term_order' => 2, 'percentage' => 30,   'base' => 'tuition_lab'],
-            ['term_name' => 'Midterm',           'term_order' => 3, 'percentage' => 30,   'base' => 'tuition_lab'],
-            ['term_name' => 'Pre-Final',         'term_order' => 4, 'percentage' => 25,   'base' => 'tuition_lab'],
-            ['term_name' => 'Final',             'term_order' => 5, 'percentage' => 15,   'base' => 'tuition_lab'],
-        ];
+        $configuredTerms = $rates['payment_terms'] ?? [];
+
+        if (!empty($configuredTerms)) {
+            // First term (Upon Registration) is always misc-based
+            $termPcts = array_map(function ($t, $i) {
+                return [
+                    'term_name'  => $t['term_name'],
+                    'term_order' => $t['term_order'],
+                    'percentage' => (float) $t['percentage'],
+                    'base'       => $i === 0 ? 'misc' : 'tuition_lab',
+                ];
+            }, $configuredTerms, array_keys($configuredTerms));
+        } else {
+            throw new \RuntimeException(
+                'buildPaymentTerms() called with empty payment_terms in $rates. ' .
+                'Ensure fee_settings is seeded before creating assessments.'
+            );
+        }
 
         $terms        = [];
         $runningTL    = 0.0;   // running total of tuition+lab terms (for rounding safety)

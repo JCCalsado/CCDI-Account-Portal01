@@ -41,11 +41,11 @@ class FeeSettingsSeeder extends Seeder
             ['key' => 'misc_maintenance', 'label' => 'Maintenance Fee', 'amount' => 400.00, 'category' => 'other'],
 
             // ── Payment term percentages ──────────────────────────────────────
-            ['key' => 'term_1_pct', 'label' => 'Upon Registration', 'amount' => 30.00, 'category' => 'term'],
-            ['key' => 'term_2_pct', 'label' => 'Prelim', 'amount' => 21.00, 'category' => 'term'],
-            ['key' => 'term_3_pct', 'label' => 'Midterm', 'amount' => 21.00, 'category' => 'term'],
-            ['key' => 'term_4_pct', 'label' => 'Semi-Final', 'amount' => 18.00, 'category' => 'term'],
-            ['key' => 'term_5_pct', 'label' => 'Final', 'amount' => 10.00, 'category' => 'term'],
+            ['key' => 'term_1_pct', 'label' => 'Upon Registration', 'amount' =>  0.00, 'category' => 'term'],
+            ['key' => 'term_2_pct', 'label' => 'Prelim',            'amount' => 30, 'category' => 'term'],
+            ['key' => 'term_3_pct', 'label' => 'Midterm',           'amount' => 30, 'category' => 'term'],
+            ['key' => 'term_4_pct', 'label' => 'Semi-Final',        'amount' => 25, 'category' => 'term'],
+            ['key' => 'term_5_pct', 'label' => 'Final',             'amount' => 15, 'category' => 'term'],
         ];
 
         foreach ($settings as $s) {

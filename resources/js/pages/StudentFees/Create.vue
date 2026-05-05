@@ -167,6 +167,7 @@ const form = useForm({
   lab_units:           0,   // ← was lab_subjects; matches controller validation key
   nstp_lec_units:      0,
   discount_percentage: 0 as number,
+  term_percentages:    {} as Record<string, number>,
 })
 
 const currentYear = new Date().getFullYear()
@@ -218,18 +219,11 @@ const tlTermNames = props.feeRates.payment_terms
   .filter((t) => t.term_name !== 'Upon Registration')
   .map((t) => t.term_name)
 
-const termPercentageDefaults: Record<string, number> = {
-  'Prelim':     30,
-  'Midterm':    30,
-  'Semi-Final': 25,
-  'Final':      15,
-}
-
 const editablePercentages = ref<Record<string, number>>(
   Object.fromEntries(
     props.feeRates.payment_terms
       .filter((t) => t.term_name !== 'Upon Registration')
-      .map((t) => [t.term_name, termPercentageDefaults[t.term_name] ?? t.percentage])
+      .map((t) => [t.term_name, t.percentage])
   )
 )
 
@@ -272,6 +266,7 @@ function submit() {
   if (! selectedStudent.value) return
   form.user_id        = selectedStudent.value.id
   form.nstp_lec_units = nstpLecUnits.value
+  form.term_percentages  = { ...editablePercentages.value }
 
   const url = route('student-fees.store')
   console.log('[submit] posting to:', url, form.data())

@@ -79,18 +79,14 @@ return [
         ['label' => 'Maintenance Fee',     'amount' => 400.00],
     ],
 
+    // AFTER — remove the array, add tombstone comment
     /*
     |--------------------------------------------------------------------------
     | Payment Terms
     |--------------------------------------------------------------------------
-    | Percentages must sum to 100.
+    | DO NOT define payment_terms here.
+    | The single source of truth is the fee_settings table (term_1_pct … term_5_pct).
+    | Run: php artisan db:seed --class=FeeSettingsSeeder
     */
-    'payment_terms' => [
-        ['term_name' => 'Upon Registration', 'term_order' => 1, 'percentage' => 25],
-        ['term_name' => 'Prelim',            'term_order' => 2, 'percentage' => 25],
-        ['term_name' => 'Midterm',           'term_order' => 3, 'percentage' => 25],
-        ['term_name' => 'Semi-Final',        'term_order' => 4, 'percentage' => 12.5],
-        ['term_name' => 'Final',             'term_order' => 5, 'percentage' => 12.5],
-    ],
 
 ];
