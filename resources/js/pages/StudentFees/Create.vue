@@ -100,7 +100,7 @@ function clearStudent() {
   selectedStudent.value    = null
   form.user_id             = 0
   form.lec_units           = 0
-  form.lab_units           = 0   // ← was form.lab_subjects
+  form.lab_units           = 0
   curriculumSubjects.value = []
   curriculumMessage.value  = ''
   hasNstp.value            = false
@@ -143,10 +143,10 @@ async function loadCurriculum() {
 
     if (data.found) {
       curriculumSubjects.value = data.subjects
-      form.lec_units    = data.billable_lec_units
-      form.lab_units    = data.lab_subject_count   // ← was form.lab_subjects
-      hasNstp.value     = data.has_nstp ?? false
-      nstpLecUnits.value = data.nstp_lec_units ?? 0
+      form.lec_units           = data.billable_lec_units
+      form.lab_units           = data.lab_subject_count
+      hasNstp.value            = data.has_nstp ?? false
+      nstpLecUnits.value       = data.nstp_lec_units ?? 0
     } else {
       curriculumMessage.value = data.message ?? 'No curriculum data found for this student.'
     }
@@ -164,7 +164,7 @@ const form = useForm({
   semester:            '1st' as '1st' | '2nd' | 'Summer',
   school_year:         '',
   lec_units:           0,
-  lab_units:           0,   // ← was lab_subjects; matches controller validation key
+  lab_units:           0,
   nstp_lec_units:      0,
   discount_percentage: 0 as number,
   term_percentages:    {} as Record<string, number>,
@@ -179,42 +179,80 @@ watch([selectedStudent, () => form.semester], () => {
   if (selectedStudent.value && ! selectedStudent.value.is_irregular) loadCurriculum()
 })
 
-// ─── Live Fee Computation ──────────────────────────────────────────────────────
+// ─── Live Fee Computation (Option A discount rules) ───────────────────────────
+//
+//  discount < 100% : applies to ALL lec units including NSTP
+//  discount = 100% : all billable lec units → ₱0, NSTP (1.5 units) charged at full price
+//  lab + misc      : never discounted regardless
+// ─────────────────────────────────────────────────────────────────────────────
 
 const rate = computed(() => props.feeRates.tuition_per_unit)
 
-const rawBillableTuition = computed(() => Number(form.lec_units) * rate.value)
-const nstpTuition        = computed(() => nstpLecUnits.value * rate.value)
-const entrepreneurFee    = computed(() => Number(form.lab_units) > 0 ? (props.feeRates.entrepreneurship_fee ?? 600) : 0)
-const baseLabFee         = computed(() => Number(form.lab_units) * props.feeRates.lab_fee_per_subject)
-const miscFee            = computed(() => props.feeRates.misc_total)
-
-const discountSaving = computed(() => {
-  const pct = Number(form.discount_percentage) || 0
-  return pct > 0 ? Math.round(rawBillableTuition.value * (pct / 100) * 100) / 100 : 0
-})
-
-const discountedBillable = computed(() => rawBillableTuition.value - discountSaving.value)
-const tuitionFee         = computed(() => discountedBillable.value + nstpTuition.value)
-const labFee             = computed(() => baseLabFee.value)
-const totalAssessment    = computed(() => tuitionFee.value + labFee.value + entrepreneurFee.value + miscFee.value)
-
-const tuitionAndLab = computed(() =>
-  discountedBillable.value + nstpTuition.value + labFee.value + entrepreneurFee.value
+// Total lec units sent to billing = billable + NSTP
+const totalLecUnits = computed(() =>
+  Number(form.lec_units) + nstpLecUnits.value
 )
 
+// Raw tuition before any discount (all lec units × rate)
+const rawTotalTuition = computed(() =>
+  totalLecUnits.value * rate.value
+)
+
+// NSTP tuition at full price (used only at 100% discount)
+const nstpTuition = computed(() =>
+  nstpLecUnits.value * rate.value
+)
+
+const pct = computed(() => Number(form.discount_percentage) || 0)
+
+// Discount saving amount
+const discountSaving = computed(() => {
+  if (pct.value === 100) {
+    // At 100%: entire billable (non-NSTP) tuition is waived
+    return Number(form.lec_units) * rate.value
+  }
+  if (pct.value > 0) {
+    // Partial: discount applies to ALL lec units including NSTP
+    return Math.round(rawTotalTuition.value * (pct.value / 100) * 100) / 100
+  }
+  return 0
+})
+
+// Final tuition after discount
+const tuitionFee = computed(() => {
+  if (pct.value === 100) {
+    // All billable lec units → ₱0, NSTP survives at full price
+    return nstpTuition.value
+  }
+  return Math.round((rawTotalTuition.value - discountSaving.value) * 100) / 100
+})
+
+const entrepreneurFee = computed(() =>
+  Number(form.lab_units) > 0 ? (props.feeRates.entrepreneurship_fee ?? 600) : 0
+)
+const labFee  = computed(() => Number(form.lab_units) * props.feeRates.lab_fee_per_subject)
+const miscFee = computed(() => props.feeRates.misc_total)
+
+const totalAssessment = computed(() =>
+  tuitionFee.value + labFee.value + entrepreneurFee.value + miscFee.value
+)
+
+const tuitionAndLab = computed(() =>
+  tuitionFee.value + labFee.value + entrepreneurFee.value
+)
+
+// Display field shows total lec units (billable + NSTP)
 const displayLecUnits = computed({
   get() {
-    return hasNstp.value
-      ? Number(form.lec_units) + nstpLecUnits.value
-      : Number(form.lec_units)
+    return totalLecUnits.value
   },
   set(val: number) {
     form.lec_units = Math.max(0, Number(val) - nstpLecUnits.value)
   },
 })
 
-// Editable percentages for non-registration terms (Prelim, Midterm, etc.)
+// ─── Payment Terms ────────────────────────────────────────────────────────────
+
 const tlTermNames = props.feeRates.payment_terms
   .filter((t) => t.term_name !== 'Upon Registration')
   .map((t) => t.term_name)
@@ -253,10 +291,10 @@ const paymentTermBreakdown = computed(() => {
         runningTL += amount
       }
     }
-    const pct = t.term_name === 'Upon Registration'
+    const termPct = t.term_name === 'Upon Registration'
       ? null
       : (Number(editablePercentages.value[t.term_name]) || 0)
-    return { term_name: t.term_name, term_order: t.term_order, percentage: pct, amount }
+    return { term_name: t.term_name, term_order: t.term_order, percentage: termPct, amount }
   })
 })
 
@@ -264,17 +302,14 @@ const paymentTermBreakdown = computed(() => {
 
 function submit() {
   if (! selectedStudent.value) return
-  form.user_id        = selectedStudent.value.id
-  form.nstp_lec_units = nstpLecUnits.value
+  form.user_id           = selectedStudent.value.id
+  form.nstp_lec_units    = nstpLecUnits.value
   form.term_percentages  = { ...editablePercentages.value }
 
-  const url = route('student-fees.store')
-  console.log('[submit] posting to:', url, form.data())
-
-  form.post(url, {
-    onError:  (errors)   => console.error('[submit] validation errors:', errors),
-    onSuccess: ()        => console.log('[submit] success'),
-    onFinish: ()         => console.log('[submit] finished'),
+  form.post(route('student-fees.store'), {
+    onError:  (errors) => console.error('[submit] validation errors:', errors),
+    onSuccess: ()      => console.log('[submit] success'),
+    onFinish: ()       => console.log('[submit] finished'),
   })
 }
 </script>
@@ -379,7 +414,7 @@ function submit() {
               </div>
             </CardContent>
           </Card>
-          
+
           <!-- Irregular student notice -->
           <div v-if="selectedStudent?.is_irregular"
             class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -398,7 +433,9 @@ function submit() {
               <CardTitle class="flex items-center gap-2 text-base">
                 <BookOpen class="h-4 w-4" />
                 Units Enrolled
-                <span class="ml-auto text-xs font-normal text-muted-foreground">Auto-filled from curriculum — override if needed</span>
+                <span class="ml-auto text-xs font-normal text-muted-foreground">
+                  Auto-filled from curriculum — override if needed
+                </span>
               </CardTitle>
             </CardHeader>
             <CardContent class="grid grid-cols-2 gap-6">
@@ -406,7 +443,7 @@ function submit() {
                 <Label for="lec_units" class="flex items-center gap-1.5">
                   <span class="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
                   Lecture Units
-                  <span class="text-xs text-muted-foreground">(billable only)</span>
+                  <span class="text-xs text-muted-foreground">(incl. NSTP if enrolled)</span>
                 </Label>
                 <Input id="lec_units" type="number"
                   v-model.number="displayLecUnits"
@@ -438,16 +475,18 @@ function submit() {
             </CardHeader>
             <CardContent class="space-y-4">
 
-              <div v-if="hasNstp"
-                class="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-300 p-3 text-sm text-amber-900">
+              <!-- NSTP notice — only shown at 100% discount -->
+              <div
+                v-if="hasNstp && pct === 100"
+                class="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-300 p-3 text-sm text-amber-900"
+              >
                 <AlertTriangle class="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
                 <div>
-                  <p class="font-semibold">NSTP Detected in Curriculum</p>
+                  <p class="font-semibold">100% Discount — NSTP Exception</p>
                   <p class="text-xs text-amber-800 mt-0.5">
-                    This student is enrolled in NSTP ({{ nstpLecUnits }} unit{{ nstpLecUnits !== 1 ? 's' : '' }},
-                    {{ formatCurrency(nstpLecUnits * feeRates.tuition_per_unit) }}).
-                    The NSTP portion is <strong>always billed at full price</strong> regardless of any discount entered below.
-                    Only the remaining billable tuition will be discounted.
+                    All lecture units are fully discounted. However, NSTP
+                    ({{ nstpLecUnits }} units, {{ formatCurrency(nstpTuition) }})
+                    is excluded from the 100% discount and will be charged at full price.
                   </p>
                 </div>
               </div>
@@ -455,7 +494,7 @@ function submit() {
               <div class="space-y-3">
                 <Label for="discount_percentage">Discount Percentage (%)</Label>
                 <p class="text-xs text-muted-foreground -mt-2">
-                  Enter 0 for no discount. Applies to billable tuition only — lab and miscellaneous fees are never discounted.
+                  Applies to all lecture units (including NSTP) unless 100% — lab and miscellaneous fees are never discounted.
                 </p>
 
                 <div class="flex gap-1.5 flex-wrap">
@@ -486,45 +525,55 @@ function submit() {
                     placeholder="0.00"
                     class="w-28 text-center text-lg font-semibold"
                   />
-                  <span class="text-sm text-muted-foreground">% off tuition only</span>
+                  <span class="text-sm text-muted-foreground">% off lecture units</span>
                 </div>
                 <p v-if="form.errors.discount_percentage" class="text-sm text-destructive">
                   {{ form.errors.discount_percentage }}
                 </p>
               </div>
 
+              <!-- Discount breakdown panel -->
               <div
-                v-if="form.discount_percentage > 0"
+                v-if="pct > 0"
                 class="rounded-md bg-green-50 border border-green-200 p-3 space-y-1.5 text-sm"
               >
-                <p class="font-semibold text-xs uppercase tracking-wide text-green-700 mb-2">Effective Fees After Discount</p>
+                <p class="font-semibold text-xs uppercase tracking-wide text-green-700 mb-2">
+                  Effective Fees After Discount
+                </p>
 
-                <template v-if="hasNstp">
+                <!-- Partial discount (< 100%): NSTP included in discount -->
+                <template v-if="pct < 100">
                   <div class="flex justify-between text-green-800 text-xs">
-                    <span>Billable tuition ({{ form.lec_units }} units, before discount)</span>
-                    <span>{{ formatCurrency(rawBillableTuition) }}</span>
+                    <span>Total tuition ({{ totalLecUnits }} units incl. NSTP, before discount)</span>
+                    <span>{{ formatCurrency(rawTotalTuition) }}</span>
                   </div>
                   <div class="flex justify-between text-green-600 text-xs">
-                    <span>− {{ form.discount_percentage }}% discount</span>
+                    <span>− {{ pct }}% discount (applied to all {{ totalLecUnits }} units)</span>
                     <span>− {{ formatCurrency(discountSaving) }}</span>
-                  </div>
-                  <div class="flex justify-between text-green-800 text-xs">
-                    <span>NSTP tuition ({{ nstpLecUnits }} units — full price, not discounted)</span>
-                    <span>{{ formatCurrency(nstpTuition) }}</span>
                   </div>
                   <div class="flex justify-between text-green-900 font-medium pt-1 border-t border-green-200">
                     <span>Total Tuition</span>
                     <span>{{ formatCurrency(tuitionFee) }}</span>
                   </div>
                 </template>
+
+                <!-- 100% discount: billable lec units → ₱0, NSTP survives -->
                 <template v-else>
-                  <div class="flex justify-between text-green-900">
-                    <span>Tuition (after {{ form.discount_percentage }}% discount)</span>
-                    <span class="font-semibold">{{ formatCurrency(tuitionFee) }}</span>
+                  <div class="flex justify-between text-green-800 text-xs">
+                    <span>Billable tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
+                    <span>{{ formatCurrency(Number(form.lec_units) * rate) }}</span>
                   </div>
                   <div class="flex justify-between text-green-600 text-xs">
-                    <span>You save</span>
-                    <span class="font-semibold">− {{ formatCurrency(discountSaving) }}</span>
+                    <span>− 100% discount (full waiver on billable units)</span>
+                    <span>− {{ formatCurrency(discountSaving) }}</span>
+                  </div>
+                  <div class="flex justify-between text-amber-800 text-xs font-medium">
+                    <span>NSTP ({{ nstpLecUnits }} units — excluded from 100% discount)</span>
+                    <span>{{ formatCurrency(nstpTuition) }}</span>
+                  </div>
+                  <div class="flex justify-between text-green-900 font-medium pt-1 border-t border-green-200">
+                    <span>Total Tuition</span>
+                    <span>{{ formatCurrency(tuitionFee) }}</span>
                   </div>
                 </template>
 
@@ -584,7 +633,7 @@ function submit() {
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
                 </div>
                 <div v-if="discountSaving > 0" class="flex justify-between text-xs text-green-600 pl-2">
-                  <span>− {{ form.discount_percentage }}% discount saved</span>
+                  <span>− {{ pct }}% discount saved</span>
                   <span>− {{ formatCurrency(discountSaving) }}</span>
                 </div>
                 <div class="flex justify-between">
@@ -613,7 +662,11 @@ function submit() {
                   Payment Schedule ({{ feeRates.payment_terms.length }} terms)
                 </p>
                 <div class="space-y-1.5">
-                  <div v-for="term in paymentTermBreakdown" :key="term.term_order" class="flex items-center justify-between text-xs gap-2">
+                  <div
+                    v-for="term in paymentTermBreakdown"
+                    :key="term.term_order"
+                    class="flex items-center justify-between text-xs gap-2"
+                  >
                     <span v-if="term.term_name === 'Upon Registration'" class="text-muted-foreground flex-1">
                       {{ term.term_name }}
                     </span>

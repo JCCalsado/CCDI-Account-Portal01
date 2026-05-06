@@ -211,24 +211,26 @@ class AssessmentService
     // ─── Fee Computation ──────────────────────────────────────────────────────
 
     /**
-     * Compute the full assessment fee breakdown.
-     *
-     * NSTP RULE (enforced for ALL 6 courses):
-     *   $nstpLecUnits is clamped to NSTP_MINIMUM_UNITS (1.5) when > 0.
-     *   This is the final safety net — even if a caller accidentally passes 3,
-     *   it will be clamped to 1.5 before computing.
-     *
-     * DISCOUNT RULE:
-     *   discount_percentage applies ONLY to billable (non-NSTP) tuition.
-     *   NSTP tuition (1.5 × ₱364 = ₱546) is always billed at full price.
-     *   Lab and miscellaneous fees are NEVER discounted.
-     *
-     * @param  int        $lecUnits            Billable lec units (NSTP/PATHFIT excluded)
-     * @param  int        $labSubjects         Number of subjects with lab_units > 0
-     * @param  float      $nstpLecUnits        NSTP units — clamped to 1.5 if > 0
-     * @param  float      $discountPercentage  0–100. 0 = no discount.
-     * @param  array|null $rates               Output of loadRates(). Loaded fresh if null.
-     */
+ * Compute the full assessment fee breakdown.
+ *
+ * ── DISCOUNT RULES (Option A — revised) ──────────────────────────────────
+ *   discount < 100%:
+ *     Discount applies to ALL lec units including NSTP.
+ *     Formula: discounted_tuition = (lecUnits + nstpLecUnits) × rate × (1 - pct/100)
+ *
+ *   discount = 100%:
+ *     All billable lec units → ₱0.
+ *     NSTP (1.5 units) is excluded from the 100% discount and charged at full price.
+ *     Formula: tuition = nstpLecUnits × rate (= ₱546)
+ *
+ *   Lab and miscellaneous fees are NEVER discounted regardless of discount type.
+ *
+ * @param  float      $lecUnits            Billable lec units (PATHFIT excluded, NSTP excluded)
+ * @param  int        $labSubjects         Number of subjects with lab_units > 0
+ * @param  float      $nstpLecUnits        NSTP units — clamped to 1.5 if > 0
+ * @param  float      $discountPercentage  0–100. 0 = no discount.
+ * @param  array|null $rates               Output of loadRates(). Loaded fresh if null.
+    */
     public static function compute(
         float  $lecUnits,
         int    $labSubjects,
@@ -238,15 +240,10 @@ class AssessmentService
     ): array {
         $rates ??= self::loadRates();
 
-        // ── NSTP BILLING RULE — ALL 6 COURSES ────────────────────────────────
-        // DB stores NSTP as 3 lec_units for every course.
-        // Admin instruction: ALWAYS bill at 1.5 units only.
-        // Codes: CS-NSTP1/2, IT-NSTP1/2, ACT-NSTP1/2,
-        //        EET-NSTP1/2, ECE-NSTP1/2, IS-NSTP1/2
+        // NSTP billing safety clamp — always 1.5 units, never the DB value (3)
         if ($nstpLecUnits > 0) {
-            $nstpLecUnits = self::NSTP_MINIMUM_UNITS; // clamp to 1.5
+            $nstpLecUnits = self::NSTP_MINIMUM_UNITS; // 1.5
         }
-        // ─────────────────────────────────────────────────────────────────────
 
         $tuitionPerUnit   = $rates['tuition_per_unit'];
         $labFeePerSubject = $rates['lab_fee_per_subject'];
@@ -256,37 +253,46 @@ class AssessmentService
         $labFee  = round($labSubjects * $labFeePerSubject, 2);
         $miscFee = round($rates['misc_total'], 2);
 
-        // NSTP billing rule:
-        // NSTP (1.5 units) is ALWAYS billed at full price regardless of discount
-        // Discount applies ONLY to non-NSTP lec units
+        // Raw tuition values before discount
         $rawBillableTuition = round($lecUnits * $tuitionPerUnit, 2);
-        $nstpTuition        = round($nstpLecUnits * $tuitionPerUnit, 2);
+        $rawNstpTuition     = round($nstpLecUnits * $tuitionPerUnit, 2);
+        $rawTotalTuition    = round(($lecUnits + $nstpLecUnits) * $tuitionPerUnit, 2);
 
-        if ($discountPercentage > 0 && $discountPercentage <= 100) {
-            $discountSaving     = round($rawBillableTuition * ($discountPercentage / 100), 2);
-            $discountedBillable = round($rawBillableTuition - $discountSaving, 2);
-            $discountApplied    = "percentage_{$discountPercentage}pct";
+        // ── DISCOUNT COMPUTATION ─────────────────────────────────────────────
+        if ($discountPercentage == 100.0) {
+            // 100% discount: all billable lec units → ₱0
+            // NSTP is excluded from the 100% discount — charged at full price
+            $finalTuition    = $rawNstpTuition;         // only NSTP survives
+            $discountSaving  = $rawBillableTuition;      // entire non-NSTP tuition waived
+            $discountApplied = 'full_100pct';
+
+        } elseif ($discountPercentage > 0 && $discountPercentage < 100) {
+            // Partial discount: applies to ALL lec units including NSTP
+            $discountSaving  = round($rawTotalTuition * ($discountPercentage / 100), 2);
+            $finalTuition    = round($rawTotalTuition - $discountSaving, 2);
+            $discountApplied = "percentage_{$discountPercentage}pct";
+
         } else {
-            $discountSaving     = 0.0;
-            $discountedBillable = $rawBillableTuition;
-            $discountApplied    = 'none';
+            // No discount
+            $discountSaving  = 0.0;
+            $finalTuition    = $rawTotalTuition;
+            $discountApplied = 'none';
         }
+        // ─────────────────────────────────────────────────────────────────────
 
-        $finalTuition = $discountedBillable + $nstpTuition;
-        $total        = round($finalTuition + $labFee + $entrepreneurFee + $miscFee, 2);
-        $total        = round($finalTuition + $labFee + $entrepreneurFee + $miscFee, 2);
+        $total = round($finalTuition + $labFee + $entrepreneurFee + $miscFee, 2);
 
         return [
             'tuition_fee'          => round($finalTuition, 2),
-            'billable_tuition'     => round($discountedBillable, 2),
-            'nstp_tuition'         => round($nstpTuition, 2),
+            'billable_tuition'     => round($finalTuition, 2),   // same as tuition_fee under new rule
+            'nstp_tuition'         => $discountPercentage == 100.0 ? round($rawNstpTuition, 2) : 0.0,
             'lab_fee'              => round($labFee, 2),
             'entrepreneurship_fee' => round($entrepreneurFee, 2),
             'misc_fee'             => round($miscFee, 2),
             'total'                => $total,
             'discount_saving'      => round($discountSaving, 2),
             'discount_applied'     => $discountApplied,
-            'raw_billable_tuition' => $rawBillableTuition,
+            'raw_billable_tuition' => $rawTotalTuition,          // total lec+nstp before discount
         ];
     }
 
