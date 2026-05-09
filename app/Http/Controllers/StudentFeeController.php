@@ -138,16 +138,18 @@ class StudentFeeController extends Controller
         if ($request->filled('student_id')) {
             $student = User::where('role', UserRoleEnum::STUDENT)
                 ->where('id', $request->student_id)
+                ->with('account')
                 ->first();
 
             if ($student) {
                 $preselectedStudent = [
-                    'id'           => $student->id,
-                    'name'         => $this->buildStudentName($student),
-                    'account_id'   => $student->account_id,
-                    'course'       => $student->course,
-                    'year_level'   => $student->year_level,
-                    'is_irregular' => (bool) $student->is_irregular,
+                    'id'                => $student->id,
+                    'name'              => $this->buildStudentName($student),
+                    'account_id'        => $student->account_id,
+                    'course'            => $student->course,
+                    'year_level'        => $student->year_level,
+                    'is_irregular'      => (bool) $student->is_irregular,
+                    'remaining_balance' => max(0, (float) ($student->account?->balance ?? 0)),
                 ];
             }
         }
@@ -183,6 +185,20 @@ class StudentFeeController extends Controller
         $validated['lab_units']           = (int) $validated['lab_units'];
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
+
+        // ── Remaining balance guard ──────────────────────────────────────────
+        // Block new assessment if the student still has an unpaid balance.
+        $studentAccount   = \App\Models\Account::where('user_id', $validated['user_id'])->first();
+        $remainingBalance = max(0, (float) ($studentAccount?->balance ?? 0));
+
+        if ($remainingBalance > 0) {
+            return back()->withErrors([
+                'user_id' => 'This student has a remaining balance of \u20b1' .
+                    number_format($remainingBalance, 2) .
+                    '. Please settle the outstanding balance before creating a new assessment.',
+            ]);
+        }
+        // ────────────────────────────────────────────────────────────────────
 
         try {
             DB::transaction(function () use ($validated) {
@@ -656,16 +672,18 @@ class StudentFeeController extends Controller
                       ->orWhere('account_id', 'like', "%{$q}%");
             })
             ->where('is_active', true)
+            ->with('account')
             ->select('id', 'last_name', 'first_name', 'middle_initial', 'account_id', 'course', 'year_level', 'is_irregular')
             ->limit(10)
             ->get()
             ->map(fn ($u) => [
-                'id'           => $u->id,
-                'name'         => $this->buildStudentName($u),
-                'account_id'   => $u->account_id,
-                'course'       => $u->course,
-                'year_level'   => $u->year_level,
-                'is_irregular' => (bool) $u->is_irregular,
+                'id'                => $u->id,
+                'name'              => $this->buildStudentName($u),
+                'account_id'        => $u->account_id,
+                'course'            => $u->course,
+                'year_level'        => $u->year_level,
+                'is_irregular'      => (bool) $u->is_irregular,
+                'remaining_balance' => max(0, (float) ($u->account?->balance ?? 0)),
             ]);
 
         return response()->json(['students' => $students]);

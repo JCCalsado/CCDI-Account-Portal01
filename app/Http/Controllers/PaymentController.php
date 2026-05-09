@@ -783,7 +783,8 @@ class PaymentController extends Controller
     //  PROOF OF PAYMENT UPLOAD
     // ─────────────────────────────────────────────────────────────────────────
 
-    public function showProofForm(Request $request, Transaction $transaction): Response
+
+    public function showProofForm(Request $request, Transaction $transaction): Response|\Illuminate\Http\RedirectResponse
     {
         $user = $request->user();
 

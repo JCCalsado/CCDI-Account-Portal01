@@ -31,6 +31,7 @@ interface PreselectedStudent {
   course: string
   year_level: string
   is_irregular: boolean
+  remaining_balance: number
 }
 
 interface CurriculumSubject {
@@ -68,6 +69,11 @@ const studentSearch   = ref('')
 const searchResults   = ref<PreselectedStudent[]>([])
 const searchLoading   = ref(false)
 const selectedStudent = ref<PreselectedStudent | null>(props.preselectedStudent ?? null)
+
+// Guard: student has an unpaid balance from a previous assessment
+const hasRemainingBalance = computed(
+  () => (selectedStudent.value?.remaining_balance ?? 0) > 0
+)
 
 let searchTimeout: ReturnType<typeof setTimeout>
 
@@ -302,6 +308,7 @@ const paymentTermBreakdown = computed(() => {
 
 function submit() {
   if (! selectedStudent.value) return
+  if (hasRemainingBalance.value) return
   form.user_id           = selectedStudent.value.id
   form.nstp_lec_units    = nstpLecUnits.value
   form.term_percentages  = { ...editablePercentages.value }
@@ -414,6 +421,35 @@ function submit() {
               </div>
             </CardContent>
           </Card>
+
+          <!-- ── Remaining Balance Warning ──────────────────────────────── -->
+          <div
+            v-if="selectedStudent && hasRemainingBalance"
+            class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 dark:bg-red-950/40 px-4 py-4 text-sm"
+          >
+            <AlertTriangle class="h-5 w-5 shrink-0 text-red-600 mt-0.5" />
+            <div class="flex-1">
+              <p class="font-bold text-red-800 dark:text-red-200">Cannot Create Assessment — Unsettled Balance</p>
+              <p class="text-red-700 dark:text-red-300 mt-1">
+                This student has an outstanding balance of
+                <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>.
+                The remaining balance must be fully settled before a new assessment can be created.
+              </p>
+              <p class="text-xs text-red-600 dark:text-red-400 mt-2">
+                Go to the student's profile to record a payment, then return here.
+              </p>
+              <div class="mt-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  class="border-red-400 text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900"
+                  @click="router.visit(route('student-fees.show', selectedStudent.id))"
+                >
+                  View Student Profile &amp; Record Payment
+                </Button>
+              </div>
+            </div>
+          </div>
 
           <!-- Irregular student notice -->
           <div v-if="selectedStudent?.is_irregular"
@@ -603,7 +639,7 @@ function submit() {
             <Button variant="outline" @click="router.visit(route('student-fees.index'))">Cancel</Button>
             <button
               type="button"
-              :disabled="form.processing || !selectedStudent || totalAssessment === 0"
+              :disabled="form.processing || !selectedStudent || totalAssessment === 0 || hasRemainingBalance"
               class="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs transition-all hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
               @click.prevent="submit"
             >
