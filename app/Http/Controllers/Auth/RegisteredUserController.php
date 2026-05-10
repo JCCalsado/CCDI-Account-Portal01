@@ -69,7 +69,7 @@ class RegisteredUserController extends Controller
             'middle_initial'           => 'nullable|string|max:10',
             'email'                    => 'required|string|lowercase|email|max:255|unique:' . User::class,
             'password'                 => ['required', 'confirmed', Rules\Password::defaults()],
-            'birthday'                 => 'required|date',
+            'birthday'                 => 'required|date|before:today',
             'year_level'               => 'required|string|max:50',
             'course'                   => ['required', 'string', 'in:' . implode(',', self::COURSES)],
             'address_house_lot_unit'   => 'required|string|max:255',

@@ -46,6 +46,28 @@ const form = useForm({
 
 const nextStep = () => { step.value = 2; };
 
+/**
+ * Clamps the year portion of a date input value to exactly 4 digits.
+ * Browsers allow users to type beyond 4 digits in the year segment of
+ * type="date" inputs, producing values like "20251-06-15". This handler
+ * intercepts that and truncates the year back to 4 characters.
+ */
+const clampBirthdayYear = (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    const value = input.value; // format: YYYY-MM-DD
+
+    if (!value) return;
+
+    const parts = value.split('-');
+    // parts[0] is the year segment; only act if it exceeds 4 digits
+    if (parts[0] && parts[0].length > 4) {
+        parts[0] = parts[0].slice(0, 4);
+        const clamped = parts.join('-');
+        input.value = clamped;
+        form.birthday = clamped;
+    }
+};
+
 const submit = () => {
     form.post(route('register.store'), {
         onFinish: () => {
@@ -87,7 +109,15 @@ const submit = () => {
                 <div class="grid grid-cols-2 gap-3">
                     <div class="grid gap-2">
                         <Label for="birthday">Birthday</Label>
-                        <Input id="birthday" type="date" required v-model="form.birthday" />
+                        <Input
+                            id="birthday"
+                            type="date"
+                            required
+                            min="1900-01-01"
+                            :max="new Date().toISOString().split('T')[0]"
+                            v-model="form.birthday"
+                            @input="clampBirthdayYear"
+                        />
                         <InputError :message="form.errors.birthday" />
                     </div>
                     <div class="grid gap-2">
@@ -144,6 +174,7 @@ const submit = () => {
                     </div>
                     <p class="text-xs text-gray-400">Regular students follow the standard curriculum. Irregular students have custom unit loads.</p>
                 </div>
+
                 <!-- Row 5: Address -->
                 <div class="grid gap-2">
                     <Label>Address</Label>
