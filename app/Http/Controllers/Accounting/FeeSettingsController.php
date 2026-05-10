@@ -3,35 +3,38 @@
 namespace App\Http\Controllers\Accounting;
 
 use App\Http\Controllers\Controller;
+use App\Models\CourseUnitPreset;
 use App\Models\FeeSetting;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 
 class FeeSettingsController extends Controller
 {
-    // ─── Index ────────────────────────────────────────────────────────────────
-
     public function index()
     {
         $settings = FeeSetting::where('is_active', true)
             ->orderByRaw("FIELD(category, 'rate', 'miscellaneous', 'other', 'term')")
-            ->orderBy('sort_order')
-            ->orderBy('id')
-            ->get()
-            ->groupBy('category')
-            ->toArray();
+            ->orderBy('sort_order')->orderBy('id')
+            ->get()->groupBy('category')->toArray();
 
         $miscTotal = FeeSetting::whereIn('category', ['miscellaneous', 'other'])
-            ->where('is_active', true)
-            ->sum('amount');
+            ->where('is_active', true)->sum('amount');
+
+        $presets = CourseUnitPreset::where('is_active', true)
+            ->orderBy('course')
+            ->orderByRaw("FIELD(year_level, '1st Year', '2nd Year', '3rd Year', '4th Year')")
+            ->orderByRaw("FIELD(semester, '1st Sem', '2nd Sem')")
+            ->get()
+            ->map(fn($p) => array_merge($p->toArray(), [
+                'total_units' => $p->lec_units + $p->lab_units,
+            ]))->toArray();
 
         return Inertia::render('Accounting/FeeSettings', [
             'settings'  => $settings,
             'miscTotal' => round($miscTotal, 2),
+            'presets'   => $presets,
         ]);
     }
-
-    // ─── Update (existing fee item amount) ────────────────────────────────────
 
     public function update(Request $request, FeeSetting $feeSetting)
     {
@@ -40,22 +43,16 @@ class FeeSettingsController extends Controller
             'label'  => ['sometimes', 'string', 'max:100'],
         ]);
 
-        // Term percentages: validate sum = 100
         if ($feeSetting->category === 'term') {
             $this->validateTermPercentages($feeSetting->key, (float) $validated['amount']);
         }
 
         $updateData = ['amount' => $validated['amount']];
-        if (isset($validated['label'])) {
-            $updateData['label'] = $validated['label'];
-        }
+        if (isset($validated['label'])) $updateData['label'] = $validated['label'];
 
         $feeSetting->update($updateData);
-
         return back()->with('success', "'{$feeSetting->label}' updated successfully.");
     }
-
-    // ─── Store (add new misc fee item) ────────────────────────────────────────
 
     public function store(Request $request)
     {
@@ -65,49 +62,30 @@ class FeeSettingsController extends Controller
             'category' => ['required', 'in:miscellaneous,other'],
         ]);
 
-        // Generate a unique key
-        $key = FeeSetting::generateKey($validated['label'], $validated['category']);
-
-        // Determine sort_order (append at end of category)
+        $key      = FeeSetting::generateKey($validated['label'], $validated['category']);
         $maxOrder = FeeSetting::where('category', $validated['category'])->max('sort_order') ?? 0;
 
         FeeSetting::create([
-            'key'          => $key,
-            'label'        => $validated['label'],
-            'amount'       => $validated['amount'],
-            'category'     => $validated['category'],
-            'is_active'    => true,
-            'sort_order'   => $maxOrder + 1,
-            'is_deletable' => true,
+            'key' => $key, 'label' => $validated['label'],
+            'amount' => $validated['amount'], 'category' => $validated['category'],
+            'is_active' => true, 'sort_order' => $maxOrder + 1, 'is_deletable' => true,
         ]);
 
         return back()->with('success', "'{$validated['label']}' added to fee settings.");
     }
 
-    // ─── Destroy (remove a misc fee item) ─────────────────────────────────────
-
     public function destroy(FeeSetting $feeSetting)
     {
-        // System-critical rows (rates, terms) cannot be deleted
-        if (! $feeSetting->is_deletable) {
-            return back()->withErrors([
-                'fee' => "'{$feeSetting->label}' is a system fee and cannot be removed.",
-            ]);
+        if (!$feeSetting->is_deletable) {
+            return back()->withErrors(['fee' => "'{$feeSetting->label}' is a system fee and cannot be removed."]);
         }
-
         if (in_array($feeSetting->category, ['rate', 'term'])) {
-            return back()->withErrors([
-                'fee' => 'Billing rates and payment terms cannot be deleted.',
-            ]);
+            return back()->withErrors(['fee' => 'Billing rates and payment terms cannot be deleted.']);
         }
-
         $label = $feeSetting->label;
         $feeSetting->delete();
-
         return back()->with('success', "'{$label}' removed from fee settings.");
     }
-
-    // ─── Bulk Update ──────────────────────────────────────────────────────────
 
     public function bulkUpdate(Request $request)
     {
@@ -117,7 +95,6 @@ class FeeSettingsController extends Controller
             'settings.*.amount' => 'required|numeric|min:0|max:99999.99',
         ]);
 
-        // Validate term percentages sum to 100 if any term rows are included
         $termUpdates = collect($validated['settings'])->filter(function ($item) {
             $setting = FeeSetting::find($item['id']);
             return $setting && $setting->category === 'term';
@@ -127,42 +104,41 @@ class FeeSettingsController extends Controller
             $newTermAmounts = [];
             foreach ($validated['settings'] as $item) {
                 $s = FeeSetting::find($item['id']);
-                if ($s && $s->category === 'term') {
-                    $newTermAmounts[$s->key] = (float) $item['amount'];
-                }
+                if ($s && $s->category === 'term') $newTermAmounts[$s->key] = (float) $item['amount'];
             }
-
-            $allTerms = FeeSetting::where('category', 'term')->get();
-            $total    = 0;
-            foreach ($allTerms as $term) {
+            $total = 0;
+            foreach (FeeSetting::where('category', 'term')->get() as $term) {
                 $total += $newTermAmounts[$term->key] ?? (float) $term->amount;
             }
-
             if (abs($total - 100.00) > 0.01) {
-                return back()->withErrors([
-                    'terms' => "Payment term percentages must sum to 100%. Current total: {$total}%",
-                ]);
+                return back()->withErrors(['terms' => "Payment term percentages must sum to 100%. Current total: {$total}%"]);
             }
         }
 
         foreach ($validated['settings'] as $item) {
             FeeSetting::where('id', $item['id'])->update(['amount' => $item['amount']]);
         }
-
         return back()->with('success', 'Fee settings saved successfully.');
     }
 
-    // ─── Private ──────────────────────────────────────────────────────────────
+    public function updatePreset(Request $request, CourseUnitPreset $preset)
+    {
+        $validated = $request->validate([
+            'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
+            'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
+            'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
+        ]);
+        $preset->update($validated);
+        return back()->with('success', "{$preset->course} {$preset->year_level} {$preset->semester} updated.");
+    }
 
     private function validateTermPercentages(string $updatedKey, float $newValue): void
     {
         $allTerms = FeeSetting::where('category', 'term')->get();
-        $total    = 0;
-
+        $total = 0;
         foreach ($allTerms as $term) {
             $total += ($term->key === $updatedKey) ? $newValue : (float) $term->amount;
         }
-
         if (abs($total - 100.00) > 0.01) {
             abort(422, "Payment term percentages must sum to 100%. Current total: {$total}%");
         }

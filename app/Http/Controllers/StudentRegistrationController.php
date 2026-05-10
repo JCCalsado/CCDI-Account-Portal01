@@ -70,6 +70,7 @@ class StudentRegistrationController extends Controller
             'year_level'     => 'required|string',
             'course'         => 'required|string',
             'account_id'     => 'nullable|string|unique:users,account_id',
+            'is_irregular'   => 'nullable|boolean',
         ]);
 
         DB::beginTransaction();
@@ -101,6 +102,7 @@ class StudentRegistrationController extends Controller
                 'course'            => $validated['course'],
                 'account_id'        => $accountId,
                 'role'              => UserRoleEnum::STUDENT->value,
+                'is_irregular'      => $validated['is_irregular'] ?? false,
                 'is_active'         => true,
                 'status'            => User::STATUS_ACTIVE,
                 'email_verified_at' => now(),

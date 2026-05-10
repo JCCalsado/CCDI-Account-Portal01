@@ -1,0 +1,1 @@
+import{d as a,c as o,a as t,t as n,o as c}from"./app-DkUT3F2l.js";const l={class:"p-6"},r={class:"text-gray-600"},i=a({__name:"Analytics",props:{paymentsByMethod:{},message:{}},setup(e){return(m,s)=>(c(),o("div",l,[s[0]||(s[0]=t("h1",{class:"mb-4 text-2xl font-bold"},"Payment Analytics",-1)),t("p",r,n(e.message),1)]))}});export{i as default};
