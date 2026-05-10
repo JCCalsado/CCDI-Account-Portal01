@@ -33,6 +33,7 @@ const form = useForm({
     email: '',
     year_level: '',
     course: '',
+    is_irregular: false,
     address_house_lot_unit: '',
     address_street_name: '',
     address_barangay: '',
@@ -128,6 +129,21 @@ const submit = () => {
                     </div>
                 </div>
 
+                <!-- Row 4b: Student Type -->
+                <div class="grid gap-2">
+                    <Label>Student Type</Label>
+                    <div class="flex gap-4 mt-1">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="is_irregular" :value="false" v-model="form.is_irregular" class="accent-blue-600" />
+                            <span class="text-sm font-medium text-gray-700">Regular</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="is_irregular" :value="true" v-model="form.is_irregular" class="accent-amber-500" />
+                            <span class="text-sm font-medium text-amber-700">Irregular</span>
+                        </label>
+                    </div>
+                    <p class="text-xs text-gray-400">Regular students follow the standard curriculum. Irregular students have custom unit loads.</p>
+                </div>
                 <!-- Row 5: Address -->
                 <div class="grid gap-2">
                     <Label>Address</Label>

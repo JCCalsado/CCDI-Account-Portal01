@@ -422,34 +422,38 @@ function submit() {
             </CardContent>
           </Card>
 
-          <!-- ── Remaining Balance Warning ──────────────────────────────── -->
-          <div
-            v-if="selectedStudent && hasRemainingBalance"
-            class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 dark:bg-red-950/40 px-4 py-4 text-sm"
-          >
-            <AlertTriangle class="h-5 w-5 shrink-0 text-red-600 mt-0.5" />
-            <div class="flex-1">
-              <p class="font-bold text-red-800 dark:text-red-200">Cannot Create Assessment — Unsettled Balance</p>
-              <p class="text-red-700 dark:text-red-300 mt-1">
-                This student has an outstanding balance of
-                <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>.
-                The remaining balance must be fully settled before a new assessment can be created.
-              </p>
-              <p class="text-xs text-red-600 dark:text-red-400 mt-2">
-                Go to the student's profile to record a payment, then return here.
-              </p>
-              <div class="mt-3">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  class="border-red-400 text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900"
-                  @click="router.visit(route('student-fees.show', selectedStudent.id))"
-                >
-                  View Student Profile &amp; Record Payment
-                </Button>
-              </div>
+          <!-- Unit Breakdown Table -->
+          <div v-if="selectedStudent && (curriculumSubjects.length > 0 || form.lec_units > 0)" class="rounded-xl border border-gray-200 bg-white overflow-hidden">
+            <div class="px-5 py-3 bg-gray-50 border-b border-gray-200">
+              <h3 class="text-sm font-semibold text-gray-700">Unit Breakdown</h3>
+              <p class="text-xs text-gray-400 mt-0.5">{{ selectedStudent.course }} &middot; {{ selectedStudent.year_level }} &middot; {{ form.semester === "1st" ? "1st Semester" : form.semester === "2nd" ? "2nd Semester" : "Summer" }} &middot; {{ form.school_year }}</p>
             </div>
+            <table class="w-full text-sm">
+              <thead class="text-xs uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th class="text-left px-5 py-2">Course</th>
+                  <th class="text-left px-5 py-2">Year Level</th>
+                  <th class="text-left px-5 py-2">Semester</th>
+                  <th class="text-center px-4 py-2">Lec Units</th>
+                  <th class="text-center px-4 py-2">Lab Units</th>
+                  <th class="text-center px-4 py-2">Lab Subjects</th>
+                  <th class="text-center px-4 py-2">Total Units</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="border-t border-gray-100">
+                  <td class="px-5 py-3 text-gray-700">{{ selectedStudent.course }}</td>
+                  <td class="px-5 py-3 text-gray-700">{{ selectedStudent.year_level }}</td>
+                  <td class="px-5 py-3 text-gray-700">{{ form.semester === "1st" ? "1st Semester" : form.semester === "2nd" ? "2nd Semester" : "Summer" }}</td>
+                  <td class="px-4 py-3 text-center font-mono font-semibold text-gray-900">{{ form.lec_units }}</td>
+                  <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
+                  <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
+                  <td class="px-4 py-3 text-center font-mono font-bold text-blue-700">{{ Number(form.lec_units) + Number(form.lab_units) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
+
 
           <!-- Irregular student notice -->
           <div v-if="selectedStudent?.is_irregular"
@@ -633,6 +637,19 @@ function submit() {
 
             </CardContent>
           </Card>
+
+          <!-- Cannot Create Assessment Warning -->
+          <div v-if="selectedStudent && hasRemainingBalance" class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 px-4 py-4 text-sm">
+            <AlertTriangle class="h-5 w-5 shrink-0 text-red-600 mt-0.5" />
+            <div class="flex-1">
+              <p class="font-bold text-red-800">Cannot Create Assessment — Unsettled Balance</p>
+              <p class="text-red-700 mt-1">This student has an outstanding balance of <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>. The remaining balance must be fully settled before a new assessment can be created.</p>
+              <p class="text-xs text-red-600 mt-2">Go to the student's profile to record a payment, then return here.</p>
+              <div class="mt-3">
+                <Button variant="outline" size="sm" class="border-red-400 text-red-700 hover:bg-red-100" @click="router.visit(route('student-fees.show', selectedStudent.id))">View Student Profile &amp; Record Payment</Button>
+              </div>
+            </div>
+          </div>
 
           <!-- Submit -->
           <div class="flex gap-3 justify-end">
