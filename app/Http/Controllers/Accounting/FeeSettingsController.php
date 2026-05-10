@@ -22,17 +22,24 @@ class FeeSettingsController extends Controller
 
         $presets = CourseUnitPreset::where('is_active', true)
             ->orderBy('course')
-            ->orderByRaw("FIELD(year_level, '1st Year', '2nd Year', '3rd Year', '4th Year')")
-            ->orderByRaw("FIELD(semester, '1st Sem', '2nd Sem')")
+            ->orderByRaw("FIELD(year_level, '1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year')")
+            ->orderByRaw("FIELD(semester, '1st Sem', '2nd Sem', 'Summer')")
             ->get()
             ->map(fn($p) => array_merge($p->toArray(), [
                 'total_units' => $p->lec_units + $p->lab_units,
             ]))->toArray();
 
+        $existingCourses = CourseUnitPreset::distinct()
+            ->orderBy('course')
+            ->pluck('course')
+            ->values()
+            ->toArray();
+
         return Inertia::render('Accounting/FeeSettings', [
-            'settings'  => $settings,
-            'miscTotal' => round($miscTotal, 2),
-            'presets'   => $presets,
+            'settings'        => $settings,
+            'miscTotal'       => round($miscTotal, 2),
+            'presets'         => $presets,
+            'existingCourses' => $existingCourses,
         ]);
     }
 
@@ -66,9 +73,13 @@ class FeeSettingsController extends Controller
         $maxOrder = FeeSetting::where('category', $validated['category'])->max('sort_order') ?? 0;
 
         FeeSetting::create([
-            'key' => $key, 'label' => $validated['label'],
-            'amount' => $validated['amount'], 'category' => $validated['category'],
-            'is_active' => true, 'sort_order' => $maxOrder + 1, 'is_deletable' => true,
+            'key'          => $key,
+            'label'        => $validated['label'],
+            'amount'       => $validated['amount'],
+            'category'     => $validated['category'],
+            'is_active'    => true,
+            'sort_order'   => $maxOrder + 1,
+            'is_deletable' => true,
         ]);
 
         return back()->with('success', "'{$validated['label']}' added to fee settings.");
@@ -121,15 +132,57 @@ class FeeSettingsController extends Controller
         return back()->with('success', 'Fee settings saved successfully.');
     }
 
+    // ─── Course Unit Presets ───────────────────────────────────────────────────
+
+    public function storePreset(Request $request)
+    {
+        $validated = $request->validate([
+            'course'            => ['required', 'string', 'max:150'],
+            'year_level'        => ['required', 'string', 'in:1st Year,2nd Year,3rd Year,4th Year,5th Year'],
+            'semester'          => ['required', 'string', 'in:1st Sem,2nd Sem,Summer'],
+            'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
+            'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
+            'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
+            'has_nstp'          => ['boolean'],
+        ]);
+
+        $exists = CourseUnitPreset::where('course', $validated['course'])
+            ->where('year_level', $validated['year_level'])
+            ->where('semester', $validated['semester'])
+            ->exists();
+
+        if ($exists) {
+            return back()->withErrors([
+                'preset' => "A preset for {$validated['course']} — {$validated['year_level']} — {$validated['semester']} already exists.",
+            ]);
+        }
+
+        CourseUnitPreset::create(array_merge($validated, [
+            'has_nstp'  => (bool) ($validated['has_nstp'] ?? false),
+            'is_active' => true,
+        ]));
+
+        return back()->with('success', "Preset for {$validated['course']} {$validated['year_level']} {$validated['semester']} created.");
+    }
+
     public function updatePreset(Request $request, CourseUnitPreset $preset)
     {
         $validated = $request->validate([
             'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
             'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
             'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
+            'has_nstp'          => ['required', 'boolean'],
         ]);
+
         $preset->update($validated);
         return back()->with('success', "{$preset->course} {$preset->year_level} {$preset->semester} updated.");
+    }
+
+    public function destroyPreset(CourseUnitPreset $preset)
+    {
+        $label = "{$preset->course} {$preset->year_level} {$preset->semester}";
+        $preset->update(['is_active' => false]);
+        return back()->with('success', "Preset for {$label} deactivated.");
     }
 
     private function validateTermPercentages(string $updatedKey, float $newValue): void

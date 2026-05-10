@@ -13,7 +13,7 @@ import {
   CheckCircle2, Loader2, AlertTriangle, Info,
 } from 'lucide-vue-next'
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface FeeRates {
   tuition_per_unit: number
@@ -46,7 +46,7 @@ interface CurriculumSubject {
   is_billable: boolean
 }
 
-// ─── Props ───────────────────────────────────────────────────────────────────
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 const props = defineProps<{
   preselectedStudent: PreselectedStudent | null
@@ -55,7 +55,7 @@ const props = defineProps<{
 
 const { formatCurrency } = useDataFormatting()
 
-// ─── Breadcrumbs ─────────────────────────────────────────────────────────────
+// ─── Breadcrumbs ──────────────────────────────────────────────────────────────
 
 const breadcrumbs = [
   { title: 'Dashboard',      href: route('accounting.dashboard') },
@@ -70,7 +70,6 @@ const searchResults   = ref<PreselectedStudent[]>([])
 const searchLoading   = ref(false)
 const selectedStudent = ref<PreselectedStudent | null>(props.preselectedStudent ?? null)
 
-// Guard: student has an unpaid balance from a previous assessment
 const hasRemainingBalance = computed(
   () => (selectedStudent.value?.remaining_balance ?? 0) > 0
 )
@@ -99,7 +98,6 @@ function selectStudent(student: PreselectedStudent) {
   curriculumSubjects.value = []
   curriculumMessage.value  = ''
   hasNstp.value            = false
-  nstpLecUnits.value       = 0
 }
 
 function clearStudent() {
@@ -110,7 +108,6 @@ function clearStudent() {
   curriculumSubjects.value = []
   curriculumMessage.value  = ''
   hasNstp.value            = false
-  nstpLecUnits.value       = 0
 }
 
 // ─── Curriculum Auto-Populate ─────────────────────────────────────────────────
@@ -119,52 +116,29 @@ const curriculumLoading  = ref(false)
 const curriculumSubjects = ref<CurriculumSubject[]>([])
 const curriculumMessage  = ref('')
 
-const hasNstp      = ref(false)
-const nstpLecUnits = ref(0)
+// ── NSTP state ────────────────────────────────────────────────────────────────
+//
+// hasNstp  = user-controllable checkbox.
+//            Pre-populated from the curriculum API (preset.has_nstp OR subjects detection).
+//            Can be toggled manually by accounting to handle irregular students or edge cases.
+//
+// nstpLecUnits = pure computed from hasNstp.
+//                Always 1.5 when NSTP is active, always 0 when not.
+//                Never a stale ref — derived solely from the checkbox.
+//
+const hasNstp = ref(false)
 
-async function loadCurriculum() {
-  const student = selectedStudent.value
-  if (! student || student.is_irregular) {
-    curriculumSubjects.value = []
-    curriculumMessage.value  = student?.is_irregular ? 'Irregular student — enter units manually.' : ''
-    hasNstp.value = false
-    nstpLecUnits.value = 0
-    return
-  }
-  if (! form.semester) return
-
-  curriculumLoading.value  = true
-  curriculumSubjects.value = []
-  curriculumMessage.value  = ''
-  hasNstp.value            = false
-  nstpLecUnits.value       = 0
-
-  try {
-    const res  = await fetch(
-      route('student-fees.curriculum-units') +
-      '?student_id=' + student.id +
-      '&semester='   + encodeURIComponent(form.semester)
-    )
-    const data = await res.json()
-
-    if (data.found) {
-      curriculumSubjects.value = data.subjects
-      form.lec_units           = data.billable_lec_units
-      form.lab_units           = data.lab_subject_count
-      hasNstp.value            = data.has_nstp ?? false
-      nstpLecUnits.value       = data.nstp_lec_units ?? 0
-    } else {
-      curriculumMessage.value = data.message ?? 'No curriculum data found for this student.'
-    }
-  } catch {
-    curriculumMessage.value = 'Could not load curriculum — enter units manually.'
-  } finally {
-    curriculumLoading.value = false
-  }
-}
+const NSTP_UNITS = 1.5  // mirrors AssessmentService::NSTP_MINIMUM_UNITS
 
 // ─── Form ─────────────────────────────────────────────────────────────────────
-
+//
+// form.lec_units   = BILLABLE lecture units only — NSTP excluded.
+//                    This is what the backend expects and what AssessmentService::compute()
+//                    receives as the `$lecUnits` parameter.
+//
+// form.nstp_lec_units = 1.5 when NSTP is on, 0 when off.
+//                       Sent to the backend separately.
+//
 const form = useForm({
   user_id:             props.preselectedStudent?.id ?? 0,
   semester:            '1st' as '1st' | '2nd' | 'Summer',
@@ -179,55 +153,91 @@ const form = useForm({
 const currentYear = new Date().getFullYear()
 form.school_year  = `${currentYear}-${currentYear + 1}`
 
-watch(nstpLecUnits, (val) => { form.nstp_lec_units = val })
+async function loadCurriculum() {
+  const student = selectedStudent.value
+  if (!student || student.is_irregular) {
+    curriculumSubjects.value = []
+    curriculumMessage.value  = student?.is_irregular ? 'Irregular student — enter units manually.' : ''
+    hasNstp.value = false
+    return
+  }
+  if (!form.semester) return
+
+  curriculumLoading.value  = true
+  curriculumSubjects.value = []
+  curriculumMessage.value  = ''
+  hasNstp.value            = false
+
+  try {
+    const res  = await fetch(
+      route('student-fees.curriculum-units') +
+      '?student_id=' + student.id +
+      '&semester='   + encodeURIComponent(form.semester)
+    )
+    const data = await res.json()
+
+    if (data.found) {
+      curriculumSubjects.value = data.subjects
+      form.lec_units           = data.billable_lec_units  // billable only — NSTP excluded
+      form.lab_units           = data.lab_subject_count
+      // has_nstp from API is the merged result of subjects-table detection + preset flag
+      hasNstp.value            = data.has_nstp ?? false
+    } else {
+      curriculumMessage.value = data.message ?? 'No curriculum data found for this student.'
+    }
+  } catch {
+    curriculumMessage.value = 'Could not load curriculum — enter units manually.'
+  } finally {
+    curriculumLoading.value = false
+  }
+}
 
 watch([selectedStudent, () => form.semester], () => {
-  if (selectedStudent.value && ! selectedStudent.value.is_irregular) loadCurriculum()
+  if (selectedStudent.value && !selectedStudent.value.is_irregular) loadCurriculum()
 })
 
-// ─── Live Fee Computation (Option A discount rules) ───────────────────────────
-//
-//  discount < 100% : applies to ALL lec units including NSTP
-//  discount = 100% : all billable lec units → ₱0, NSTP (1.5 units) charged at full price
-//  lab + misc      : never discounted regardless
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Derived NSTP values ──────────────────────────────────────────────────────
 
+// Always derived from the checkbox — never stale.
+const nstpLecUnits = computed(() => hasNstp.value ? NSTP_UNITS : 0)
+
+// Keep form.nstp_lec_units in sync for backend submission
+watch(nstpLecUnits, (val) => { form.nstp_lec_units = val }, { immediate: true })
+
+// ─── Live Fee Computation ─────────────────────────────────────────────────────
+//
+// Discount rules (mirrors AssessmentService::compute exactly):
+//   discount < 100% : applies to ALL lec units including NSTP
+//   discount = 100% : all billable lec units → ₱0, NSTP (1.5 units) charged at full price
+//   lab + misc      : never discounted regardless
+//
 const rate = computed(() => props.feeRates.tuition_per_unit)
 
-// Total lec units sent to billing = billable + NSTP
-const totalLecUnits = computed(() =>
-  Number(form.lec_units) + nstpLecUnits.value
-)
+// Total lec units for display and billing = billable + NSTP
+const totalLecUnits = computed(() => Number(form.lec_units) + nstpLecUnits.value)
 
-// Raw tuition before any discount (all lec units × rate)
-const rawTotalTuition = computed(() =>
-  totalLecUnits.value * rate.value
-)
-
-// NSTP tuition at full price (used only at 100% discount)
-const nstpTuition = computed(() =>
-  nstpLecUnits.value * rate.value
-)
+// Raw tuition before any discount
+const rawTotalTuition    = computed(() => totalLecUnits.value * rate.value)
+const rawBillableTuition = computed(() => Number(form.lec_units) * rate.value)
+const nstpTuition        = computed(() => nstpLecUnits.value * rate.value)
 
 const pct = computed(() => Number(form.discount_percentage) || 0)
 
-// Discount saving amount
 const discountSaving = computed(() => {
   if (pct.value === 100) {
-    // At 100%: entire billable (non-NSTP) tuition is waived
-    return Number(form.lec_units) * rate.value
+    // 100% discount: entire billable (non-NSTP) tuition waived
+    return rawBillableTuition.value
   }
   if (pct.value > 0) {
-    // Partial: discount applies to ALL lec units including NSTP
+    // Partial: discount on ALL lec units including NSTP
     return Math.round(rawTotalTuition.value * (pct.value / 100) * 100) / 100
   }
   return 0
 })
 
-// Final tuition after discount
 const tuitionFee = computed(() => {
   if (pct.value === 100) {
-    // All billable lec units → ₱0, NSTP survives at full price
+    // Only NSTP survives the 100% discount
     return nstpTuition.value
   }
   return Math.round((rawTotalTuition.value - discountSaving.value) * 100) / 100
@@ -247,12 +257,20 @@ const tuitionAndLab = computed(() =>
   tuitionFee.value + labFee.value + entrepreneurFee.value
 )
 
-// Display field shows total lec units (billable + NSTP)
+// ─── Lecture Units Input ──────────────────────────────────────────────────────
+//
+// The input field displays totalLecUnits (billable + NSTP).
+// When accounting types a new value, we back-calculate billable = typed - nstpLecUnits.
+// This means the NSTP checkbox state at the moment of override determines the split.
+// If NSTP is checked and accounting types 20 → billable stored as 18.5 (20 - 1.5).
+// If NSTP is unchecked and accounting types 20 → billable stored as 20 (20 - 0).
+//
 const displayLecUnits = computed({
   get() {
     return totalLecUnits.value
   },
   set(val: number) {
+    // Strip NSTP portion before storing billable units
     form.lec_units = Math.max(0, Number(val) - nstpLecUnits.value)
   },
 })
@@ -287,31 +305,31 @@ const paymentTermBreakdown = computed(() => {
     } else if (tl === 0) {
       amount = 0
     } else {
-      const pct      = Number(editablePercentages.value[t.term_name]) || 0
+      const termPct  = Number(editablePercentages.value[t.term_name]) || 0
       const tlIdx    = tlTermNames.indexOf(t.term_name)
       const isLastTL = tlIdx === tlTermNames.length - 1
       if (isLastTL) {
         amount = Math.round((tl - runningTL) * 100) / 100
       } else {
-        amount = Math.round(tl * (pct / 100) * 100) / 100
+        amount = Math.round(tl * (termPct / 100) * 100) / 100
         runningTL += amount
       }
     }
-    const termPct = t.term_name === 'Upon Registration'
+    const displayPct = t.term_name === 'Upon Registration'
       ? null
       : (Number(editablePercentages.value[t.term_name]) || 0)
-    return { term_name: t.term_name, term_order: t.term_order, percentage: termPct, amount }
+    return { term_name: t.term_name, term_order: t.term_order, percentage: displayPct, amount }
   })
 })
 
 // ─── Submit ───────────────────────────────────────────────────────────────────
 
 function submit() {
-  if (! selectedStudent.value) return
+  if (!selectedStudent.value) return
   if (hasRemainingBalance.value) return
-  form.user_id           = selectedStudent.value.id
-  form.nstp_lec_units    = nstpLecUnits.value
-  form.term_percentages  = { ...editablePercentages.value }
+  form.user_id          = selectedStudent.value.id
+  form.nstp_lec_units   = nstpLecUnits.value   // 1.5 or 0
+  form.term_percentages = { ...editablePercentages.value }
 
   form.post(route('student-fees.store'), {
     onError:  (errors) => console.error('[submit] validation errors:', errors),
@@ -423,10 +441,20 @@ function submit() {
           </Card>
 
           <!-- Unit Breakdown Table -->
-          <div v-if="selectedStudent && (curriculumSubjects.length > 0 || form.lec_units > 0)" class="rounded-xl border border-gray-200 bg-white overflow-hidden">
+          <!--
+            Lec Units column = totalLecUnits (billable + NSTP when checked).
+            Total Units      = totalLecUnits + lab_units.
+            This reflects exactly what the student is billed for.
+          -->
+          <div v-if="selectedStudent && (curriculumSubjects.length > 0 || form.lec_units > 0 || hasNstp)"
+               class="rounded-xl border border-gray-200 bg-white overflow-hidden">
             <div class="px-5 py-3 bg-gray-50 border-b border-gray-200">
               <h3 class="text-sm font-semibold text-gray-700">Unit Breakdown</h3>
-              <p class="text-xs text-gray-400 mt-0.5">{{ selectedStudent.course }} &middot; {{ selectedStudent.year_level }} &middot; {{ form.semester === "1st" ? "1st Semester" : form.semester === "2nd" ? "2nd Semester" : "Summer" }} &middot; {{ form.school_year }}</p>
+              <p class="text-xs text-gray-400 mt-0.5">
+                {{ selectedStudent.course }} &middot; {{ selectedStudent.year_level }} &middot;
+                {{ form.semester === '1st' ? '1st Semester' : form.semester === '2nd' ? '2nd Semester' : 'Summer' }}
+                &middot; {{ form.school_year }}
+              </p>
             </div>
             <table class="w-full text-sm">
               <thead class="text-xs uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
@@ -444,16 +472,26 @@ function submit() {
                 <tr class="border-t border-gray-100">
                   <td class="px-5 py-3 text-gray-700">{{ selectedStudent.course }}</td>
                   <td class="px-5 py-3 text-gray-700">{{ selectedStudent.year_level }}</td>
-                  <td class="px-5 py-3 text-gray-700">{{ form.semester === "1st" ? "1st Semester" : form.semester === "2nd" ? "2nd Semester" : "Summer" }}</td>
-                  <td class="px-4 py-3 text-center font-mono font-semibold text-gray-900">{{ form.lec_units }}</td>
+                  <td class="px-5 py-3 text-gray-700">
+                    {{ form.semester === '1st' ? '1st Semester' : form.semester === '2nd' ? '2nd Semester' : 'Summer' }}
+                  </td>
+                  <!-- Lec Units: billable + NSTP (1.5) when NSTP is active -->
+                  <td class="px-4 py-3 text-center font-mono font-semibold text-gray-900">
+                    {{ totalLecUnits }}
+                    <span v-if="hasNstp" class="block text-xs font-normal text-amber-600">
+                      {{ form.lec_units }} + 1.5 NSTP
+                    </span>
+                  </td>
                   <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
                   <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
-                  <td class="px-4 py-3 text-center font-mono font-bold text-blue-700">{{ Number(form.lec_units) + Number(form.lab_units) }}</td>
+                  <!-- Total = billable lec + NSTP (if active) + lab -->
+                  <td class="px-4 py-3 text-center font-mono font-bold text-blue-700">
+                    {{ totalLecUnits + Number(form.lab_units) }}
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
-
 
           <!-- Irregular student notice -->
           <div v-if="selectedStudent?.is_irregular"
@@ -463,11 +501,12 @@ function submit() {
               <p class="font-semibold">Irregular Student</p>
               <p class="text-amber-800 text-xs mt-0.5">
                 Curriculum auto-populate is disabled. Enter lecture units and lab subjects manually.
+                Use the NSTP checkbox below if this student is enrolled in NSTP.
               </p>
             </div>
           </div>
 
-          <!-- Units Input -->
+          <!-- Units Input + NSTP Checkbox -->
           <Card>
             <CardHeader>
               <CardTitle class="flex items-center gap-2 text-base">
@@ -478,34 +517,84 @@ function submit() {
                 </span>
               </CardTitle>
             </CardHeader>
-            <CardContent class="grid grid-cols-2 gap-6">
-              <div class="space-y-1.5">
-                <Label for="lec_units" class="flex items-center gap-1.5">
-                  <span class="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
-                  Lecture Units
-                  <span class="text-xs text-muted-foreground">(incl. NSTP if enrolled)</span>
-                </Label>
-                <Input id="lec_units" type="number"
-                  v-model.number="displayLecUnits"
-                  min="0" max="50" step="0.5" class="text-center text-lg font-semibold" />
-                <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.tuition_per_unit) }} / unit</p>
-                <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
+            <CardContent class="space-y-5">
+
+              <div class="grid grid-cols-2 gap-6">
+                <!-- Lecture Units input -->
+                <div class="space-y-1.5">
+                  <Label for="lec_units" class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
+                    Lecture Units
+                    <!-- Label is conditional: only mention NSTP when it's actually active -->
+                    <span v-if="hasNstp" class="text-xs text-amber-600 font-medium">(incl. 1.5 NSTP)</span>
+                    <span v-else class="text-xs text-muted-foreground">(billable only)</span>
+                  </Label>
+                  <Input id="lec_units" type="number"
+                    v-model.number="displayLecUnits"
+                    min="0" max="50" step="0.5" class="text-center text-lg font-semibold" />
+                  <p class="text-xs text-muted-foreground text-center">
+                    {{ totalLecUnits }} units × {{ formatCurrency(feeRates.tuition_per_unit) }} / unit
+                  </p>
+                  <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
+                </div>
+
+                <!-- Lab Subjects input -->
+                <div class="space-y-1.5">
+                  <Label for="lab_units" class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-orange-500 inline-block"></span>
+                    Lab Subjects
+                    <span class="text-xs text-muted-foreground">(subjects with lab)</span>
+                  </Label>
+                  <Input id="lab_units" type="number" v-model.number="form.lab_units"
+                    min="0" max="20" class="text-center text-lg font-semibold" />
+                  <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.lab_fee_per_subject) }} / subject</p>
+                  <p v-if="form.errors.lab_units" class="text-sm text-destructive">{{ form.errors.lab_units }}</p>
+                </div>
               </div>
-              <div class="space-y-1.5">
-                <Label for="lab_units" class="flex items-center gap-1.5">
-                  <span class="w-2 h-2 rounded-full bg-orange-500 inline-block"></span>
-                  Lab Subjects
-                  <span class="text-xs text-muted-foreground">(subjects with lab)</span>
-                </Label>
-                <Input id="lab_units" type="number" v-model.number="form.lab_units"
-                  min="0" max="20" class="text-center text-lg font-semibold" />
-                <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.lab_fee_per_subject) }} / subject</p>
-                <p v-if="form.errors.lab_units" class="text-sm text-destructive">{{ form.errors.lab_units }}</p>
+
+              <!-- NSTP Checkbox -->
+              <div class="rounded-lg border"
+                   :class="hasNstp ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-gray-50'">
+                <label for="nstp_checkbox"
+                       class="flex items-start gap-3 px-4 py-3 cursor-pointer select-none">
+                  <input
+                    id="nstp_checkbox"
+                    type="checkbox"
+                    v-model="hasNstp"
+                    class="mt-0.5 h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div class="flex-1">
+                    <p class="text-sm font-semibold"
+                       :class="hasNstp ? 'text-amber-900' : 'text-gray-700'">
+                      NSTP — National Service Training Program
+                    </p>
+                    <p class="text-xs mt-0.5"
+                       :class="hasNstp ? 'text-amber-700' : 'text-muted-foreground'">
+                      <template v-if="hasNstp">
+                        <strong>Checked:</strong> 1.5 NSTP units ({{ formatCurrency(nstpTuition) }}) are included in billing.
+                        For partial discounts, NSTP is discounted along with all other lecture units.
+                        At 100% discount, NSTP is excluded and charged at full price ({{ formatCurrency(nstpTuition) }}).
+                      </template>
+                      <template v-else>
+                        Check if this course / year level / semester includes an NSTP subject.
+                        NSTP is billed at a fixed 1.5 units regardless of the subject's listed unit count.
+                      </template>
+                    </p>
+                  </div>
+                  <!-- Live NSTP fee indicator when checked -->
+                  <div v-if="hasNstp" class="shrink-0 text-right">
+                    <p class="text-xs font-mono font-semibold text-amber-700">
+                      + {{ formatCurrency(nstpTuition) }}
+                    </p>
+                    <p class="text-xs text-amber-600">1.5 units</p>
+                  </div>
+                </label>
               </div>
+
             </CardContent>
           </Card>
 
-          <!-- ── Discount / Scholarship ─────────────────────────────────────── -->
+          <!-- ── Discount / Scholarship ────────────────────────────────────── -->
           <Card>
             <CardHeader>
               <CardTitle class="text-base flex items-center gap-2">
@@ -515,7 +604,7 @@ function submit() {
             </CardHeader>
             <CardContent class="space-y-4">
 
-              <!-- NSTP notice — only shown at 100% discount -->
+              <!-- NSTP 100% discount notice -->
               <div
                 v-if="hasNstp && pct === 100"
                 class="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-300 p-3 text-sm text-amber-900"
@@ -524,9 +613,9 @@ function submit() {
                 <div>
                   <p class="font-semibold">100% Discount — NSTP Exception</p>
                   <p class="text-xs text-amber-800 mt-0.5">
-                    All lecture units are fully discounted. However, NSTP
-                    ({{ nstpLecUnits }} units, {{ formatCurrency(nstpTuition) }})
-                    is excluded from the 100% discount and will be charged at full price.
+                    All billable lecture units ({{ form.lec_units }}) are fully discounted to ₱0.
+                    NSTP (1.5 units, {{ formatCurrency(nstpTuition) }}) is excluded from the 100% discount
+                    and will be charged at full price.
                   </p>
                 </div>
               </div>
@@ -534,7 +623,14 @@ function submit() {
               <div class="space-y-3">
                 <Label for="discount_percentage">Discount Percentage (%)</Label>
                 <p class="text-xs text-muted-foreground -mt-2">
-                  Applies to all lecture units (including NSTP) unless 100% — lab and miscellaneous fees are never discounted.
+                  <template v-if="hasNstp">
+                    For partial discounts (&lt;100%): applies to all lecture units including NSTP ({{ totalLecUnits }} total).
+                    At exactly 100%: all billable units waived, NSTP ({{ formatCurrency(nstpTuition) }}) charged at full price.
+                    Lab and misc fees are never discounted.
+                  </template>
+                  <template v-else>
+                    Applies to all lecture units ({{ form.lec_units }} units). Lab and miscellaneous fees are never discounted.
+                  </template>
                 </p>
 
                 <div class="flex gap-1.5 flex-wrap">
@@ -583,12 +679,28 @@ function submit() {
 
                 <!-- Partial discount (< 100%): NSTP included in discount -->
                 <template v-if="pct < 100">
-                  <div class="flex justify-between text-green-800 text-xs">
-                    <span>Total tuition ({{ totalLecUnits }} units incl. NSTP, before discount)</span>
-                    <span>{{ formatCurrency(rawTotalTuition) }}</span>
-                  </div>
+                  <template v-if="hasNstp">
+                    <div class="flex justify-between text-green-800 text-xs">
+                      <span>Billable tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
+                      <span>{{ formatCurrency(rawBillableTuition) }}</span>
+                    </div>
+                    <div class="flex justify-between text-amber-700 text-xs">
+                      <span>NSTP tuition (1.5 units × {{ formatCurrency(rate) }})</span>
+                      <span>{{ formatCurrency(nstpTuition) }}</span>
+                    </div>
+                    <div class="flex justify-between text-green-800 text-xs font-medium border-t border-green-100 pt-1">
+                      <span>Total tuition before discount ({{ totalLecUnits }} units)</span>
+                      <span>{{ formatCurrency(rawTotalTuition) }}</span>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="flex justify-between text-green-800 text-xs">
+                      <span>Total tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
+                      <span>{{ formatCurrency(rawTotalTuition) }}</span>
+                    </div>
+                  </template>
                   <div class="flex justify-between text-green-600 text-xs">
-                    <span>− {{ pct }}% discount (applied to all {{ totalLecUnits }} units)</span>
+                    <span>− {{ pct }}% discount ({{ hasNstp ? `applied to all ${totalLecUnits} units incl. NSTP` : `applied to ${form.lec_units} units` }})</span>
                     <span>− {{ formatCurrency(discountSaving) }}</span>
                   </div>
                   <div class="flex justify-between text-green-900 font-medium pt-1 border-t border-green-200">
@@ -597,20 +709,22 @@ function submit() {
                   </div>
                 </template>
 
-                <!-- 100% discount: billable lec units → ₱0, NSTP survives -->
+                <!-- 100% discount: billable lec units → ₱0, NSTP survives if checked -->
                 <template v-else>
                   <div class="flex justify-between text-green-800 text-xs">
                     <span>Billable tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
-                    <span>{{ formatCurrency(Number(form.lec_units) * rate) }}</span>
+                    <span>{{ formatCurrency(rawBillableTuition) }}</span>
                   </div>
                   <div class="flex justify-between text-green-600 text-xs">
-                    <span>− 100% discount (full waiver on billable units)</span>
+                    <span>− 100% discount (full waiver on {{ form.lec_units }} billable units)</span>
                     <span>− {{ formatCurrency(discountSaving) }}</span>
                   </div>
-                  <div class="flex justify-between text-amber-800 text-xs font-medium">
-                    <span>NSTP ({{ nstpLecUnits }} units — excluded from 100% discount)</span>
-                    <span>{{ formatCurrency(nstpTuition) }}</span>
-                  </div>
+                  <template v-if="hasNstp">
+                    <div class="flex justify-between text-amber-800 text-xs font-medium">
+                      <span>NSTP (1.5 units — excluded from 100% discount)</span>
+                      <span>{{ formatCurrency(nstpTuition) }}</span>
+                    </div>
+                  </template>
                   <div class="flex justify-between text-green-900 font-medium pt-1 border-t border-green-200">
                     <span>Total Tuition</span>
                     <span>{{ formatCurrency(tuitionFee) }}</span>
@@ -639,14 +753,23 @@ function submit() {
           </Card>
 
           <!-- Cannot Create Assessment Warning -->
-          <div v-if="selectedStudent && hasRemainingBalance" class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 px-4 py-4 text-sm">
+          <div v-if="selectedStudent && hasRemainingBalance"
+               class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 px-4 py-4 text-sm">
             <AlertTriangle class="h-5 w-5 shrink-0 text-red-600 mt-0.5" />
             <div class="flex-1">
               <p class="font-bold text-red-800">Cannot Create Assessment — Unsettled Balance</p>
-              <p class="text-red-700 mt-1">This student has an outstanding balance of <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>. The remaining balance must be fully settled before a new assessment can be created.</p>
+              <p class="text-red-700 mt-1">
+                This student has an outstanding balance of
+                <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>.
+                The remaining balance must be fully settled before a new assessment can be created.
+              </p>
               <p class="text-xs text-red-600 mt-2">Go to the student's profile to record a payment, then return here.</p>
               <div class="mt-3">
-                <Button variant="outline" size="sm" class="border-red-400 text-red-700 hover:bg-red-100" @click="router.visit(route('student-fees.show', selectedStudent.id))">View Student Profile &amp; Record Payment</Button>
+                <Button variant="outline" size="sm"
+                        class="border-red-400 text-red-700 hover:bg-red-100"
+                        @click="router.visit(route('student-fees.show', selectedStudent.id))">
+                  View Student Profile &amp; Record Payment
+                </Button>
               </div>
             </div>
           </div>
@@ -668,7 +791,7 @@ function submit() {
 
         </div>
 
-        <!-- ── RIGHT: Live Fee Preview ─────────────────────────────── -->
+        <!-- ── RIGHT: Live Fee Preview ──────────────────────────────── -->
         <div class="space-y-4">
           <Card class="sticky top-6">
             <CardHeader>
@@ -681,9 +804,14 @@ function submit() {
               <div class="space-y-2">
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
-                    Tuition ({{ displayLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
+                    Tuition ({{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
                   </span>
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
+                </div>
+                <!-- NSTP sub-line in fee sidebar -->
+                <div v-if="hasNstp" class="flex justify-between text-xs text-amber-600 pl-2">
+                  <span>incl. 1.5 NSTP units</span>
+                  <span>{{ formatCurrency(nstpTuition) }}</span>
                 </div>
                 <div v-if="discountSaving > 0" class="flex justify-between text-xs text-green-600 pl-2">
                   <span>− {{ pct }}% discount saved</span>

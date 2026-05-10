@@ -8,19 +8,12 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('course_unit_presets', function (Blueprint $table) {
-            $table->string('semester')->default('1st Sem')->after('year_level');
-            $table->dropUnique(['course', 'year_level']);
-            $table->unique(['course', 'year_level', 'semester']);
-        });
+        // Migration already completed in 2026_05_09_000001
+        // This migration is kept for batch consistency but performs no operations
     }
 
     public function down(): void
     {
-        Schema::table('course_unit_presets', function (Blueprint $table) {
-            $table->dropUnique(['course', 'year_level', 'semester']);
-            $table->dropColumn('semester');
-            $table->unique(['course', 'year_level']);
-        });
+        // No-op
     }
 };

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Account;
+use App\Models\CourseUnitPreset;
 use App\Models\Student;
 use App\Models\Subject;
 use App\Models\StudentAssessment;
@@ -731,13 +732,33 @@ class StudentFeeController extends Controller
             ]);
         }
 
+        // ── NSTP override from Fee Settings preset ─────────────────────────────
+        // The course_unit_presets.has_nstp flag is the administrative source of truth.
+        // If no subjects table data exists (new courses, imported curriculum gaps),
+        // the preset flag still correctly drives NSTP billing.
+        // If subjects table does detect NSTP via isNstpSubject(), we use whichever
+        // is true — OR logic: billing applies if either source says NSTP is present.
+        $semesterDb = AssessmentService::normalizeSemester($validated['semester']);
+        $preset     = CourseUnitPreset::forCourseYearSem(
+            $student->course,
+            $student->year_level,
+            $semesterDb
+        );
+
+        // Merge: NSTP is active if subjects-based detection OR preset flag says so.
+        // preset->has_nstp = false does NOT override a positive subject detection —
+        // it can only add NSTP billing, not suppress it. Admins correct via subjects table.
+        $hasNstp = $curriculum['has_nstp'] || ($preset?->has_nstp ?? false);
+        $nstpLecUnits = $hasNstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
+
         return response()->json([
             'found'              => true,
             'is_irregular'       => false,
             'billable_lec_units' => $curriculum['billable_lec_units'],
             'lab_subject_count'  => $curriculum['lab_subject_count'],
-            'nstp_lec_units'     => $curriculum['nstp_lec_units'],
-            'has_nstp'           => $curriculum['has_nstp'],
+            'nstp_lec_units'     => $nstpLecUnits,
+            'has_nstp'           => $hasNstp,
+            'preset_has_nstp'    => $preset?->has_nstp ?? false,   // for frontend transparency
             'pathfit_units'      => $curriculum['pathfit_units'],
             'subjects'           => $curriculum['subjects'],
             'course'             => $student->course,

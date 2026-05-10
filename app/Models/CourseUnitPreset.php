@@ -10,13 +10,15 @@ class CourseUnitPreset extends Model
 
     protected $fillable = [
         'course', 'year_level', 'semester',
-        'lec_units', 'lab_units', 'lab_subject_count', 'is_active',
+        'lec_units', 'lab_units', 'lab_subject_count',
+        'has_nstp', 'is_active',
     ];
 
     protected $casts = [
         'lec_units'         => 'integer',
         'lab_units'         => 'integer',
         'lab_subject_count' => 'integer',
+        'has_nstp'          => 'boolean',
         'is_active'         => 'boolean',
     ];
 
