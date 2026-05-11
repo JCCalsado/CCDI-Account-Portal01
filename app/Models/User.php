@@ -3,9 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use App\Enums\UserRoleEnum;
@@ -14,7 +14,6 @@ class User extends Authenticatable
 {
     use HasFactory, Notifiable;
 
-    // Status constants
     const STATUS_ACTIVE    = 'active';
     const STATUS_GRADUATED = 'graduated';
     const STATUS_DROPPED   = 'dropped';
@@ -48,16 +47,11 @@ class User extends Authenticatable
         'last_login_at',
     ];
 
-    /**
-     * Boot method to protect audit immutability:
-     * Once created_by is set, it cannot be changed via mass-assignment update().
-     */
     protected static function boot(): void
     {
         parent::boot();
 
         static::updating(function (self $user) {
-            // Prevent created_by from being changed once set
             if ($user->isDirty('created_by') && $user->getOriginal('created_by') !== null) {
                 $user->created_by = $user->getOriginal('created_by');
             }
@@ -69,7 +63,6 @@ class User extends Authenticatable
         'remember_token',
     ];
 
-    // Set the appends property to include virtual attributes
     protected $appends = ['name'];
 
     protected function casts(): array
@@ -99,9 +92,22 @@ class User extends Authenticatable
         return $this->hasOne(Account::class);
     }
 
+    /**
+     * All assessments belonging to this user.
+     * student_assessments.user_id is a direct FK to users.id.
+     */
+    public function assessments(): HasMany
+    {
+        return $this->hasMany(StudentAssessment::class, 'user_id');
+    }
+
+    /**
+     * The single most recent active assessment.
+     * Use this for display; use assessments() for querying across all.
+     */
     public function latestAssessment(): HasOne
     {
-        return $this->hasOne(\App\Models\StudentAssessment::class, 'user_id')
+        return $this->hasOne(StudentAssessment::class, 'user_id')
                     ->where('status', 'active')
                     ->latestOfMany();
     }
@@ -111,7 +117,6 @@ class User extends Authenticatable
         return $this->hasMany(Transaction::class);
     }
 
-    // Admin audit relationships
     public function createdByUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -124,20 +129,12 @@ class User extends Authenticatable
 
     // ========== ACCESSORS ==========
 
-    /**
-     * Get the user's full name.
-     * This is the main accessor that will be serialized in API responses.
-     */
     public function getNameAttribute(): string
     {
         $mi = $this->middle_initial ? ' ' . strtoupper($this->middle_initial) . '.' : '';
         return "{$this->last_name}, {$this->first_name}{$mi}";
     }
 
-    /**
-     * Get the user's full name (alternative format).
-     * Use this for display purposes where you want "Last, First MI."
-     */
     public function getFullNameAttribute(): string
     {
         $mi = $this->middle_initial ? "{$this->middle_initial}." : '';
@@ -171,11 +168,8 @@ class User extends Authenticatable
         return $query->whereNotNull('terms_accepted_at');
     }
 
-    // ========== ADMIN HELPERS ==========
+    // ========== HELPERS ==========
 
-    /**
-     * Check if user is an admin
-     */
     public function isAdmin(): bool
     {
         return $this->role === UserRoleEnum::ADMIN;
@@ -186,33 +180,22 @@ class User extends Authenticatable
         return $this->role === UserRoleEnum::ACCOUNTING;
     }
 
-    /**
-     * Check if user has accepted terms & conditions
-     */
     public function hasAcceptedTerms(): bool
     {
         return $this->terms_accepted_at !== null;
     }
 
-    /**
-     * Accept terms & conditions
-     */
     public function acceptTerms(): void
     {
         $this->forceFill(['terms_accepted_at' => now()])->save();
     }
 
-    /**
-     * Check if user has specific permission
-     */
     public function hasPermission(string $permission): bool
     {
-        // Inactive users have no permissions regardless of role
         if (! $this->is_active) {
             return false;
         }
 
-        // All admins have all permissions
         if ($this->isAdmin()) {
             return true;
         }
@@ -220,9 +203,6 @@ class User extends Authenticatable
         return false;
     }
 
-    /**
-     * Check multiple permissions (OR logic)
-     */
     public function hasAnyPermission(array $permissions): bool
     {
         foreach ($permissions as $permission) {
@@ -233,9 +213,6 @@ class User extends Authenticatable
         return false;
     }
 
-    /**
-     * Check multiple permissions (AND logic)
-     */
     public function hasAllPermissions(array $permissions): bool
     {
         foreach ($permissions as $permission) {
@@ -246,9 +223,6 @@ class User extends Authenticatable
         return true;
     }
 
-    /**
-     * Update user activity timestamp
-     */
     public function recordLastLogin(): void
     {
         $this->update(['last_login_at' => now()]);
@@ -256,33 +230,24 @@ class User extends Authenticatable
 
     // ========== VALIDATION RULES ==========
 
-    /**
-     * Get validation rules for user updates.
-     * NOTE: profile_picture mimes must stay in sync with
-     * Settings/ProfileController::updatePicture() validation.
-     */
     public static function getValidationRules($userId = null): array
     {
         return [
-            'account_id'               => 'nullable|string|unique:users,account_id,' . $userId,
-            'address_house_lot_unit'   => 'nullable|string|max:255',
-            'address_street_name'      => 'nullable|string|max:255',
-            'address_barangay'         => 'nullable|string|max:255',
-            'address_municipality_city'=> 'nullable|string|max:255',
-            'address_province'         => 'nullable|string|max:255',
-            'phone'                    => 'nullable|string|max:20',
-            'course'                   => 'nullable|string|max:100',
-            'year_level'               => 'nullable|string|max:50',
-            'faculty'                  => 'nullable|string|max:100',
-            'status'                   => 'required|in:active,graduated,dropped',
-            // webp included — must match ProfileController::updatePicture() mimes rule
-            'profile_picture'          => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
+            'account_id'                => 'nullable|string|unique:users,account_id,' . $userId,
+            'address_house_lot_unit'    => 'nullable|string|max:255',
+            'address_street_name'       => 'nullable|string|max:255',
+            'address_barangay'          => 'nullable|string|max:255',
+            'address_municipality_city' => 'nullable|string|max:255',
+            'address_province'          => 'nullable|string|max:255',
+            'phone'                     => 'nullable|string|max:20',
+            'course'                    => 'nullable|string|max:100',
+            'year_level'                => 'nullable|string|max:50',
+            'faculty'                   => 'nullable|string|max:100',
+            'status'                    => 'required|in:active,graduated,dropped',
+            'profile_picture'           => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
         ];
     }
 
-    /**
-     * Get validation rules for admin creation/update
-     */
     public static function getAdminValidationRules($userId = null): array
     {
         $uniqueEmail = $userId ? "unique:users,email,{$userId}" : 'unique:users,email';

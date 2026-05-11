@@ -62,7 +62,7 @@ const props = withDefaults(
         paymentTerms: () => [],
         pendingApprovalPayments: () => [],
         preselectedTermId: null,
-        availablePaymentMethods: () => ['gcash', 'bank_transfer', 'credit_card', 'debit_card'],
+        availablePaymentMethods: () => ['bank_transfer'],
     },
 );
 
@@ -84,6 +84,11 @@ const allPaymentMethods = [
 
 const availablePaymentMethods = computed(() =>
     allPaymentMethods.filter((m) => props.availablePaymentMethods.includes(m.value)),
+);
+
+// When there is only one available method, lock it in — no dropdown needed.
+const singleMethod = computed(() =>
+    availablePaymentMethods.value.length === 1 ? availablePaymentMethods.value[0] : null,
 );
 
 // ── Pending payments indexed by term ─────────────────────────────────────────
@@ -116,8 +121,8 @@ const availableTerms = computed(() => {
     });
 });
 
-// ── Total outstanding balance across all unpaid terms ─────────────────────────
-// This is the hard ceiling — student can NEVER pay more than this.
+// ── Total outstanding balance ─────────────────────────────────────────────────
+
 const totalOutstandingBalance = computed(() =>
     parseFloat(
         props.paymentTerms
@@ -126,7 +131,6 @@ const totalOutstandingBalance = computed(() =>
     )
 );
 
-// Subtract amounts currently awaiting approval so student sees accurate ceiling.
 const effectiveBalance = computed(() => {
     const totalPending = props.pendingApprovalPayments.reduce((s, p) => s + p.amount, 0);
     return parseFloat(Math.max(0, totalOutstandingBalance.value - totalPending).toFixed(2));
@@ -136,14 +140,13 @@ const effectiveBalance = computed(() => {
 
 const form = useForm({
     amount:           0 as number,
-    payment_method:   computed(() => availablePaymentMethods.value[0]?.value ?? 'gcash').value,
+    // Default to first available method — with bank_transfer only, this is always 'bank_transfer'
+    payment_method:   availablePaymentMethods.value[0]?.value ?? 'bank_transfer',
     paid_at:          new Date().toISOString().split('T')[0],
     selected_term_id: props.preselectedTermId ?? (null as number | null),
     description:      '' as string,
 });
 
-// When a term is selected, default the amount to that term's balance.
-// Student may then adjust upward (up to effectiveBalance) or downward.
 watch(() => form.selected_term_id, (termId) => {
     if (!termId) {
         form.amount = 0;
@@ -151,7 +154,6 @@ watch(() => form.selected_term_id, (termId) => {
     }
     const term = availableTerms.value.find((t) => t.id === termId);
     if (term) {
-        // Normalize: toFixed(2) eliminates float noise from JSON parsing
         form.amount = parseFloat(term.balance.toFixed(2));
     }
 });
@@ -165,8 +167,7 @@ const selectedTerm = computed(() =>
 );
 
 // ── Payment allocation preview ────────────────────────────────────────────────
-// Show the student exactly how their entered amount will be split across terms
-// BEFORE they submit, so there are no surprises.
+
 type AllocationLine = {
     term_name: string;
     balance_before: number;
@@ -178,13 +179,12 @@ type AllocationLine = {
 const allocationPreview = computed<AllocationLine[]>(() => {
     if (!selectedTerm.value || !form.amount || form.amount <= 0) return [];
 
-    const safeAmount = parseFloat(form.amount.toFixed(2));
-    if (safeAmount > effectiveBalance.value) return [];
+    const safeAmt = parseFloat(form.amount.toFixed(2));
+    if (safeAmt > effectiveBalance.value) return [];
 
     const lines: AllocationLine[] = [];
-    let remaining = safeAmount;
+    let remaining = safeAmt;
 
-    // All unpaid terms starting from the selected term, in order
     const terms = props.paymentTerms
         .filter((t) => t.balance > 0 && t.term_order >= selectedTerm.value!.term_order)
         .sort((a, b) => a.term_order - b.term_order);
@@ -195,11 +195,11 @@ const allocationPreview = computed<AllocationLine[]>(() => {
         const applied       = parseFloat(Math.min(remaining, balanceBefore).toFixed(2));
         const balanceAfter  = parseFloat(Math.max(0, balanceBefore - applied).toFixed(2));
         lines.push({
-            term_name:     term.term_name,
+            term_name:      term.term_name,
             balance_before: balanceBefore,
             applied,
-            balance_after: balanceAfter < 0.01 ? 0 : balanceAfter,
-            fully_paid:    balanceAfter < 0.01,
+            balance_after:  balanceAfter < 0.01 ? 0 : balanceAfter,
+            fully_paid:     balanceAfter < 0.01,
         });
         remaining = parseFloat((remaining - applied).toFixed(2));
     }
@@ -226,11 +226,11 @@ watch(isBankTransfer, async (val) => {
             bankDetails.value = data.bank_details;
         }
     } catch {
-        // Non-fatal
+        // Non-fatal — bank details panel has a fallback message
     } finally {
         bankDetailsLoading.value = false;
     }
-}, { immediate: false });
+}, { immediate: true }); // ← immediate: true so details load on page open, not on dropdown change
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -251,7 +251,6 @@ const validationError = computed<string | null>(() => {
         return `A payment for ${selectedTerm.value.term_name} is already awaiting approval.`;
     if (!form.amount || safeAmount.value <= 0)
         return 'Please enter a valid payment amount.';
-    // Hard ceiling: cannot exceed total outstanding (across all terms)
     if (safeAmount.value > effectiveBalance.value)
         return `Amount (${formatCurrency(safeAmount.value)}) exceeds your total outstanding balance (${formatCurrency(effectiveBalance.value)}).`;
     if (isBankTransfer.value && !bankReferenceNumber.value.trim())
@@ -284,8 +283,6 @@ const submitCheckout = async () => {
     try {
         const page      = usePage();
         const csrfToken = (page.props.csrf_token as string) ?? '';
-
-        // Always normalise to exactly 2 decimal places before sending
         const normalizedAmount = parseFloat(safeAmount.value.toFixed(2));
 
         const response = await fetch(route('payment.checkout'), {
@@ -334,7 +331,6 @@ const submitBankTransfer = async () => {
     try {
         const page      = usePage();
         const csrfToken = (page.props.csrf_token as string) ?? '';
-
         const normalizedAmount = parseFloat(safeAmount.value.toFixed(2));
 
         const response = await fetch(route('payment.bank-transfer'), {
@@ -391,8 +387,8 @@ const isOverdue = (dueDate: string | null): boolean => {
 const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | null => {
     if (!dueDate) return null;
     const diffDays = Math.ceil((new Date(dueDate).getTime() - Date.now()) / 86_400_000);
-    if (diffDays < 0)  return 'red';
-    if (diffDays <= 7) return 'red';
+    if (diffDays < 0)   return 'red';
+    if (diffDays <= 7)  return 'red';
     if (diffDays <= 14) return 'amber';
     return 'green';
 };
@@ -567,8 +563,7 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                             </p>
                         </div>
 
-                        <!-- ── Allocation Preview ────────────────────────────────── -->
-                        <!-- Only shown when the entered amount spans multiple terms -->
+                        <!-- Allocation Preview (multi-term) -->
                         <Transition name="fade">
                             <div
                                 v-if="allocationPreview.length > 0 && allocationCoversMultipleTerms"
@@ -609,7 +604,7 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                             </div>
                         </Transition>
 
-                        <!-- Also show single-term preview when amount < term balance (partial) -->
+                        <!-- Partial payment notice (single term) -->
                         <Transition name="fade">
                             <div
                                 v-if="allocationPreview.length === 1 && selectedTerm && safeAmount < selectedTerm.balance && safeAmount > 0"
@@ -629,9 +624,21 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                         <!-- Payment Method -->
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">
-                                Payment Method <span class="text-red-500">*</span>
+                                Payment Method
                             </label>
+
+                            <!-- Single method: static badge, no dropdown -->
+                            <div
+                                v-if="singleMethod"
+                                class="flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-medium text-indigo-800"
+                            >
+                                <CheckCircle :size="15" class="text-indigo-500 flex-shrink-0" />
+                                {{ singleMethod.label }}
+                            </div>
+
+                            <!-- Multiple methods: dropdown -->
                             <select
+                                v-else
                                 v-model="form.payment_method"
                                 class="w-full rounded-lg border px-4 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             >
@@ -643,6 +650,7 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                                     {{ method.label }}
                                 </option>
                             </select>
+
                             <p v-if="form.errors.payment_method" class="mt-1 text-sm text-red-500">
                                 {{ form.errors.payment_method }}
                             </p>
@@ -698,7 +706,7 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                         </div>
 
                         <!-- Payment Date -->
-                        <div v-if="!isBankTransfer">
+                        <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">
                                 Payment Date <span class="text-red-500">*</span>
                             </label>
@@ -721,7 +729,7 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                             <input
                                 v-model="form.description"
                                 type="text"
-                                :placeholder="isBankTransfer ? 'e.g. Transferred via BDO online banking' : 'e.g. Additional notes'"
+                                placeholder="e.g. Transferred via BDO online banking"
                                 maxlength="255"
                                 class="w-full rounded-lg border px-4 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
@@ -758,17 +766,12 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                             </span>
                             <span v-else>
                                 <span v-if="isBankTransfer">Submit Bank Transfer & Upload Proof</span>
-                                <span v-else>Pay {{ formatCurrency(safeAmount) }} with {{ allPaymentMethods.find(m => m.value === form.payment_method)?.label }}</span>
+                                <span v-else>Pay {{ formatCurrency(safeAmount) }} via {{ allPaymentMethods.find(m => m.value === form.payment_method)?.label }}</span>
                             </span>
                         </button>
 
                         <p class="text-center text-xs text-gray-400">
-                            <span v-if="isBankTransfer">
-                                You will be asked to upload proof of payment after submitting.
-                            </span>
-                            <span v-else>
-                                Payments are subject to accounting verification before being marked as paid.
-                            </span>
+                            You will be asked to upload proof of payment after submitting.
                         </p>
                     </div>
                 </div>

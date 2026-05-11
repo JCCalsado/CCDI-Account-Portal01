@@ -14,7 +14,6 @@ class GeneratePaymentReceivedReminder
     {
         $user = $event->user;
 
-        // Resolve the correct assessment via transaction meta, not just "latest"
         $assessment = $this->resolveAssessment($user, $event->transactionId);
 
         if (! $assessment) {
@@ -29,12 +28,12 @@ class GeneratePaymentReceivedReminder
         $remainingBalance = $paymentTerms->sum('balance');
 
         if ($remainingBalance > 0) {
-            $message = "Payment of ₱" . number_format($event->amount, 2)
-                     . " received. Outstanding balance: ₱" . number_format($remainingBalance, 2);
+            $message = 'Payment of ₱' . number_format($event->amount, 2)
+                     . ' received. Outstanding balance: ₱' . number_format($remainingBalance, 2);
             $type = PaymentReminder::TYPE_PARTIAL_PAYMENT;
         } else {
-            $message = "Payment of ₱" . number_format($event->amount, 2)
-                     . " received. Account balance fully paid!";
+            $message = 'Payment of ₱' . number_format($event->amount, 2)
+                     . ' received. Account balance fully paid!';
             $type = PaymentReminder::TYPE_PAYMENT_RECEIVED;
         }
 
@@ -57,14 +56,9 @@ class GeneratePaymentReceivedReminder
             ],
         ]);
 
-        // ── Only send PaymentDueNotification if there are still unpaid terms
-        // with a valid due_date. If the account is fully paid or due_date is
-        // null, skip the notification entirely to avoid a TypeError crash.
         $nextUnpaidTerm = $paymentTerms->first();
         $dueDate        = $nextUnpaidTerm?->due_date;
 
-        // due_date may be a Carbon instance or a raw string depending on casting.
-        // Normalise it so PaymentDueNotification always receives a Carbon object.
         if ($dueDate !== null && ! $dueDate instanceof Carbon) {
             try {
                 $dueDate = Carbon::parse($dueDate);
@@ -96,6 +90,12 @@ class GeneratePaymentReceivedReminder
         }
     }
 
+    /**
+     * Resolve which StudentAssessment this payment belongs to.
+     *
+     * Uses a direct Eloquent query in the fallback instead of
+     * $user->assessments() to stay independent of User model relationships.
+     */
     private function resolveAssessment(\App\Models\User $user, int $transactionId): ?StudentAssessment
     {
         $transaction = $user->transactions()->find($transactionId);
@@ -107,6 +107,9 @@ class GeneratePaymentReceivedReminder
             }
         }
 
-        return $user->assessments()->latest('created_at')->first();
+        // Fallback: query directly — avoids any dependency on User model relationships.
+        return StudentAssessment::where('user_id', $user->id)
+            ->latest('created_at')
+            ->first();
     }
 }
