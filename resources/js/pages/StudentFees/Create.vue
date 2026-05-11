@@ -178,10 +178,16 @@ async function loadCurriculum() {
 
     if (data.found) {
       curriculumSubjects.value = data.subjects
-      form.lec_units           = data.billable_lec_units  // billable only — NSTP excluded
+      form.lec_units           = data.billable_lec_units
       form.lab_units           = data.lab_subject_count
-      // has_nstp from API is the merged result of subjects-table detection + preset flag
       hasNstp.value            = data.has_nstp ?? false
+
+      // Soft warning when units came from preset, not subjects table
+      if (data.source === 'preset') {
+        curriculumMessage.value = data.message ?? 'Units auto-filled from preset — no subject breakdown available.'
+      } else {
+        curriculumMessage.value = ''
+      }
     } else {
       curriculumMessage.value = data.message ?? 'No curriculum data found for this student.'
     }

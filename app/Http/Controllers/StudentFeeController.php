@@ -719,46 +719,71 @@ class StudentFeeController extends Controller
             ]);
         }
 
+        $semesterDb = AssessmentService::normalizeSemester($validated['semester']);
+
+        // ── Primary source: subjects table ─────────────────────────────────────────
         $curriculum = AssessmentService::getCurriculumUnits(
             $student->course,
             $student->year_level,
             $validated['semester']
         );
 
-        if (empty($curriculum['subjects'])) {
-            return response()->json([
-                'found'   => false,
-                'message' => "No subjects found for {$student->course} — {$student->year_level} — {$validated['semester']} Sem.",
-            ]);
-        }
-
-        // ── NSTP override from Fee Settings preset ─────────────────────────────
-        // The course_unit_presets.has_nstp flag is the administrative source of truth.
-        // If no subjects table data exists (new courses, imported curriculum gaps),
-        // the preset flag still correctly drives NSTP billing.
-        // If subjects table does detect NSTP via isNstpSubject(), we use whichever
-        // is true — OR logic: billing applies if either source says NSTP is present.
-        $semesterDb = AssessmentService::normalizeSemester($validated['semester']);
-        $preset     = CourseUnitPreset::forCourseYearSem(
+        // ── Always load the preset (used for has_nstp merge + fallback) ────────────
+        $preset = CourseUnitPreset::forCourseYearSem(
             $student->course,
             $student->year_level,
             $semesterDb
         );
 
-        // Merge: NSTP is active if subjects-based detection OR preset flag says so.
-        // preset->has_nstp = false does NOT override a positive subject detection —
-        // it can only add NSTP billing, not suppress it. Admins correct via subjects table.
-        $hasNstp = $curriculum['has_nstp'] || ($preset?->has_nstp ?? false);
+        // ── Fallback: use preset when subjects table has no data ───────────────────
+        // This happens when EnhancedSubjectSeeder has not been run yet, or when a
+        // new course has been added to presets but not yet to the subjects table.
+        // The preset is the administrative source of truth for unit configuration.
+        if (empty($curriculum['subjects'])) {
+            if (! $preset) {
+                return response()->json([
+                    'found'   => false,
+                    'message' => "No curriculum data found for {$student->course} — {$student->year_level} — {$semesterDb}. "
+                            . "Add a Course Unit Preset in Fee Settings or seed subjects.",
+                ]);
+            }
+
+            // Build a minimal response from preset data so the form can auto-fill.
+            // source='preset' signals the frontend that no subject breakdown is available.
+            $nstpLecUnits = $preset->has_nstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
+
+            return response()->json([
+                'found'              => true,
+                'source'             => 'preset',   // consumed by Vue for a soft warning
+                'is_irregular'       => false,
+                'billable_lec_units' => $preset->lec_units,
+                'lab_subject_count'  => $preset->lab_subject_count,
+                'nstp_lec_units'     => $nstpLecUnits,
+                'has_nstp'           => $preset->has_nstp,
+                'preset_has_nstp'    => $preset->has_nstp,
+                'pathfit_units'      => 0,
+                'subjects'           => [],         // no subject-level breakdown available
+                'course'             => $student->course,
+                'year_level'         => $student->year_level,
+                'message'            => 'Units auto-filled from Course Unit Preset (no subject-level data).',
+            ]);
+        }
+
+        // ── Subjects found — standard path ─────────────────────────────────────────
+        // Merge NSTP: active if subjects-based detection OR preset flag says so.
+        // preset->has_nstp = false does NOT suppress a positive subject detection.
+        $hasNstp      = $curriculum['has_nstp'] || ($preset?->has_nstp ?? false);
         $nstpLecUnits = $hasNstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
 
         return response()->json([
             'found'              => true,
+            'source'             => 'subjects',
             'is_irregular'       => false,
             'billable_lec_units' => $curriculum['billable_lec_units'],
             'lab_subject_count'  => $curriculum['lab_subject_count'],
             'nstp_lec_units'     => $nstpLecUnits,
             'has_nstp'           => $hasNstp,
-            'preset_has_nstp'    => $preset?->has_nstp ?? false,   // for frontend transparency
+            'preset_has_nstp'    => $preset?->has_nstp ?? false,
             'pathfit_units'      => $curriculum['pathfit_units'],
             'subjects'           => $curriculum['subjects'],
             'course'             => $student->course,

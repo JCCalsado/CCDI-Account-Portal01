@@ -284,7 +284,8 @@ function fmt(val: string | number) {
 function livePresetTotal(id: number): number {
   const v = presetEditVals.value[id];
   if (!v) return 0;
-  return parseInt(v.lec_units || '0') + parseInt(v.lab_units || '0');
+  const base = parseInt(v.lec_units || '0') + parseInt(v.lab_units || '0');
+  return base + (v.has_nstp ? 1.5 : 0);
 }
 </script>
 

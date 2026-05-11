@@ -26,7 +26,9 @@ class FeeSettingsController extends Controller
             ->orderByRaw("FIELD(semester, '1st Sem', '2nd Sem', 'Summer')")
             ->get()
             ->map(fn($p) => array_merge($p->toArray(), [
-                'total_units' => $p->lec_units + $p->lab_units,
+                // Include NSTP's fixed 1.5 billing units in the displayed total
+                // when has_nstp is true. This matches how billing is calculated.
+                'total_units' => $p->lec_units + $p->lab_units + ($p->has_nstp ? 1.5 : 0),
             ]))->toArray();
 
         $existingCourses = CourseUnitPreset::distinct()

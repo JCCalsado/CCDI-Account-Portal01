@@ -28,6 +28,11 @@ class ProfileController extends Controller
 
     /**
      * Update the user's profile information.
+     *
+     * The validated field names from ProfileUpdateRequest now match the DB
+     * column names directly (address_house_lot_unit, address_street_name,
+     * address_municipality_city, address_barangay, address_province), so no
+     * mapping layer is required here.
      */
     public function update(ProfileUpdateRequest $request): RedirectResponse
     {
@@ -47,19 +52,6 @@ class ProfileController extends Controller
         // Remove the legacy 'name' field — it is computed from first/last name
         unset($validated['name']);
 
-        // Map address fields to database column names
-        if (isset($validated['address_house_lot_unit'])) {
-            $validated['address_house_no'] = $validated['address_house_lot_unit'];
-            unset($validated['address_house_lot_unit']);
-        }
-        if (isset($validated['address_street_name'])) {
-            $validated['address_street'] = $validated['address_street_name'];
-            unset($validated['address_street_name']);
-        }
-        if (isset($validated['address_municipality_city'])) {
-            $validated['address_municipality'] = $validated['address_municipality_city'];
-            unset($validated['address_municipality_city']);
-        }
         $user->fill($validated);
 
         if ($user->isDirty('email')) {

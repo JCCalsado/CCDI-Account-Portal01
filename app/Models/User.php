@@ -26,7 +26,11 @@ class User extends Authenticatable
         'email',
         'password',
         'birthday',
-        'address',
+        'address_house_lot_unit',
+        'address_street_name',
+        'address_barangay',
+        'address_municipality_city',
+        'address_province',
         'phone',
         'account_id',
         'profile_picture',
@@ -176,7 +180,8 @@ class User extends Authenticatable
     {
         return $this->role === UserRoleEnum::ADMIN;
     }
-     public function isAccounting(): bool
+
+    public function isAccounting(): bool
     {
         return $this->role === UserRoleEnum::ACCOUNTING;
     }
@@ -259,15 +264,19 @@ class User extends Authenticatable
     public static function getValidationRules($userId = null): array
     {
         return [
-            'account_id'      => 'nullable|string|unique:users,account_id,' . $userId,
-            'address'         => 'nullable|string|max:255',
-            'phone'           => 'nullable|string|max:20',
-            'course'          => 'nullable|string|max:100',
-            'year_level'      => 'nullable|string|max:50',
-            'faculty'         => 'nullable|string|max:100',
-            'status'          => 'required|in:active,graduated,dropped',
+            'account_id'               => 'nullable|string|unique:users,account_id,' . $userId,
+            'address_house_lot_unit'   => 'nullable|string|max:255',
+            'address_street_name'      => 'nullable|string|max:255',
+            'address_barangay'         => 'nullable|string|max:255',
+            'address_municipality_city'=> 'nullable|string|max:255',
+            'address_province'         => 'nullable|string|max:255',
+            'phone'                    => 'nullable|string|max:20',
+            'course'                   => 'nullable|string|max:100',
+            'year_level'               => 'nullable|string|max:50',
+            'faculty'                  => 'nullable|string|max:100',
+            'status'                   => 'required|in:active,graduated,dropped',
             // webp included — must match ProfileController::updatePicture() mimes rule
-            'profile_picture' => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
+            'profile_picture'          => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:2048',
         ];
     }
 
