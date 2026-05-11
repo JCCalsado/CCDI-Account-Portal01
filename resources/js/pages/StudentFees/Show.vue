@@ -361,26 +361,39 @@ const totalMiscellaneous = computed(() => {
 });
 
 const feeCalculationSummary = computed(() => {
-    const totalUnits = tuitionItems.value.reduce(
+    const assess = selectedAssessment.value as any;
+    if (!assess) return '';
+
+    // lec_units from fee_breakdown already includes nstp (controller sums them).
+    // Fallback: use assessment.lec_units + assessment.nstp_lec_units directly.
+    const lecFromBreakdown = tuitionItems.value.reduce(
         (sum: number, item: any) => sum + (parseFloat(String(item.units ?? 0)) || 0),
         0,
     );
+    const totalLecUnits = lecFromBreakdown > 0
+        ? lecFromBreakdown
+        : (parseFloat(String(assess.lec_units ?? 0)) + parseFloat(String(assess.nstp_lec_units ?? 0)));
+
     const labCount = labItems.value.reduce(
         (sum: number, item: any) => sum + (parseFloat(String(item.units ?? 0)) || 0),
         0,
     );
 
-    if (totalUnits <= 0) return '';
+    if (totalLecUnits <= 0) return '';
 
     const parts: string[] = [];
 
     // Read the rate directly — never reverse-engineer it from tuition_fee / units
-    const lecRate = ((selectedAssessment.value as any)?.tuition_per_unit ?? 364.00).toFixed(2);
+    const lecRate = (assess?.tuition_per_unit ?? 364.00).toFixed(2);
 
-    parts.push(`${totalUnits.toFixed(1)} LEC unit${totalUnits !== 1 ? 's' : ''} × ₱${lecRate}`);
+    parts.push(`${totalLecUnits.toFixed(1)} LEC units × ₱${lecRate}`);
 
     if (labCount > 0)
-        parts.push(`${labCount.toFixed(1)} LAB unit${labCount !== 1 ? 's' : ''} × ₱1,656.00`);
+        parts.push(`${labCount} LAB subjects × ₱1,656.00`);
+
+    const entrepFee = parseFloat(String(assess.entrepreneurship_fee ?? 0));
+    if (entrepFee > 0)
+        parts.push(`₱${entrepFee.toFixed(2)} entrep`);
 
     if (totalMiscellaneous.value > 0)
         parts.push(`₱${totalMiscellaneous.value.toFixed(2)} misc`);

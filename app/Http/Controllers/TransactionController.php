@@ -41,18 +41,19 @@ class TransactionController extends Controller
                 ->orderByDesc('semester')
                 ->get()
                 ->map(fn ($t) => [
-                    'id'         => $t->id,
-                    'kind'       => $t->kind,
-                    'type'       => $t->type ?? ucfirst($t->kind),
-                    'amount'     => (float) $t->amount,
-                    'reference'  => $t->reference,
-                    'or_number'  => $t->or_number ?? null,
-                    'status'     => $t->status,
-                    'year'       => $t->year,
-                    'semester'   => $t->semester,
-                    'meta'       => $t->meta,
-                    'created_at' => $t->created_at?->toDateTimeString(),
-                    'user'       => $t->user,
+                    'id'              => $t->id,
+                    'kind'            => $t->kind,
+                    'type'            => $t->type ?? ucfirst($t->kind),
+                    'amount'          => (float) $t->amount,
+                    'reference'       => $t->reference,
+                    'or_number'       => $t->or_number ?? null,
+                    'status'          => $t->status,
+                    'year'            => $t->year,
+                    'semester'        => $t->semester,
+                    'payment_channel' => $t->payment_channel ?? ($t->meta['payment_method'] ?? null),
+                    'meta'            => $t->meta,
+                    'created_at'      => $t->created_at?->toDateTimeString(),
+                    'user'            => $t->user,
                 ])
                 ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
 
@@ -66,18 +67,19 @@ class TransactionController extends Controller
                 ->orderByDesc('semester')
                 ->get()
                 ->map(fn ($t) => [
-                    'id'         => $t->id,
-                    'kind'       => $t->kind,
-                    'type'       => $t->type ?? ucfirst($t->kind),
-                    'amount'     => (float) $t->amount,
-                    'reference'  => $t->reference,
-                    'or_number'  => $t->or_number ?? null,
-                    'status'     => $t->status,
-                    'year'       => $t->year,
-                    'semester'   => $t->semester,
-                    'meta'       => $t->meta,
-                    'created_at' => $t->created_at?->toDateTimeString(),
-                    'user'       => $t->user,
+                    'id'              => $t->id,
+                    'kind'            => $t->kind,
+                    'type'            => $t->type ?? ucfirst($t->kind),
+                    'amount'          => (float) $t->amount,
+                    'reference'       => $t->reference,
+                    'or_number'       => $t->or_number ?? null,
+                    'status'          => $t->status,
+                    'year'            => $t->year,
+                    'semester'        => $t->semester,
+                    'payment_channel' => $t->payment_channel ?? ($t->meta['payment_method'] ?? null),
+                    'meta'            => $t->meta,
+                    'created_at'      => $t->created_at?->toDateTimeString(),
+                    'user'            => $t->user,
                 ])
                 ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
 
