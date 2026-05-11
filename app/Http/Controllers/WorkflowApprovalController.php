@@ -8,6 +8,7 @@ use App\Models\StudentPaymentTerm;
 use App\Models\StudentAssessment;
 use App\Services\WorkflowService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 
 class WorkflowApprovalController extends Controller
@@ -28,13 +29,10 @@ class WorkflowApprovalController extends Controller
             ]);
 
         if ($userRole === 'accounting') {
-            // Accounting can see ALL approvals on payment_approval workflows,
-            // regardless of which specific user ID was assigned as approver.
             $query->whereHas('workflowInstance.workflow', function ($wq) {
                 $wq->where('type', 'payment_approval');
             });
         } else {
-            // Other roles can only see approvals explicitly assigned to them.
             $query->where('approver_id', $user->id);
         }
 
@@ -64,12 +62,12 @@ class WorkflowApprovalController extends Controller
         $student     = null;
         $unpaidTerms = collect();
         $assessment  = null;
+        $proofUrl    = null;
+        $proofType   = null; // 'image' | 'pdf' | null
 
         if ($transaction instanceof \App\Models\Transaction && $transaction->user && $transaction->user->student) {
             $student = $transaction->user->student->load('user');
 
-            // ✅ FIX: Load assessment from transaction meta so the Show page
-            // can display full assessment details alongside the payment.
             $assessmentId = $transaction->meta['assessment_id'] ?? null;
             if ($assessmentId) {
                 $assessment = StudentAssessment::find($assessmentId);
@@ -81,13 +79,27 @@ class WorkflowApprovalController extends Controller
                 ->whereIn('status', ['pending', 'partial'])
                 ->orderBy('due_date', 'asc')
                 ->get();
+
+            // ── PROOF OF PAYMENT ─────────────────────────────────────────────
+            // The path is stored as a relative path inside the 'public' disk,
+            // e.g. "payment_proofs/proof_5_1746000000.jpg".
+            // Storage::disk('public')->url() converts it to an accessible URL.
+            $proofPath = $transaction->meta['proof_of_payment'] ?? null;
+
+            if ($proofPath && Storage::disk('public')->exists($proofPath)) {
+                $proofUrl  = Storage::disk('public')->url($proofPath);
+                $extension = strtolower(pathinfo($proofPath, PATHINFO_EXTENSION));
+                $proofType = $extension === 'pdf' ? 'pdf' : 'image';
+            }
         }
 
         return Inertia::render('Approvals/Show', [
             'approval'    => $approval,
             'student'     => $student,
             'unpaidTerms' => $unpaidTerms,
-            'assessment'  => $assessment, // ✅ FIX: was missing, now passed to frontend
+            'assessment'  => $assessment,
+            'proofUrl'    => $proofUrl,   // string|null — publicly accessible URL
+            'proofType'   => $proofType,  // 'image'|'pdf'|null
         ]);
     }
 
@@ -110,8 +122,6 @@ class WorkflowApprovalController extends Controller
                 $validated['comments'] ?? null
             );
         } catch (\Exception $e) {
-            // approveStep rolls back the DB transaction on failure, so the
-            // approval record stays 'pending' — accounting can retry safely.
             return back()->with('flash.error', $e->getMessage());
         }
 

@@ -153,10 +153,6 @@ class PaymentController extends Controller
         }
 
         // ── OVERSPEND GUARD ───────────────────────────────────────────────────
-        // Rule: amount must NEVER exceed the student's total outstanding balance
-        // across ALL unpaid terms in the same assessment. Paying more than the
-        // selected term is allowed — the excess flows into subsequent terms.
-        // Paying more than the total outstanding is NEVER allowed.
         $requestAmount = round((float) $validated['amount'], 2);
 
         if ($requestAmount <= 0) {
@@ -164,7 +160,6 @@ class PaymentController extends Controller
         }
 
         if ($termInfo) {
-            // Total outstanding = sum of all unpaid term balances for this assessment
             $totalOutstanding = round(
                 StudentPaymentTerm::where('student_assessment_id', $termInfo->student_assessment_id)
                     ->whereIn('status', \App\Enums\PaymentStatus::unpaidValues())
@@ -183,10 +178,9 @@ class PaymentController extends Controller
                 ], 422);
             }
 
-            // Snap to total outstanding if within float noise (₱0.005)
             if (abs($requestAmount - $totalOutstanding) < 0.01) {
-                $requestAmount          = $totalOutstanding;
-                $validated['amount']    = $totalOutstanding;
+                $requestAmount       = $totalOutstanding;
+                $validated['amount'] = $totalOutstanding;
             }
         }
 
@@ -237,7 +231,7 @@ class PaymentController extends Controller
             }
         }
 
-        // ── NORMALISE AMOUNT — exactly 2dp before centavo conversion ─────────
+        // ── NORMALISE AMOUNT ─────────────────────────────────────────────────
         $amountInPesos    = round($requestAmount, 2);
         $amountInCentavos = (int) round($amountInPesos * 100);
 
@@ -334,7 +328,6 @@ class PaymentController extends Controller
             'auth_user'  => auth()->id(),
         ]);
 
-        // ✅ Auth check FIRST before using $user anywhere
         if (! auth()->check()) {
             Log::warning('PayMongo success: unauthenticated, saving intended URL', [
                 'session_id' => $sessionId,
@@ -346,7 +339,6 @@ class PaymentController extends Controller
 
         $user = auth()->user();
 
-        // ── GUARD: missing or unsubstituted session ID ────────────────────────
         if (! $sessionId || $sessionId === '{CHECKOUT_SESSION_ID}') {
             Log::info('No valid session_id in URL — finding latest pending payment', [
                 'user_id' => $user->id,
@@ -374,7 +366,6 @@ class PaymentController extends Controller
 
         $payment = Payment::where('paymongo_source_id', $sessionId)->first();
 
-        // ── FAST PATH: Already fully processed ───────────────────────────────
         if ($payment && $payment->status === 'completed') {
             $intentId = $payment->paymongo_intent_id
                 ?? $payment->meta['paymongo_intent_id']
@@ -394,7 +385,6 @@ class PaymentController extends Controller
             }
         }
 
-        // ── CHECK IF TRANSACTION ALREADY RECORDED (webhook may have beaten us) ─
         $paymentIntentId = $payment
             ? ($payment->paymongo_intent_id ?? $payment->meta['paymongo_intent_id'] ?? null)
             : null;
@@ -415,7 +405,6 @@ class PaymentController extends Controller
             }
         }
 
-        // ── ATTEMPT PAYMONGO API VERIFICATION (non-blocking) ─────────────────
         $apiVerified    = false;
         $sessionData    = null;
         $sessionPaidAt  = null;
@@ -471,13 +460,11 @@ class PaymentController extends Controller
             ]);
         }
 
-        // ── IF API UNREACHABLE AND NO LOCAL PAYMENT ROW ───────────────────────
         if (! $apiVerified && ! $payment) {
             return redirect()->route('student.account', ['tab' => 'history'])
                 ->with('flash.info', 'Your payment is being processed. Please check the Payment History tab in a few minutes. If it doesn\'t appear, contact accounting with reference: ' . $sessionId);
         }
 
-        // ── IF API UNREACHABLE BUT LOCAL PAYMENT EXISTS ───────────────────────
         if (! $apiVerified && $payment && $payment->status === 'pending') {
             Log::info('PayMongo API unreachable but local pending payment exists — showing processing message', [
                 'session_id' => $sessionId,
@@ -487,7 +474,6 @@ class PaymentController extends Controller
                 ->with('flash.info', 'Your payment is being processed. Please check the Payment History tab in a few minutes. If it doesn\'t appear after 10 minutes, contact accounting.');
         }
 
-        // ── API VERIFIED: Check for duplicate transaction ─────────────────────
         if ($paymentIntentId) {
             $existingTxn = Transaction::where('reference', "PAY-{$paymentIntentId}")->first();
             if ($existingTxn) {
@@ -504,10 +490,6 @@ class PaymentController extends Controller
                 ->with('flash.success', 'Payment confirmed! Awaiting accounting verification.');
         }
 
-        // ── RESOLVE AMOUNT from 3 sources in priority order ───────────────────
-        // Source 1: PayMongo API response (most authoritative)
-        // Source 2: Local Payment record amount column
-        // Source 3: Payment meta 'amount' key (backup we now store in createCheckout)
         $amountInPesos = 0.0;
 
         if ($sessionData) {
@@ -523,15 +505,13 @@ class PaymentController extends Controller
         }
 
         Log::info('PayMongo success: resolved amount', [
-            'session_id'        => $sessionId,
-            'amount_resolved'   => $amountInPesos,
-            'payment_col_amt'   => $payment?->amount,
-            'payment_meta_amt'  => $payment?->meta['amount'] ?? null,
-            'session_api_amt'   => $sessionData ? data_get($sessionData, 'attributes.amount') : null,
+            'session_id'       => $sessionId,
+            'amount_resolved'  => $amountInPesos,
+            'payment_col_amt'  => $payment?->amount,
+            'payment_meta_amt' => $payment?->meta['amount'] ?? null,
+            'session_api_amt'  => $sessionData ? data_get($sessionData, 'attributes.amount') : null,
         ]);
 
-        // ✅ HARD STOP: never record a ₱0.00 transaction — it causes broken
-        // approvals and wrong balance deductions downstream.
         if ($amountInPesos <= 0) {
             Log::error('PayMongo success: amount resolved to ₱0 — aborting transaction creation', [
                 'session_id'     => $sessionId,
@@ -543,10 +523,9 @@ class PaymentController extends Controller
                 ->with('flash.warning', 'Payment amount could not be verified. Please contact accounting with reference: ' . $sessionId);
         }
 
-        $termId      = $payment?->meta['selected_term_id'] ?? null;
-        $termInfo    = $termId ? StudentPaymentTerm::find($termId) : null;
+        $termId   = $payment?->meta['selected_term_id'] ?? null;
+        $termInfo = $termId ? StudentPaymentTerm::find($termId) : null;
 
-        // ✅ FIX: Use term_name as description/type so it shows correctly in history
         $termName    = $termInfo?->term_name ?? ($payment?->meta['term_name'] ?? 'Payment');
         $description = $sessionData
             ? (data_get($sessionData, 'attributes.description') ?? $termName)
@@ -591,8 +570,6 @@ class PaymentController extends Controller
                 ]);
             }
 
-            // ✅ FIX: Use actual term_name as 'type' so Payment History shows
-            // "Prelim" / "Midterm" etc. instead of the generic "Payment" string.
             $transaction = Transaction::create([
                 'user_id'         => $user->id,
                 'kind'            => 'payment',
@@ -600,7 +577,7 @@ class PaymentController extends Controller
                 'payment_channel' => 'paymongo',
                 'amount'          => $amountInPesos,
                 'reference'       => "PAY-{$paymentIntentId}",
-                'type'            => $termName, // ✅ FIXED: was hardcoded 'Payment'
+                'type'            => $termName,
                 'paid_at'         => now(),
                 'year'            => now()->year,
                 'semester'        => $termInfo?->assessment?->semester ?? null,
@@ -618,7 +595,14 @@ class PaymentController extends Controller
         });
 
         if ($transaction) {
-            $this->startPaymentApprovalWorkflow($transaction->id, $user->id);
+            $workflowStarted = $this->startPaymentApprovalWorkflow($transaction->id, $user->id);
+
+            if (! $workflowStarted) {
+                Log::critical('PayMongo payment recorded but workflow NOT started', [
+                    'transaction_id' => $transaction->id,
+                    'user_id'        => $user->id,
+                ]);
+            }
         }
 
         return redirect()->route('student.account', ['tab' => 'history'])
@@ -783,7 +767,12 @@ class PaymentController extends Controller
     //  PROOF OF PAYMENT UPLOAD
     // ─────────────────────────────────────────────────────────────────────────
 
-
+    /**
+     * Show the proof-of-payment upload form.
+     *
+     * Accepts transactions in AWAITING_PROOF status only.
+     * PENDING is included as a legacy safety valve.
+     */
     public function showProofForm(Request $request, Transaction $transaction): Response|\Illuminate\Http\RedirectResponse
     {
         $user = $request->user();
@@ -792,9 +781,17 @@ class PaymentController extends Controller
             abort(403, 'Unauthorized access to this transaction.');
         }
 
-        if ($transaction->status !== PaymentStatus::PENDING->value) {
+        // ✅ FIX: was checking PENDING, but submitBankTransfer() creates with AWAITING_PROOF.
+        // This mismatch caused the student to be bounced away immediately, making the
+        // entire bank transfer → proof upload → approval pipeline unreachable.
+        $acceptableStatuses = [
+            PaymentStatus::AWAITING_PROOF->value,
+            PaymentStatus::PENDING->value, // legacy safety only
+        ];
+
+        if (! in_array($transaction->status, $acceptableStatuses, true)) {
             return redirect()->route('student.account')
-                ->with('error', 'This payment is not waiting for proof.');
+                ->with('flash.error', 'This payment is not waiting for proof of payment.');
         }
 
         return Inertia::render('Payment/ProofUpload', [
@@ -809,12 +806,28 @@ class PaymentController extends Controller
         ]);
     }
 
+    /**
+     * Handle proof-of-payment file upload and trigger the approval workflow.
+     */
     public function uploadProof(Request $request, Transaction $transaction)
     {
         $user = $request->user();
 
         if ($transaction->user_id !== $user->id) {
             abort(403, 'Unauthorized access to this transaction.');
+        }
+
+        // ✅ Guard: only allow upload if the transaction is still waiting for proof.
+        // Prevents double-submission from re-triggering the workflow if the student
+        // hits the back button or submits the form twice.
+        $acceptableStatuses = [
+            PaymentStatus::AWAITING_PROOF->value,
+            PaymentStatus::PENDING->value, // legacy safety only
+        ];
+
+        if (! in_array($transaction->status, $acceptableStatuses, true)) {
+            return redirect()->route('student.account', ['tab' => 'history'])
+                ->with('flash.info', 'This payment has already been submitted for review.');
         }
 
         $validated = $request->validate([
@@ -833,25 +846,36 @@ class PaymentController extends Controller
             ]),
         ]);
 
-        try {
-            $this->startPaymentApprovalWorkflow($transaction->id, $user->id);
+        $workflowStarted = $this->startPaymentApprovalWorkflow($transaction->id, $user->id);
+
+        if ($workflowStarted) {
             return redirect()->route('student.account', ['tab' => 'history'])
-                ->with('success', 'Proof of payment uploaded. Awaiting verification.');
-        } catch (\Exception $e) {
-            Log::error('Proof upload workflow failed', [
-                'transaction_id' => $transaction->id,
-                'error'          => $e->getMessage(),
-            ]);
-            return redirect()->route('student.account', ['tab' => 'history'])
-                ->with('info', 'Proof uploaded. Accounting will review shortly.');
+                ->with('flash.success', 'Proof of payment uploaded. Awaiting accounting verification.');
         }
+
+        // Workflow did not start — proof is saved, status is updated, but accounting
+        // will not see it in the approvals queue automatically. Surface this clearly.
+        Log::critical('uploadProof: workflow NOT started after proof upload', [
+            'transaction_id' => $transaction->id,
+            'user_id'        => $user->id,
+        ]);
+
+        return redirect()->route('student.account', ['tab' => 'history'])
+            ->with('flash.warning', 'Proof uploaded, but the accounting office could not be notified automatically. Please contact accounting and provide your reference: ' . $transaction->reference);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     //  HELPERS
     // ─────────────────────────────────────────────────────────────────────────
 
-    private function startPaymentApprovalWorkflow(int $transactionId, int $userId): void
+    /**
+     * Start the payment_approval workflow for a given transaction.
+     *
+     * Returns true on success, false on any failure.
+     * Callers must check the return value and surface an appropriate message.
+     * This method NEVER throws — all exceptions are caught and logged.
+     */
+    private function startPaymentApprovalWorkflow(int $transactionId, int $userId): bool
     {
         try {
             $workflow = \App\Models\Workflow::active()
@@ -859,21 +883,25 @@ class PaymentController extends Controller
                 ->first();
 
             if (! $workflow) {
-                Log::warning('No active payment_approval workflow found.', [
+                Log::critical('CRITICAL: No active payment_approval workflow found. Approval queue is broken.', [
                     'transaction_id' => $transactionId,
+                    'action_required' => 'Run: php artisan db:seed --class=PaymentApprovalWorkflowSeeder',
                 ]);
-                return;
+                return false;
             }
 
             $transaction = Transaction::with(['user'])->findOrFail($transactionId);
             app(\App\Services\WorkflowService::class)->startWorkflow($workflow, $transaction, $userId);
 
+            return true;
+
         } catch (\Throwable $e) {
-            Log::error('Payment approval workflow start failed (transaction safe)', [
+            Log::error('Payment approval workflow start failed', [
                 'transaction_id' => $transactionId,
                 'error'          => $e->getMessage(),
                 'trace'          => $e->getTraceAsString(),
             ]);
+            return false;
         }
     }
 

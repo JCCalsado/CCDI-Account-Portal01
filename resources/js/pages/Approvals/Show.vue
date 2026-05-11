@@ -3,14 +3,21 @@ import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, router, useForm } from '@inertiajs/vue3';
-import { CheckCircle2, RotateCcw, XCircle } from 'lucide-vue-next';
+import { CheckCircle2, Download, ExternalLink, FileText, ImageOff, RotateCcw, XCircle } from 'lucide-vue-next';
 import { ref } from 'vue';
+
+interface TransactionMeta {
+    term_name?: string;
+    proof_of_payment?: string;
+    description?: string;
+    selected_term_id?: number;
+    assessment_id?: number;
+}
 
 interface Approval {
     id: number;
     status: 'pending' | 'approved' | 'rejected';
     step_name: string;
-    workflowable_type: string;
     approver_name: string | null;
     comments: string | null;
     created_at: string;
@@ -19,7 +26,7 @@ interface Approval {
         workflowable: {
             amount?: number;
             reference?: string;
-            meta?: { term_name?: string };
+            meta?: TransactionMeta;
             type?: string;
             payment_channel?: string;
             user?: { first_name: string; last_name: string; account_id: string };
@@ -60,6 +67,8 @@ interface Props {
     student?: Student | null;
     unpaidTerms?: UnpaidTerm[];
     assessment?: Assessment | null;
+    proofUrl?: string | null;
+    proofType?: 'image' | 'pdf' | null;
 }
 
 const props = defineProps<Props>();
@@ -86,17 +95,14 @@ const formatDate = (date: string | null) => {
 const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1);
 
 const showRejectDialog = ref(false);
+const proofLoadError = ref(false);
 
-// Approve — useForm gives Inertia proper processing state.
-// Errors (flash.error) are surfaced by FlashBanner in AppLayout automatically.
 const approveForm = useForm({});
 
 const approve = () => {
     approveForm.post(route('approvals.approve', props.approval.id));
 };
 
-// Reject — useForm handles processing state and surfaces server-side
-// validation errors (required comments) without alert().
 const rejectForm = useForm({ comments: '' });
 
 const openRejectDialog = () => {
@@ -114,6 +120,19 @@ const reject = () => {
 
 const refreshApproval = () => {
     router.reload();
+};
+
+const onProofLoadError = () => {
+    proofLoadError.value = true;
+};
+
+const paymentMethodLabel: Record<string, string> = {
+    cash: 'Cash',
+    gcash: 'GCash',
+    bank_transfer: 'Bank Transfer',
+    credit_card: 'Credit Card',
+    debit_card: 'Debit Card',
+    paymongo_checkout: 'PayMongo',
 };
 </script>
 
@@ -141,6 +160,7 @@ const refreshApproval = () => {
 
             <!-- Approval Details Card -->
             <div class="space-y-6 rounded-xl border bg-white p-6 shadow-sm">
+
                 <!-- Status Badge + Amount -->
                 <div class="flex items-center justify-between">
                     <span
@@ -199,24 +219,15 @@ const refreshApproval = () => {
                         <p class="text-sm text-gray-500">Payment Method</p>
                         <p class="font-semibold">
                             {{
-                                {
-                                    cash: 'Cash',
-                                    gcash: 'GCash',
-                                    bank_transfer: 'Bank Transfer',
-                                    credit_card: 'Credit Card',
-                                    debit_card: 'Debit Card',
-                                }[approval.workflow_instance?.workflowable?.payment_channel ?? ''] ??
-                                approval.workflow_instance?.workflowable?.payment_channel ??
-                                '—'
+                                paymentMethodLabel[approval.workflow_instance?.workflowable?.payment_channel ?? '']
+                                ?? approval.workflow_instance?.workflowable?.payment_channel
+                                ?? '—'
                             }}
                         </p>
                     </div>
-                    
                     <div>
                         <p class="text-sm text-gray-500">Assessment No.</p>
-                        <p class="font-mono font-semibold">
-                            {{ assessment?.assessment_number ?? '—' }}
-                        </p>
+                        <p class="font-mono font-semibold">{{ assessment?.assessment_number ?? '—' }}</p>
                     </div>
                     <div>
                         <p class="text-sm text-gray-500">School Year / Semester</p>
@@ -237,6 +248,86 @@ const refreshApproval = () => {
                         <p class="font-semibold">{{ formatDate(approval.created_at) }}</p>
                     </div>
                 </div>
+
+                <!-- ── PROOF OF PAYMENT ────────────────────────────────────── -->
+                <div class="border-t pt-6">
+                    <div class="mb-3 flex items-center justify-between">
+                        <h3 class="font-semibold text-gray-900">Proof of Payment</h3>
+                        <a
+                            v-if="proofUrl"
+                            :href="proofUrl"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                        >
+                            <Download :size="14" />
+                            Download
+                        </a>
+                    </div>
+
+                    <!-- No proof uploaded -->
+                    <div
+                        v-if="!proofUrl"
+                        class="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 py-12 text-center"
+                    >
+                        <ImageOff :size="40" class="mb-3 text-gray-300" />
+                        <p class="text-sm font-medium text-gray-500">No proof of payment submitted</p>
+                        <p class="mt-1 text-xs text-gray-400">
+                            This may be a PayMongo (online) payment — no manual receipt is required.
+                        </p>
+                    </div>
+
+                    <!-- Image proof (jpg, png, webp) -->
+                    <div v-else-if="proofType === 'image'" class="overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
+                        <!-- Load error fallback -->
+                        <div
+                            v-if="proofLoadError"
+                            class="flex flex-col items-center justify-center py-12 text-center"
+                        >
+                            <ImageOff :size="36" class="mb-2 text-gray-300" />
+                            <p class="text-sm text-gray-500">Image could not be loaded.</p>
+                            <a
+                                :href="proofUrl"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="mt-2 inline-flex items-center gap-1 text-sm font-medium text-indigo-600 hover:underline"
+                            >
+                                <ExternalLink :size="14" />
+                                Open in new tab
+                            </a>
+                        </div>
+                        <img
+                            v-else
+                            :src="proofUrl"
+                            alt="Proof of payment"
+                            class="max-h-[600px] w-full object-contain"
+                            @error="onProofLoadError"
+                        />
+                    </div>
+
+                    <!-- PDF proof -->
+                    <div v-else-if="proofType === 'pdf'" class="overflow-hidden rounded-xl border border-gray-200">
+                        <div class="flex items-center gap-3 border-b bg-gray-50 px-4 py-3">
+                            <FileText :size="20" class="text-red-500" />
+                            <span class="text-sm font-medium text-gray-700">PDF Receipt</span>
+                            <a
+                                :href="proofUrl"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="ml-auto inline-flex items-center gap-1 text-sm font-medium text-indigo-600 hover:underline"
+                            >
+                                <ExternalLink :size="14" />
+                                Open in new tab
+                            </a>
+                        </div>
+                        <iframe
+                            :src="proofUrl"
+                            class="h-[600px] w-full border-0"
+                            title="Proof of payment PDF"
+                        />
+                    </div>
+                </div>
+                <!-- ── END PROOF OF PAYMENT ────────────────────────────────── -->
 
                 <!-- Comments (if any) -->
                 <div v-if="approval.comments" class="border-t pt-4">
@@ -307,7 +398,7 @@ const refreshApproval = () => {
             </div>
         </div>
 
-        <!-- Decline Dialog — uses Tailwind modal (no Dialog component needed) -->
+        <!-- Decline Dialog -->
         <div
             v-if="showRejectDialog"
             class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
