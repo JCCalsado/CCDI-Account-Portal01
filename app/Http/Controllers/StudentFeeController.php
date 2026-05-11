@@ -323,11 +323,17 @@ class StudentFeeController extends Controller
         $tuitionPerUnit = (float) (\App\Models\FeeSetting::where('key', 'tuition_per_unit')->value('amount') ?? 364.00);
 
         $allAssessmentsFormatted = $allAssessmentsRaw->map(function ($a) use ($user, $tuitionPerUnit) {
+            // Entrepreneurship fee has no dedicated column — recover by subtraction.
             $entrepFee = max(0.0, round(
                 (float) $a->total_assessment
                 - (float) $a->tuition_fee
                 - (float) $a->lab_fee
-                - (float) $a->misc_fee, 2));
+                - (float) $a->misc_fee,
+                2
+            ));
+
+            // Lab line displayed = stored lab_fee (lab subjects × ₱1,656) + entrep
+            $labAndEntrepFee = round((float) $a->lab_fee + $entrepFee, 2);
 
             return [
                 'id'                   => $a->id,
@@ -338,19 +344,38 @@ class StudentFeeController extends Controller
                 'total_assessment'     => (float) $a->total_assessment,
                 'tuition_fee'          => (float) $a->tuition_fee,
                 'tuition_per_unit'     => $tuitionPerUnit,
-                'lab_fee'              => (float) $a->lab_fee,
+                'lab_fee'              => $labAndEntrepFee,
                 'entrepreneurship_fee' => $entrepFee,
-                'misc_fee'             => (float) $a->misc_fee,
-                'other_fees'           => (float) ($a->lab_fee + $a->misc_fee),
+                'misc_fee'             => (float) $a->misc_fee,          // stored value — not live fee_settings
+                'other_fees'           => round($labAndEntrepFee + (float) $a->misc_fee, 2),
                 'lec_units'            => (float) $a->lec_units,
                 'nstp_lec_units'       => (float) ($a->nstp_lec_units ?? 0),
                 'lab_units'            => $a->lab_units,
+                'lab_subjects'         => (int) ($a->lab_subjects ?? $a->lab_units),
                 'discount_type'        => $a->discount_type,
                 'is_taking_nstp'       => $a->is_taking_nstp,
                 'fee_breakdown'        => [
-                    ['category' => 'Tuition',       'name' => 'Tuition Fee',       'code' => 'TUI', 'units' => (float) $a->lec_units + (float) ($a->nstp_lec_units ?? 0), 'amount' => (float) $a->tuition_fee],
-                    ['category' => 'Laboratory',    'name' => 'Laboratory Fee',    'code' => 'LAB', 'units' => $a->lab_units, 'amount' => (float) $a->lab_fee],
-                    ['category' => 'Miscellaneous', 'name' => 'Miscellaneous Fee', 'code' => 'MISC','units' => null,           'amount' => (float) $a->misc_fee],
+                    [
+                        'category' => 'Tuition',
+                        'name'     => 'Tuition Fee',
+                        'code'     => 'TUI',
+                        'units'    => (float) $a->lec_units + (float) ($a->nstp_lec_units ?? 0),
+                        'amount'   => (float) $a->tuition_fee,
+                    ],
+                    [
+                        'category' => 'Laboratory',
+                        'name'     => 'Laboratory Fee',
+                        'code'     => 'LAB',
+                        'units'    => (int) ($a->lab_subjects ?? $a->lab_units),
+                        'amount'   => $labAndEntrepFee,   // lab_subjects × ₱1,656 + ₱600 entrep
+                    ],
+                    [
+                        'category' => 'Miscellaneous',
+                        'name'     => 'Miscellaneous Fee',
+                        'code'     => 'MISC',
+                        'units'    => null,
+                        'amount'   => (float) $a->misc_fee,  // stored at creation time
+                    ],
                 ],
                 'status'       => $a->status,
                 'paymentTerms' => $a->paymentTerms->sortBy('term_order')->map(fn ($t) => [
@@ -406,14 +431,19 @@ class StudentFeeController extends Controller
                 'created_at' => $t->created_at?->toDateTimeString(),
             ])->all();
 
-        // Entrepreneurship fee is not a standalone column on student_assessments.
-        // It is baked into total_assessment. Recover it by subtraction.
+        // Active assessment — same entrep recovery pattern
         $activeEntrepFee = $assessment
             ? max(0.0, round(
                 (float) $assessment->total_assessment
                 - (float) $assessment->tuition_fee
                 - (float) $assessment->lab_fee
-                - (float) $assessment->misc_fee, 2))
+                - (float) $assessment->misc_fee,
+                2
+            ))
+            : 0.0;
+
+        $activeLabAndEntrepFee = $assessment
+            ? round((float) $assessment->lab_fee + $activeEntrepFee, 2)
             : 0.0;
 
         $activeAssessmentFormatted = $assessment ? [
@@ -425,16 +455,35 @@ class StudentFeeController extends Controller
             'lec_units'            => (float) $assessment->lec_units,
             'nstp_lec_units'       => (float) ($assessment->nstp_lec_units ?? 0),
             'lab_units'            => $assessment->lab_units,
+            'lab_subjects'         => (int) ($assessment->lab_subjects ?? $assessment->lab_units),
             'total_assessment'     => (float) $assessment->total_assessment,
             'tuition_fee'          => (float) $assessment->tuition_fee,
-            'lab_fee'              => (float) $assessment->lab_fee,
+            'lab_fee'              => $activeLabAndEntrepFee,
             'entrepreneurship_fee' => $activeEntrepFee,
-            'misc_fee'             => (float) $assessment->misc_fee,
-            'other_fees'           => (float) ($assessment->lab_fee + $assessment->misc_fee),
+            'misc_fee'             => (float) $assessment->misc_fee,   // stored — not live
+            'other_fees'           => round($activeLabAndEntrepFee + (float) $assessment->misc_fee, 2),
             'fee_breakdown'        => [
-                ['category' => 'Tuition',       'name' => 'Tuition Fee',       'code' => 'TUI', 'units' => (float) $assessment->lec_units + (float) ($assessment->nstp_lec_units ?? 0), 'amount' => (float) $assessment->tuition_fee],
-                ['category' => 'Laboratory',    'name' => 'Laboratory Fee',    'code' => 'LAB', 'units' => $assessment->lab_units, 'amount' => (float) $assessment->lab_fee],
-                ['category' => 'Miscellaneous', 'name' => 'Miscellaneous Fee', 'code' => 'MISC','units' => null,                   'amount' => (float) $assessment->misc_fee],
+                [
+                    'category' => 'Tuition',
+                    'name'     => 'Tuition Fee',
+                    'code'     => 'TUI',
+                    'units'    => (float) $assessment->lec_units + (float) ($assessment->nstp_lec_units ?? 0),
+                    'amount'   => (float) $assessment->tuition_fee,
+                ],
+                [
+                    'category' => 'Laboratory',
+                    'name'     => 'Laboratory Fee',
+                    'code'     => 'LAB',
+                    'units'    => (int) ($assessment->lab_subjects ?? $assessment->lab_units),
+                    'amount'   => $activeLabAndEntrepFee,  // lab + entrep
+                ],
+                [
+                    'category' => 'Miscellaneous',
+                    'name'     => 'Miscellaneous Fee',
+                    'code'     => 'MISC',
+                    'units'    => null,
+                    'amount'   => (float) $assessment->misc_fee,  // stored value
+                ],
             ],
             'status'               => $assessment->status,
             'tuition_per_unit'     => $tuitionPerUnit,
@@ -450,6 +499,10 @@ class StudentFeeController extends Controller
             ])->values()->all(),
         ] : null;
 
+        // miscItems is only used for the drill-down tooltip/accordion in Show.vue.
+        // Pass the STORED misc_fee total so the breakdown is anchored to creation time,
+        // but still pass live fee_settings items for labeling purposes.
+        // The frontend totalMiscellaneous should use assessment.misc_fee, not sum(miscItems).
         $miscItems = \App\Models\FeeSetting::whereIn('category', ['miscellaneous', 'other'])
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -491,9 +544,9 @@ class StudentFeeController extends Controller
             'transactions'   => $transactions,
             'payments'       => $payments,
             'feeBreakdown'   => $assessment ? [
-                ['category' => 'Tuition',       'total' => (float) $assessment->tuition_fee, 'items' => 1],
-                ['category' => 'Laboratory',    'total' => (float) $assessment->lab_fee,     'items' => 1],
-                ['category' => 'Miscellaneous', 'total' => (float) $assessment->misc_fee,    'items' => 1],
+                ['category' => 'Tuition',       'total' => (float) $assessment->tuition_fee,  'items' => 1],
+                ['category' => 'Laboratory',    'total' => $activeLabAndEntrepFee,              'items' => 1],
+                ['category' => 'Miscellaneous', 'total' => (float) $assessment->misc_fee,      'items' => 1],
             ] : [],
             'miscItems'                    => $miscItems,
             'backUrl'                      => route('student-fees.index'),

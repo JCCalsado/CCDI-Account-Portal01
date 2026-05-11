@@ -34,7 +34,24 @@ class StudentAccountController extends Controller
             ->orderBy('school_year')
             ->get()
             ->map(function ($a) {
-                $feeBreakdown = $this->computeTotal($a->lec_units, $a->lab_units);
+                // ── Use stored columns — never recalculate from live fee_settings ──
+                $tuitionFee = (float) $a->tuition_fee;
+                $labFee     = (float) $a->lab_fee;
+                $miscFee    = (float) $a->misc_fee;
+
+                // Entrepreneurship fee has no dedicated column.
+                // Recover it: total − tuition − lab − misc.
+                // AssessmentService::compute() always stores:
+                //   total = tuition + lab_subjects_fee + entrep_fee + misc
+                //   lab_fee column = lab_subjects × ₱1,656 (NO entrep)
+                // So: entrep = total - tuition - lab - misc
+                $entrepFee = max(0.0, round(
+                    (float) $a->total_assessment - $tuitionFee - $labFee - $miscFee,
+                    2
+                ));
+
+                $labAndEntrepFee = round($labFee + $entrepFee, 2);
+
                 return [
                     'id'                => $a->id,
                     'assessment_number' => $a->assessment_number,
@@ -43,39 +60,54 @@ class StudentAccountController extends Controller
                     'school_year'       => $a->school_year,
                     'course'            => $a->course ?? null,
                     'total_assessment'  => (float) $a->total_assessment,
-                    'tuition_fee'       => (float) $feeBreakdown['tuitionFee'],
-                    'other_fees'        => (float) ($feeBreakdown['labFee'] + $feeBreakdown['miscFee']),
+                    'tuition_fee'       => $tuitionFee,
+                    'lab_fee'           => $labAndEntrepFee,   // lab + entrep combined
+                    'misc_fee'          => $miscFee,
+                    'other_fees'        => round($labAndEntrepFee + $miscFee, 2),
+                    'lec_units'         => (float) $a->lec_units,
+                    'nstp_lec_units'    => (float) ($a->nstp_lec_units ?? 0),
+                    'lab_units'         => (int) $a->lab_units,
+                    'lab_subjects'      => (int) $a->lab_subjects,
+                    'entrepreneurship_fee' => $entrepFee,
 
-                    // ── Fee Breakdown ───────────────────────────────────────
-                    // Labels: Tuition Fee / Laboratory Fee / Miscellaneous Fee
-                    // Miscellaneous Fee is a FLAT fee — no unit basis.
-                    // 'units' is intentionally null for Miscellaneous so the
-                    // AccountOverview table can hide the Units column for that row.
-                    'fee_breakdown'     => [
+                    // ── Fee Breakdown ─────────────────────────────────────────────
+                    // All values are read from STORED assessment columns.
+                    // This guarantees historical accuracy when fee_settings change.
+                    'fee_breakdown' => [
                         [
                             'category' => 'Tuition',
                             'name'     => 'Tuition Fee',
                             'code'     => 'TUI',
-                            'units'    => $a->lec_units + ($a->nstp_lec_units ?? 0),
-                            'amount'   => $feeBreakdown['tuitionFee'],
+                            'units'    => (float) $a->lec_units + (float) ($a->nstp_lec_units ?? 0),
+                            'amount'   => $tuitionFee,
                         ],
                         [
                             'category' => 'Laboratory',
                             'name'     => 'Laboratory Fee',
                             'code'     => 'LAB',
-                            'units'    => $a->lab_units,
-                            'amount'   => $feeBreakdown['labFee'],
+                            'units'    => (int) ($a->lab_subjects ?? $a->lab_units),
+                            'amount'   => $labAndEntrepFee,  // lab subjects + ₱600 entrep
                         ],
                         [
                             'category' => 'Miscellaneous',
                             'name'     => 'Miscellaneous Fee',
                             'code'     => 'MISC',
-                            'units'    => null,   // flat fee — no unit basis
-                            'amount'   => $feeBreakdown['miscFee'],
+                            'units'    => null,
+                            'amount'   => $miscFee,
                         ],
                     ],
                     'status'     => $a->status,
                     'created_at' => $a->created_at,
+                    'paymentTerms' => $a->paymentTerms->map(fn ($t) => [
+                        'id'         => $t->id,
+                        'term_name'  => $t->term_name,
+                        'term_order' => $t->term_order,
+                        'percentage' => $t->percentage,
+                        'amount'     => (float) $t->amount,
+                        'balance'    => max(0, (float) $t->balance),
+                        'status'     => $t->status,
+                        'due_date'   => $t->due_date,
+                    ])->values()->all(),
                 ];
             });
 
@@ -85,17 +117,11 @@ class StudentAccountController extends Controller
                 ->get()
             : collect();
 
-        // Only payment transactions (kind = payment)
         $transactions = Transaction::where('user_id', $user->id)
             ->where('kind', 'payment')
             ->orderBy('created_at', 'desc')
             ->get();
 
-        // totalPaid: authoritative value derived from payment term balances.
-        // Using Transaction.amount sums is unreliable when a payment overflows
-        // across multiple terms — the Transaction records the full amount paid,
-        // but the term deductions may only apply to one term's balance if spillover
-        // is partial. The only authoritative source is: total_assessment − outstanding.
         $totalPaid = 0;
         if ($assessment) {
             $totalAssessment = (float) $assessment->total_assessment;
@@ -103,7 +129,6 @@ class StudentAccountController extends Controller
             $totalPaid       = round(max(0, $totalAssessment - $outstanding), 2);
         }
 
-        // Pending approval payments — shown as banners, block duplicate submissions
         $pendingApprovalPayments = $transactions
             ->where('status', PaymentStatus::AWAITING_APPROVAL->value)
             ->map(fn ($txn) => [
@@ -129,7 +154,6 @@ class StudentAccountController extends Controller
             })
             ->get();
 
-        // Enrolled subjects by assessment
         $assessmentTermIndex = $allAssessments->keyBy(
             fn ($a) => $a['school_year'] . '||' . $a['semester']
         );
@@ -157,8 +181,6 @@ class StudentAccountController extends Controller
             'latestAssessment'             => $assessment ? array_merge(
                 $assessment->toArray(),
                 [
-                    // Pass student enrollment/irregular status alongside assessment
-                    // is_irregular lives on users, not student_assessments
                     'is_irregular'   => (bool) $user->is_irregular,
                     'middle_initial' => $user->middle_initial,
                     'student_name'   => $user->name,
@@ -170,19 +192,5 @@ class StudentAccountController extends Controller
             'pendingApprovalPayments'      => $pendingApprovalPayments,
             'enrolledSubjectsByAssessment' => $enrolledSubjectsByAssessment,
         ]);
-    }
-
-    private function computeTotal(int $lecUnits, int $labUnits): array
-    {
-        $tuitionPerUnit = (float) config('fees.tuition_per_lec_unit', 364.00);
-        $labFeePerUnit  = (float) config('fees.lab_fee_per_unit', 1656.00);
-        $miscFeeFixed   = (float) config('fees.misc_fee_fixed', 4700.00);
-
-        $tuitionFee = $lecUnits * $tuitionPerUnit;
-        $labFee     = $labUnits * $labFeePerUnit;
-        $miscFee    = $miscFeeFixed;
-        $total      = $tuitionFee + $labFee + $miscFee;
-
-        return compact('tuitionFee', 'labFee', 'miscFee', 'total');
     }
 }

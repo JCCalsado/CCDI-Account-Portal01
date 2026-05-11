@@ -349,11 +349,9 @@ const miscellaneousItemsByGroup = computed((): MiscItemGroup[] => {
 });
 
 const totalMiscellaneous = computed(() => {
-    const fromGroups =
-        Math.round(
-            miscellaneousItemsByGroup.value.reduce((sum, group) => sum + group.total, 0) * 100,
-        ) / 100;
-    if (fromGroups > 0) return fromGroups;
+    // Always use the stored assessment misc_fee — never derive from live fee_settings.
+    // fee_settings can change after assessment creation; the stored value is the
+    // authoritative historical amount that the student was actually assessed.
     const miscEntry = (
         (selectedAssessment.value as any)?.fee_breakdown ?? []
     ).find((i: any) => i.category === 'Miscellaneous');
