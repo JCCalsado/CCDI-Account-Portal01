@@ -21,10 +21,6 @@ use Illuminate\Support\Facades\Hash;
  *   - 10 Active    → 4th Year  (current sem: 4Y-1S  in 2025-2026)
  *   - 10 Graduated → 4th Year  (all sems fully paid)
  *
- * All year levels are enrolled in the SAME AY 2025-2026.
- * This makes the Financial Reports filter for 2025-2026 meaningful
- * across all students.
- *
  * Discount overrides (resolved in ComprehensiveAssessmentSeeder):
  *   student1@ccdi.edu.ph  → Maria Santos  → discount_type = 'full'
  *   student2@ccdi.edu.ph  → Ana Garcia    → discount_type = 'nstp'
@@ -62,10 +58,24 @@ class ComprehensiveUserSeeder extends Seeder
         'R', 'S', 'T', 'V',
     ];
 
-    private array $addresses = [
-        'Sorsogon City', 'Legazpi City', 'Naga City', 'Daet',
-        'Iriga City', 'Tabaco City', 'Ligao City', 'Polangui',
-        'Daraga', 'Camalig', 'Bulan', 'Irosin', 'Gubat',
+    /**
+     * Decomposed address seeds.
+     * Using realistic Sorsogon province barangay/municipality combinations.
+     */
+    private array $addressSeeds = [
+        ['barangay' => 'Barangay Ester',     'municipality' => 'Sorsogon City',  'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Bibincahan', 'municipality' => 'Sorsogon City',  'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Bitan-o',   'municipality' => 'Sorsogon City',  'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Almendras',  'municipality' => 'Sorsogon City',  'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Cahiton',    'municipality' => 'Bulan',          'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Centro',     'municipality' => 'Irosin',         'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Balogo',     'municipality' => 'Gubat',          'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Bolos',      'municipality' => 'Castilla',       'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Cogon',      'municipality' => 'Pilar',          'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Gatbo',      'municipality' => 'Bacon District', 'province' => 'Sorsogon'],
+        ['barangay' => 'Barangay Almeda',     'municipality' => 'Legazpi City',   'province' => 'Albay'],
+        ['barangay' => 'Barangay Taysan',     'municipality' => 'Naga City',      'province' => 'Camarines Sur'],
+        ['barangay' => 'Barangay Mabolo',     'municipality' => 'Daet',           'province' => 'Camarines Norte'],
     ];
 
     private array $courses = [
@@ -93,16 +103,20 @@ class ComprehensiveUserSeeder extends Seeder
         $admin = User::firstOrCreate(
             ['email' => 'admin@ccdi.edu.ph'],
             [
-                'last_name'      => 'Rodriguez',
-                'first_name'     => 'Carlos',
-                'middle_initial' => 'M',
-                'password'       => Hash::make('password'),
-                'role'           => 'admin',
-                'status'         => User::STATUS_ACTIVE,
-                'faculty'        => 'Administration',
-                'phone'          => '09171234501',
-                'address'        => 'Sorsogon City',
-                'birthday'       => '1985-05-15',
+                'last_name'                => 'Rodriguez',
+                'first_name'               => 'Carlos',
+                'middle_initial'           => 'M',
+                'password'                 => Hash::make('password'),
+                'role'                     => 'admin',
+                'status'                   => User::STATUS_ACTIVE,
+                'faculty'                  => 'Administration',
+                'phone'                    => '09171234501',
+                'address_house_lot_unit'   => null,
+                'address_street_name'      => 'Magsaysay Street',
+                'address_barangay'         => 'Barangay Ester',
+                'address_municipality_city'=> 'Sorsogon City',
+                'address_province'         => 'Sorsogon',
+                'birthday'                 => '1985-05-15',
             ]
         );
         $admin->account()->firstOrCreate([], ['balance' => 0]);
@@ -111,16 +125,20 @@ class ComprehensiveUserSeeder extends Seeder
         $accounting = User::firstOrCreate(
             ['email' => 'accounting@ccdi.edu.ph'],
             [
-                'last_name'      => 'Garcia',
-                'first_name'     => 'Ana Marie',
-                'middle_initial' => 'S',
-                'password'       => Hash::make('password'),
-                'role'           => 'accounting',
-                'status'         => User::STATUS_ACTIVE,
-                'faculty'        => 'Accounting Department',
-                'phone'          => '09181234502',
-                'address'        => 'Legazpi City',
-                'birthday'       => '1990-08-20',
+                'last_name'                => 'Garcia',
+                'first_name'               => 'Ana Marie',
+                'middle_initial'           => 'S',
+                'password'                 => Hash::make('password'),
+                'role'                     => 'accounting',
+                'status'                   => User::STATUS_ACTIVE,
+                'faculty'                  => 'Accounting Department',
+                'phone'                    => '09181234502',
+                'address_house_lot_unit'   => null,
+                'address_street_name'      => 'Penaranda Street',
+                'address_barangay'         => 'Barangay Bibincahan',
+                'address_municipality_city'=> 'Sorsogon City',
+                'address_province'         => 'Sorsogon',
+                'birthday'                 => '1990-08-20',
             ]
         );
         $accounting->account()->firstOrCreate([], ['balance' => 0]);
@@ -131,20 +149,6 @@ class ComprehensiveUserSeeder extends Seeder
             ['year_level' => '1st Year', 'status' => 'active',    'balance' => 0],      // student2 → nstp discount
         ];
 
-        // ── Slots 2–99: 98 students spread across ALL four year levels ─────────
-        // All are enrolled in AY 2025-2026 simultaneously.
-        // Having 3rd Year students is essential so the Financial Reports page
-        // shows meaningful data when filtered to 2025-2026 (current AY).
-        //
-        // Distribution:
-        //   23 more 1st Year active   (+2 above = 25 total 1st Year)
-        //   25 Active 2nd Year
-        //   20 Active 3rd Year
-        //   10 Dropped 3rd Year
-        //   10 Active 4th Year
-        //   10 Graduated 4th Year
-        //   ─────────────────────────
-        //   98 total in pool (+2 pinned = 100)
         $pool = [];
 
         for ($i = 0; $i < 23; $i++) {
@@ -201,7 +205,7 @@ class ComprehensiveUserSeeder extends Seeder
             }
 
             $middleInitial = $this->middleInitials[array_rand($this->middleInitials)];
-            $address       = $this->addresses[array_rand($this->addresses)];
+            $addressSeed   = $this->addressSeeds[$index % count($this->addressSeeds)];
             $course        = $this->courses[$index % count($this->courses)];
 
             $yearLevelNum = (int) substr($slot['year_level'], 0, 1);
@@ -211,19 +215,23 @@ class ComprehensiveUserSeeder extends Seeder
                 . '-' . str_pad(rand(1, 28), 2, '0', STR_PAD_LEFT);
 
             $user = User::create([
-                'last_name'      => $lastName,
-                'first_name'     => $firstName,
-                'middle_initial' => $middleInitial,
-                'email'          => $email,
-                'password'       => Hash::make('password'),
-                'role'           => 'student',
-                'account_id'     => $studentId,
-                'status'         => $userStatusMap[$slot['status']],
-                'course'         => $course,
-                'year_level'     => $slot['year_level'],
-                'birthday'       => $birthday,
-                'phone'          => '0917' . rand(1000000, 9999999),
-                'address'        => $address,
+                'last_name'                => $lastName,
+                'first_name'               => $firstName,
+                'middle_initial'           => $middleInitial,
+                'email'                    => $email,
+                'password'                 => Hash::make('password'),
+                'role'                     => 'student',
+                'account_id'               => $studentId,
+                'status'                   => $userStatusMap[$slot['status']],
+                'course'                   => $course,
+                'year_level'               => $slot['year_level'],
+                'birthday'                 => $birthday,
+                'phone'                    => '0917' . rand(1000000, 9999999),
+                'address_house_lot_unit'   => null,
+                'address_street_name'      => null,
+                'address_barangay'         => $addressSeed['barangay'],
+                'address_municipality_city'=> $addressSeed['municipality'],
+                'address_province'         => $addressSeed['province'],
             ]);
 
             $user->account()->create([

@@ -155,7 +155,6 @@ class StudentFeeController extends Controller
             }
         }
 
-        // Always read from fee_settings — never config()
         $feeRates = AssessmentService::feeRatesForForm();
 
         return Inertia::render('StudentFees/Create', [
@@ -178,8 +177,8 @@ class StudentFeeController extends Controller
             'lab_units'           => ['required', 'integer', 'min:0', 'max:20'],
             'nstp_lec_units'      => ['nullable', 'numeric', 'min:0', 'max:10'],
             'discount_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
-            'term_percentages'   => ['nullable', 'array'],
-            'term_percentages.*' => ['numeric', 'min:0', 'max:100'],
+            'term_percentages'    => ['nullable', 'array'],
+            'term_percentages.*'  => ['numeric', 'min:0', 'max:100'],
         ]);
 
         $validated['lec_units']           = (float) $validated['lec_units'];
@@ -187,23 +186,19 @@ class StudentFeeController extends Controller
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
 
-        // ── Remaining balance guard ──────────────────────────────────────────
-        // Block new assessment if the student still has an unpaid balance.
-        $studentAccount   = \App\Models\Account::where('user_id', $validated['user_id'])->first();
+        $studentAccount   = Account::where('user_id', $validated['user_id'])->first();
         $remainingBalance = max(0, (float) ($studentAccount?->balance ?? 0));
 
         if ($remainingBalance > 0) {
             return back()->withErrors([
-                'user_id' => 'This student has a remaining balance of \u20b1' .
+                'user_id' => 'This student has a remaining balance of ₱' .
                     number_format($remainingBalance, 2) .
                     '. Please settle the outstanding balance before creating a new assessment.',
             ]);
         }
-        // ────────────────────────────────────────────────────────────────────
 
         try {
             DB::transaction(function () use ($validated) {
-                // Prevent duplicate active assessments
                 $existing = StudentAssessment::where('user_id', $validated['user_id'])
                     ->where('semester', $validated['semester'])
                     ->where('school_year', $validated['school_year'])
@@ -218,12 +213,10 @@ class StudentFeeController extends Controller
                     );
                 }
 
-                // Archive any previous active assessment
                 StudentAssessment::where('user_id', $validated['user_id'])
                     ->where('status', 'active')
                     ->update(['status' => 'completed']);
 
-                // Load fee rates from fee_settings table (single source of truth)
                 $rates = AssessmentService::loadRates();
 
                 if (!empty($validated['term_percentages'])) {
@@ -236,7 +229,6 @@ class StudentFeeController extends Controller
                     }, $rates['payment_terms']);
                 }
 
-                // Compute fees — discount applies only to billable tuition, never NSTP portion
                 $fees = AssessmentService::compute(
                     lecUnits:           $validated['lec_units'],
                     labSubjects:        $validated['lab_units'],
@@ -268,12 +260,10 @@ class StudentFeeController extends Controller
                     'status'              => 'active',
                 ]);
 
-                // Build payment terms
                 foreach (AssessmentService::buildPaymentTerms($fees['total'], $rates) as $term) {
                     $assessment->paymentTerms()->create($term);
                 }
 
-                // Audit transaction
                 Transaction::create([
                     'user_id'         => $validated['user_id'],
                     'kind'            => 'charge',
@@ -329,10 +319,9 @@ class StudentFeeController extends Controller
             ->orderByDesc('created_at')
             ->get();
 
-        $assessment = $user->latestAssessment;
+        $assessment     = $user->latestAssessment;
         $tuitionPerUnit = (float) (\App\Models\FeeSetting::where('key', 'tuition_per_unit')->value('amount') ?? 364.00);
 
-        // FIX 1: capture $tuitionPerUnit in the closure via `use ($user, $tuitionPerUnit)`
         $allAssessmentsFormatted = $allAssessmentsRaw->map(function ($a) use ($user, $tuitionPerUnit) {
             return [
                 'id'               => $a->id,
@@ -351,12 +340,12 @@ class StudentFeeController extends Controller
                 'discount_type'    => $a->discount_type,
                 'is_taking_nstp'   => $a->is_taking_nstp,
                 'fee_breakdown'    => [
-                    ['category' => 'Tuition',       'name' => 'Tuition Fee',       'code' => 'TUI', 'units' => $a->lec_units,  'amount' => (float) $a->tuition_fee],
-                    ['category' => 'Laboratory',    'name' => 'Laboratory Fee',    'code' => 'LAB', 'units' => $a->lab_units,  'amount' => (float) $a->lab_fee],
+                    ['category' => 'Tuition',       'name' => 'Tuition Fee',       'code' => 'TUI', 'units' => $a->lec_units, 'amount' => (float) $a->tuition_fee],
+                    ['category' => 'Laboratory',    'name' => 'Laboratory Fee',    'code' => 'LAB', 'units' => $a->lab_units, 'amount' => (float) $a->lab_fee],
                     ['category' => 'Miscellaneous', 'name' => 'Miscellaneous Fee', 'code' => 'MISC','units' => null,           'amount' => (float) $a->misc_fee],
                 ],
                 'status'       => $a->status,
-                'paymentTerms' => $a->paymentTerms->sortBy('term_order')->map(fn($t) => [
+                'paymentTerms' => $a->paymentTerms->sortBy('term_order')->map(fn ($t) => [
                     'id'         => $t->id,
                     'term_name'  => $t->term_name,
                     'term_order' => $t->term_order,
@@ -409,8 +398,6 @@ class StudentFeeController extends Controller
                 'created_at' => $t->created_at?->toDateTimeString(),
             ])->all();
 
-        // FIX 2: paymentTerms in activeAssessmentFormatted now mapped to plain arrays,
-        // matching the structure used in allAssessmentsFormatted
         $activeAssessmentFormatted = $assessment ? [
             'id'               => $assessment->id,
             'course'           => $user->course,
@@ -431,7 +418,7 @@ class StudentFeeController extends Controller
             ],
             'status'           => $assessment->status,
             'tuition_per_unit' => $tuitionPerUnit,
-            'paymentTerms'     => $assessment->paymentTerms->sortBy('term_order')->map(fn($t) => [
+            'paymentTerms'     => $assessment->paymentTerms->sortBy('term_order')->map(fn ($t) => [
                 'id'         => $t->id,
                 'term_name'  => $t->term_name,
                 'term_order' => $t->term_order,
@@ -443,7 +430,6 @@ class StudentFeeController extends Controller
             ])->values()->all(),
         ] : null;
 
-        // Load misc items from fee_settings (not config)
         $miscItems = \App\Models\FeeSetting::whereIn('category', ['miscellaneous', 'other'])
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -525,7 +511,6 @@ class StudentFeeController extends Controller
                 ->with('flash.error', 'No active assessment found for this student. Create one first.');
         }
 
-        // Calculate nstp_units from enrolled subjects
         $nstpUnits = 0;
         if ($assessment->is_taking_nstp) {
             $nstpUnits = \DB::table('student_enrollments')
@@ -691,7 +676,7 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  GET CURRICULUM UNITS (for auto-populate on regular students)
+    //  GET CURRICULUM UNITS
     // ─────────────────────────────────────────────────────────────
 
     public function getCurriculumUnits(Request $request): \Illuminate\Http\JsonResponse
@@ -703,7 +688,6 @@ class StudentFeeController extends Controller
 
         $student = User::findOrFail($validated['student_id']);
 
-        // Only auto-populate for regular students
         if ($student->is_irregular) {
             return response()->json([
                 'found'        => false,
@@ -721,24 +705,18 @@ class StudentFeeController extends Controller
 
         $semesterDb = AssessmentService::normalizeSemester($validated['semester']);
 
-        // ── Primary source: subjects table ─────────────────────────────────────────
         $curriculum = AssessmentService::getCurriculumUnits(
             $student->course,
             $student->year_level,
             $validated['semester']
         );
 
-        // ── Always load the preset (used for has_nstp merge + fallback) ────────────
         $preset = CourseUnitPreset::forCourseYearSem(
             $student->course,
             $student->year_level,
             $semesterDb
         );
 
-        // ── Fallback: use preset when subjects table has no data ───────────────────
-        // This happens when EnhancedSubjectSeeder has not been run yet, or when a
-        // new course has been added to presets but not yet to the subjects table.
-        // The preset is the administrative source of truth for unit configuration.
         if (empty($curriculum['subjects'])) {
             if (! $preset) {
                 return response()->json([
@@ -748,13 +726,11 @@ class StudentFeeController extends Controller
                 ]);
             }
 
-            // Build a minimal response from preset data so the form can auto-fill.
-            // source='preset' signals the frontend that no subject breakdown is available.
             $nstpLecUnits = $preset->has_nstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
 
             return response()->json([
                 'found'              => true,
-                'source'             => 'preset',   // consumed by Vue for a soft warning
+                'source'             => 'preset',
                 'is_irregular'       => false,
                 'billable_lec_units' => $preset->lec_units,
                 'lab_subject_count'  => $preset->lab_subject_count,
@@ -762,16 +738,13 @@ class StudentFeeController extends Controller
                 'has_nstp'           => $preset->has_nstp,
                 'preset_has_nstp'    => $preset->has_nstp,
                 'pathfit_units'      => 0,
-                'subjects'           => [],         // no subject-level breakdown available
+                'subjects'           => [],
                 'course'             => $student->course,
                 'year_level'         => $student->year_level,
                 'message'            => 'Units auto-filled from Course Unit Preset (no subject-level data).',
             ]);
         }
 
-        // ── Subjects found — standard path ─────────────────────────────────────────
-        // Merge NSTP: active if subjects-based detection OR preset flag says so.
-        // preset->has_nstp = false does NOT suppress a positive subject detection.
         $hasNstp      = $curriculum['has_nstp'] || ($preset?->has_nstp ?? false);
         $nstpLecUnits = $hasNstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
 
@@ -792,7 +765,7 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  GET LATEST ASSESSMENT DATA (legacy endpoint — kept for compat)
+    //  GET LATEST ASSESSMENT DATA
     // ─────────────────────────────────────────────────────────────
 
     public function getLatestAssessmentData(Request $request): \Illuminate\Http\JsonResponse
@@ -846,15 +819,12 @@ class StudentFeeController extends Controller
             ->map(fn ($s) => ['label' => $s->label, 'amount' => (float) $s->amount])
             ->all();
 
-        // Map semester format: "2nd" -> "2nd Sem", "1st" -> "1st Sem"
         $semesterMap = [
             '1st' => '1st Sem', '2nd' => '2nd Sem', 'Summer' => 'Summer',
             '1st Sem' => '1st Sem', '2nd Sem' => '2nd Sem',
         ];
         $semesterForSubjects = $semesterMap[$assessment->semester] ?? $assessment->semester;
 
-        // For irregular students, subjects may be stored in assessment->subjects (JSON array of IDs)
-        // For regular students, fetch from subjects table by course/year/semester
         $isIrregular = (bool) $user->is_irregular;
 
         if ($isIrregular && !empty($assessment->subjects)) {
@@ -876,7 +846,6 @@ class StudentFeeController extends Controller
                 ->get();
         }
 
-        // If type=receipt, generate receipt PDF using latest paid transaction
         if ($request->query('type') === 'receipt') {
             $latestPayment = $user->transactions()
                 ->where('kind', 'payment')
@@ -938,22 +907,26 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  STORE STUDENT
+    //  STORE STUDENT  ← FIXED
     // ─────────────────────────────────────────────────────────────
 
     public function storeStudent(Request $request)
     {
         $request->validate([
-            'last_name'      => 'required|string|max:255',
-            'first_name'     => 'required|string|max:255',
-            'middle_initial' => 'nullable|string|max:10',
-            'email'          => 'required|string|lowercase|email|max:255|unique:' . User::class,
-            'birthday'       => 'required|date',
-            'year_level'     => 'required|string|max:50',
-            'course'         => 'required|string|max:255',
-            'address'        => 'required|string|max:255',
-            'phone'          => 'required|string|max:20',
-            'is_irregular'   => 'boolean',
+            'last_name'                => 'required|string|max:255',
+            'first_name'               => 'required|string|max:255',
+            'middle_initial'           => 'nullable|string|max:10',
+            'email'                    => 'required|string|lowercase|email|max:255|unique:' . User::class,
+            'birthday'                 => 'required|date',
+            'year_level'               => 'required|string|max:50',
+            'course'                   => 'required|string|max:255',
+            'phone'                    => 'required|string|max:20',
+            'address_house_lot_unit'   => 'nullable|string|max:255',
+            'address_street_name'      => 'nullable|string|max:255',
+            'address_barangay'         => 'nullable|string|max:255',
+            'address_municipality_city'=> 'nullable|string|max:255',
+            'address_province'         => 'nullable|string|max:255',
+            'is_irregular'             => 'boolean',
         ]);
 
         DB::beginTransaction();
@@ -961,20 +934,24 @@ class StudentFeeController extends Controller
             $accountId = $this->generateUniqueAccountId();
 
             $user = User::create([
-                'last_name'      => $request->last_name,
-                'first_name'     => $request->first_name,
-                'middle_initial' => $request->middle_initial,
-                'email'          => $request->email,
-                'password'       => Hash::make(Str::random(16)),
-                'birthday'       => $request->birthday,
-                'year_level'     => $request->year_level,
-                'course'         => $request->course,
-                'address'        => $request->address,
-                'phone'          => $request->phone,
-                'account_id'     => $accountId,
-                'status'         => User::STATUS_ACTIVE,
-                'role'           => UserRoleEnum::STUDENT,
-                'is_irregular'   => (bool) ($request->is_irregular ?? false),
+                'last_name'                => $request->last_name,
+                'first_name'               => $request->first_name,
+                'middle_initial'           => $request->middle_initial,
+                'email'                    => $request->email,
+                'password'                 => Hash::make('password'),
+                'birthday'                 => $request->birthday,
+                'year_level'               => $request->year_level,
+                'course'                   => $request->course,
+                'phone'                    => $request->phone,
+                'address_house_lot_unit'   => $request->address_house_lot_unit,
+                'address_street_name'      => $request->address_street_name,
+                'address_barangay'         => $request->address_barangay,
+                'address_municipality_city'=> $request->address_municipality_city,
+                'address_province'         => $request->address_province ?? 'Sorsogon',
+                'account_id'               => $accountId,
+                'status'                   => User::STATUS_ACTIVE,
+                'role'                     => UserRoleEnum::STUDENT,
+                'is_irregular'             => (bool) ($request->is_irregular ?? false),
             ]);
 
             Student::create([
@@ -1006,7 +983,6 @@ class StudentFeeController extends Controller
 
     public function editStudent(Student $student): Response
     {
-        // Explicitly load user relationship
         $student->load('user');
 
         if (!$student->user) {
@@ -1024,7 +1000,7 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  UPDATE STUDENT (Admin only)
+    //  UPDATE STUDENT (Admin only)  ← FIXED
     // ─────────────────────────────────────────────────────────────
 
     public function updateStudent(Request $request, Student $student)
@@ -1048,19 +1024,19 @@ class StudentFeeController extends Controller
 
         if ($student->user) {
             $student->user->update([
-                'first_name'           => $validated['first_name'],
-                'last_name'            => $validated['last_name'],
-                'middle_initial'       => $validated['middle_initial'],
-                'email'                => $validated['email'],
-                'course'               => $validated['course'],
-                'year_level'           => $validated['year_level'],
-                'birthday'             => $validated['birthday'],
-                'phone'                => $validated['phone'],
-                'address_house_no'     => $validated['address_house_lot_unit'] ?? null,
-                'address_street'       => $validated['address_street_name'] ?? null,
-                'address_barangay'     => $validated['address_barangay'] ?? null,
-                'address_municipality' => $validated['address_municipality_city'] ?? null,
-                'address_province'     => $validated['address_province'] ?? null,
+                'first_name'                => $validated['first_name'],
+                'last_name'                 => $validated['last_name'],
+                'middle_initial'            => $validated['middle_initial'],
+                'email'                     => $validated['email'],
+                'course'                    => $validated['course'],
+                'year_level'                => $validated['year_level'],
+                'birthday'                  => $validated['birthday'],
+                'phone'                     => $validated['phone'],
+                'address_house_lot_unit'    => $validated['address_house_lot_unit'] ?? null,
+                'address_street_name'       => $validated['address_street_name'] ?? null,
+                'address_barangay'          => $validated['address_barangay'] ?? null,
+                'address_municipality_city' => $validated['address_municipality_city'] ?? null,
+                'address_province'          => $validated['address_province'] ?? null,
             ]);
         }
 

@@ -20,10 +20,10 @@ interface StudentData {
     year_level: string
     birthday: string | null
     phone: string | null
-    address_house_no: string | null
-    address_street: string | null
+    address_house_lot_unit: string | null
+    address_street_name: string | null
     address_barangay: string | null
-    address_municipality: string | null
+    address_municipality_city: string | null
     address_province: string | null
   }
 }
@@ -41,20 +41,20 @@ const breadcrumbs = [
 ]
 
 const form = useForm({
-  student_id: props.student.student_id,
-  first_name: props.student.user.first_name,
-  last_name: props.student.user.last_name,
-  middle_initial: props.student.user.middle_initial ?? '',
-  email: props.student.user.email,
-  course: props.student.user.course,
-  year_level: props.student.user.year_level,
-  birthday: props.student.user.birthday ?? '',
-  phone: props.student.user.phone ?? '',
-  address_house_lot_unit: props.student.user.address_house_no ?? '',
-  address_street_name: props.student.user.address_street ?? '',
-  address_barangay: props.student.user.address_barangay ?? '',
-  address_municipality_city: props.student.user.address_municipality ?? '',
-  address_province: props.student.user.address_province ?? 'Sorsogon',
+  student_id:                props.student.student_id,
+  first_name:                props.student.user.first_name,
+  last_name:                 props.student.user.last_name,
+  middle_initial:            props.student.user.middle_initial ?? '',
+  email:                     props.student.user.email,
+  course:                    props.student.user.course,
+  year_level:                props.student.user.year_level,
+  birthday:                  props.student.user.birthday ?? '',
+  phone:                     props.student.user.phone ?? '',
+  address_house_lot_unit:    props.student.user.address_house_lot_unit ?? '',
+  address_street_name:       props.student.user.address_street_name ?? '',
+  address_barangay:          props.student.user.address_barangay ?? '',
+  address_municipality_city: props.student.user.address_municipality_city ?? '',
+  address_province:          props.student.user.address_province ?? 'Sorsogon',
 })
 
 const submit = () => {
@@ -96,12 +96,7 @@ const submit = () => {
           <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div class="space-y-2">
               <Label for="last_name">Last Name *</Label>
-              <Input
-                id="last_name"
-                v-model="form.last_name"
-                required
-                placeholder="Dela Cruz"
-              />
+              <Input id="last_name" v-model="form.last_name" required placeholder="Dela Cruz" />
               <p v-if="form.errors.last_name" class="text-sm text-red-500">
                 {{ form.errors.last_name }}
               </p>
@@ -109,12 +104,7 @@ const submit = () => {
 
             <div class="space-y-2">
               <Label for="first_name">First Name *</Label>
-              <Input
-                id="first_name"
-                v-model="form.first_name"
-                required
-                placeholder="Juan"
-              />
+              <Input id="first_name" v-model="form.first_name" required placeholder="Juan" />
               <p v-if="form.errors.first_name" class="text-sm text-red-500">
                 {{ form.errors.first_name }}
               </p>
@@ -122,12 +112,7 @@ const submit = () => {
 
             <div class="space-y-2">
               <Label for="middle_initial">Middle Initial</Label>
-              <Input
-                id="middle_initial"
-                v-model="form.middle_initial"
-                maxlength="10"
-                placeholder="P"
-              />
+              <Input id="middle_initial" v-model="form.middle_initial" maxlength="10" placeholder="P" />
               <p v-if="form.errors.middle_initial" class="text-sm text-red-500">
                 {{ form.errors.middle_initial }}
               </p>
@@ -137,13 +122,7 @@ const submit = () => {
           <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <div class="space-y-2">
               <Label for="email">Email *</Label>
-              <Input
-                id="email"
-                v-model="form.email"
-                type="email"
-                required
-                placeholder="student@ccdi.edu.ph"
-              />
+              <Input id="email" v-model="form.email" type="email" required placeholder="student@ccdi.edu.ph" />
               <p v-if="form.errors.email" class="text-sm text-red-500">
                 {{ form.errors.email }}
               </p>
@@ -165,11 +144,7 @@ const submit = () => {
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div class="space-y-2">
               <Label for="phone">Phone Number</Label>
-              <Input
-                id="phone"
-                v-model="form.phone"
-                placeholder="09171234567"
-              />
+              <Input id="phone" v-model="form.phone" placeholder="09171234567" />
               <p v-if="form.errors.phone" class="text-sm text-red-500">
                 {{ form.errors.phone }}
               </p>
@@ -181,25 +156,35 @@ const submit = () => {
                 <div class="grid grid-cols-2 gap-2">
                   <div>
                     <Input v-model="form.address_house_lot_unit" placeholder="Unit/Lot No." />
-                    <p v-if="form.errors.address_house_lot_unit" class="text-sm text-red-500">{{ form.errors.address_house_lot_unit }}</p>
+                    <p v-if="form.errors.address_house_lot_unit" class="text-sm text-red-500">
+                      {{ form.errors.address_house_lot_unit }}
+                    </p>
                   </div>
                   <div>
                     <Input v-model="form.address_street_name" placeholder="Street Name" />
-                    <p v-if="form.errors.address_street_name" class="text-sm text-red-500">{{ form.errors.address_street_name }}</p>
+                    <p v-if="form.errors.address_street_name" class="text-sm text-red-500">
+                      {{ form.errors.address_street_name }}
+                    </p>
                   </div>
                 </div>
                 <div class="grid grid-cols-3 gap-2">
                   <div>
                     <Input v-model="form.address_barangay" placeholder="Barangay" />
-                    <p v-if="form.errors.address_barangay" class="text-sm text-red-500">{{ form.errors.address_barangay }}</p>
+                    <p v-if="form.errors.address_barangay" class="text-sm text-red-500">
+                      {{ form.errors.address_barangay }}
+                    </p>
                   </div>
                   <div>
                     <Input v-model="form.address_municipality_city" placeholder="City/Municipality" />
-                    <p v-if="form.errors.address_municipality_city" class="text-sm text-red-500">{{ form.errors.address_municipality_city }}</p>
+                    <p v-if="form.errors.address_municipality_city" class="text-sm text-red-500">
+                      {{ form.errors.address_municipality_city }}
+                    </p>
                   </div>
                   <div>
                     <Input v-model="form.address_province" placeholder="Province" />
-                    <p v-if="form.errors.address_province" class="text-sm text-red-500">{{ form.errors.address_province }}</p>
+                    <p v-if="form.errors.address_province" class="text-sm text-red-500">
+                      {{ form.errors.address_province }}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -218,9 +203,11 @@ const submit = () => {
                 v-model="form.student_id"
                 disabled
                 placeholder="2024-0001"
-                class="bg-gray-100 cursor-not-allowed"
+                class="cursor-not-allowed bg-gray-100"
               />
-              <p class="text-xs text-gray-500">Account ID is protected and cannot be changed. Contact administrator if update is needed.</p>
+              <p class="text-xs text-gray-500">
+                Account ID is protected and cannot be changed. Contact administrator if update is needed.
+              </p>
             </div>
 
             <div class="space-y-2">
@@ -264,7 +251,7 @@ const submit = () => {
         <!-- Actions -->
         <div class="flex items-center justify-end gap-4">
           <Link :href="route('student-fees.index')">
-            <Button type="button" variant="outline"> Cancel </Button>
+            <Button type="button" variant="outline">Cancel</Button>
           </Link>
           <Button type="submit" :disabled="form.processing">
             {{ form.processing ? 'Saving...' : 'Save Changes' }}

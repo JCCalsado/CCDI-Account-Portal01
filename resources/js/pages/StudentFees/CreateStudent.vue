@@ -4,15 +4,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/AppLayout.vue';
-import { Head, Link, useForm, usePage } from '@inertiajs/vue3';
+import { Head, Link, useForm } from '@inertiajs/vue3';
 import { ArrowLeft } from 'lucide-vue-next';
 
 defineProps<{
     courses: string[];
     yearLevels: string[];
 }>();
-
-const page = usePage();
 
 const breadcrumbs = [
     { title: 'Dashboard', href: route('admin.dashboard') },
@@ -21,15 +19,19 @@ const breadcrumbs = [
 ];
 
 const form = useForm({
-    last_name: '',
-    first_name: '',
-    middle_initial: '',
-    email: '',
-    birthday: '',
-    year_level: '',
-    course: '',
-    address: '',
-    phone: '',
+    last_name:                 '',
+    first_name:                '',
+    middle_initial:            '',
+    email:                     '',
+    birthday:                  '',
+    year_level:                '',
+    course:                    '',
+    phone:                     '',
+    address_house_lot_unit:    '',
+    address_street_name:       '',
+    address_barangay:          '',
+    address_municipality_city: '',
+    address_province:          'Sorsogon',
 });
 
 const submit = () => {
@@ -124,12 +126,44 @@ const submit = () => {
                             </p>
                         </div>
 
-                        <div class="space-y-2">
-                            <Label for="address">Address *</Label>
-                            <Input id="address" v-model="form.address" required placeholder="Sorsogon City" />
-                            <p v-if="form.errors.address" class="text-sm text-red-500">
-                                {{ form.errors.address }}
-                            </p>
+                        <div class="space-y-2 col-span-full">
+                            <Label>Address</Label>
+                            <div class="grid gap-2 rounded-md border border-input p-3">
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <Input v-model="form.address_house_lot_unit" placeholder="Unit/Lot No." />
+                                        <p v-if="form.errors.address_house_lot_unit" class="text-sm text-red-500">
+                                            {{ form.errors.address_house_lot_unit }}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <Input v-model="form.address_street_name" placeholder="Street Name" />
+                                        <p v-if="form.errors.address_street_name" class="text-sm text-red-500">
+                                            {{ form.errors.address_street_name }}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-3 gap-2">
+                                    <div>
+                                        <Input v-model="form.address_barangay" placeholder="Barangay" />
+                                        <p v-if="form.errors.address_barangay" class="text-sm text-red-500">
+                                            {{ form.errors.address_barangay }}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <Input v-model="form.address_municipality_city" placeholder="City/Municipality" />
+                                        <p v-if="form.errors.address_municipality_city" class="text-sm text-red-500">
+                                            {{ form.errors.address_municipality_city }}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <Input v-model="form.address_province" placeholder="Province" />
+                                        <p v-if="form.errors.address_province" class="text-sm text-red-500">
+                                            {{ form.errors.address_province }}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -143,7 +177,9 @@ const submit = () => {
                             <div class="flex items-center rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-600">
                                 <span class="text-sm">Auto-generated upon registration</span>
                             </div>
-                            <p class="text-xs text-gray-500">Account ID will be automatically generated when the student is created</p>
+                            <p class="text-xs text-gray-500">
+                                Account ID will be automatically generated when the student is created
+                            </p>
                         </div>
 
                         <div class="space-y-2">
@@ -194,7 +230,7 @@ const submit = () => {
                 <!-- Actions -->
                 <div class="flex items-center justify-end gap-4">
                     <Link :href="route('student-fees.index')">
-                        <Button type="button" variant="outline"> Cancel </Button>
+                        <Button type="button" variant="outline">Cancel</Button>
                     </Link>
                     <Button type="submit" :disabled="form.processing">
                         {{ form.processing ? 'Adding Student...' : 'Add Student' }}
