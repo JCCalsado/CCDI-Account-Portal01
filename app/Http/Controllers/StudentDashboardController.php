@@ -34,18 +34,21 @@ class StudentDashboardController extends Controller
             ->latest('created_at')
             ->first();
 
-        $paymentTerms = collect();
+        $paymentTerms     = collect();
         $remainingBalance = 0;
 
         if ($latestAssessment) {
-            $paymentTerms     = $latestAssessment->paymentTerms;   // already loaded — no extra query
+            $paymentTerms     = $latestAssessment->paymentTerms; // already loaded — no extra query
             $remainingBalance = $paymentTerms->sum('balance');
         }
 
         // ── Financial aggregates ─────────────────────────────────────────────
         // kind='charge' transactions are no longer created. Derive totals from
         // StudentAssessment and StudentPaymentTerm — the real source of truth.
-        $totalPayments = $user->transactions()->where('kind', 'payment')->where('status', 'paid')->sum('amount');
+        $totalPayments = $user->transactions()
+            ->where('kind', 'payment')
+            ->where('status', 'paid')
+            ->sum('amount');
 
         // Fallback: if no payment terms loaded, sum all active term balances directly.
         if ($paymentTerms->isEmpty()) {
@@ -93,18 +96,24 @@ class StudentDashboardController extends Controller
         // Only show payment transactions — kind='charge' (ASMT- assessment debit
         // entries) are internal ledger rows, not cashier receipts. They must not
         // appear in the student-facing "Recent Transactions" widget.
+        //
+        // or_number  — cashier-assigned OR number for cash/manual payments.
+        // payment_channel — how the payment was made (cash, gcash, bank_transfer, etc.)
+        // Both are used by Vue to decide what label and value to show as the reference.
         $recentTransactions = $user->transactions()
             ->where('kind', 'payment')
             ->orderByDesc('created_at')
             ->take(5)
             ->get()
             ->map(fn ($txn) => [
-                'id'         => $txn->id,
-                'reference'  => $txn->reference,
-                'type'       => $txn->type ?: 'General',
-                'amount'     => $txn->amount,
-                'status'     => $txn->status,
-                'created_at' => $txn->created_at,
+                'id'              => $txn->id,
+                'reference'       => $txn->reference,
+                'or_number'       => $txn->or_number ?? null,
+                'payment_channel' => $txn->payment_channel ?? ($txn->meta['payment_method'] ?? null),
+                'type'            => $txn->type ?: 'General',
+                'amount'          => $txn->amount,
+                'status'          => $txn->status,
+                'created_at'      => $txn->created_at,
             ]);
 
         // ── Payment reminders ─────────────────────────────────────────────────
