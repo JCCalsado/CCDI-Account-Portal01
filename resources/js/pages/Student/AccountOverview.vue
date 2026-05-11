@@ -18,6 +18,7 @@ type Transaction = {
     id: number;
     reference: string;
     or_number?: string | null;
+    payment_channel?: string | null;
     type: string;
     kind: string;
     amount: number;
@@ -50,6 +51,15 @@ type Assessment = {
     is_irregular?: boolean;
     middle_initial?: string | null;
     student_name?: string;
+};
+
+type FeeBreakdownItem = {
+    category: string;
+    name: string;
+    code?: string;
+    units?: number | null; // null for flat fees (Miscellaneous)
+    amount: number;
+    subject_id?: number;
 };
 
 type PaymentTerm = {
@@ -114,14 +124,7 @@ const props = withDefaults(
             total_assessment: number;
             tuition_fee: number;
             other_fees: number;
-            fee_breakdown: Array<{
-                category: string;
-                name: string;
-                code?: string;
-                units?: number | null;  // null for flat fees (Miscellaneous)
-                amount: number;
-                subject_id?: number;
-            }>;
+            fee_breakdown: FeeBreakdownItem[];
             status: string;
             created_at: string;
         }>;
@@ -227,6 +230,32 @@ const remainingBalance = computed(() => {
 
 const totalPaid = computed(() => props.totalPaid);
 
+// ── Fee breakdown computeds ───────────────────────────────────────────────────
+//
+// currentFeeBreakdown: pulls the fee_breakdown array for the currently active
+// assessment from allAssessments. Centralised here so the template never calls
+// .find() multiple times on the same prop.
+//
+// totalBreakdownUnits: sums only items that carry a non-null units value
+// (i.e. Tuition Fee + Laboratory Fee). Miscellaneous is a flat fee with
+// units === null and is deliberately excluded from the total.
+
+const currentFeeBreakdown = computed<FeeBreakdownItem[]>(() => {
+    if (!props.latestAssessment) return [];
+    return (
+        props.allAssessments.find((a) => a.id === props.latestAssessment!.id)
+            ?.fee_breakdown ?? []
+    );
+});
+
+const totalBreakdownUnits = computed<number>(() =>
+    currentFeeBreakdown.value.reduce(
+        (sum, item) =>
+            item.units !== null && item.units !== undefined ? sum + item.units : sum,
+        0,
+    ),
+);
+
 // ── Payment terms ─────────────────────────────────────────────────────────────
 
 const firstUnpaidTermId = computed(() => {
@@ -286,6 +315,28 @@ const downloadReceipt = (transactionId: number) => {
 };
 
 const accountBalance = computed(() => remainingBalance.value);
+
+// ── Reference display helpers ─────────────────────────────────────────────────
+//
+// Mirrors the same logic in Dashboard.vue.
+// Cash / OTC payments → show OR No. from or_number field.
+// Online / e-wallet / bank → show Ref No. from reference field.
+
+const CASH_CHANNELS = new Set(['cash', 'cash_payment', 'over_the_counter']);
+
+function getTransactionDisplayRef(txn: Transaction): { label: string; value: string } {
+    const channel = (txn.payment_channel ?? '').toLowerCase();
+    if (CASH_CHANNELS.has(channel)) {
+        return {
+            label: 'OR No.',
+            value: txn.or_number ?? txn.reference ?? 'N/A',
+        };
+    }
+    return {
+        label: 'Ref No.',
+        value: txn.reference ?? 'N/A',
+    };
+}
 
 // ── Pay Now navigation ────────────────────────────────────────────────────────
 
@@ -650,9 +701,10 @@ onUnmounted(() => {
                                                 ✅ FIXED: Correct fee labels (Tuition Fee / Laboratory Fee / Miscellaneous Fee)
                                                 ✅ FIXED: Miscellaneous Fee is a flat fee — units is null, shown as "—"
                                                        Tuition Fee and Laboratory Fee show their actual unit counts.
+                                                ✅ Uses currentFeeBreakdown computed — no inline .find() on prop.
                                             -->
                                             <tr
-                                                v-for="item in allAssessments.find(a => a.id === latestAssessment!.id)?.fee_breakdown ?? []"
+                                                v-for="item in currentFeeBreakdown"
                                                 :key="item.name"
                                                 class="hover:bg-gray-50"
                                             >
@@ -665,9 +717,31 @@ onUnmounted(() => {
                                                 </td>
                                             </tr>
                                         </tbody>
+
+                                        <!--
+                                            ✅ FIXED: tfoot previously had colspan="2" which swallowed
+                                            the Units column entirely, leaving no unit total visible.
+
+                                            Now: each column has its own cell.
+                                              Col 1 → "Total Assessment Fee" label
+                                              Col 2 → sum of all non-null units (Tuition + Lab only;
+                                                       Misc is excluded because its units value is null)
+                                              Col 3 → the authoritative total_assessment amount from the DB
+
+                                            totalBreakdownUnits is 0 only when currentFeeBreakdown is
+                                            empty (no assessment), so the v-if guard keeps it clean.
+                                        -->
                                         <tfoot class="border-t-2 border-gray-300 bg-gray-50">
                                             <tr>
-                                                <td class="px-4 py-3 font-bold text-gray-900" colspan="2">Total Assessment Fee</td>
+                                                <td class="px-4 py-3 font-bold text-gray-900">
+                                                    Total Assessment Fee
+                                                </td>
+                                                <td class="px-4 py-3 text-center font-bold text-gray-700">
+                                                    <span v-if="totalBreakdownUnits > 0">
+                                                        {{ totalBreakdownUnits }}
+                                                    </span>
+                                                    <span v-else class="text-gray-400">—</span>
+                                                </td>
                                                 <td class="px-4 py-3 text-right text-base font-bold text-gray-900">
                                                     {{ formatCurrency(latestAssessment.total_assessment) }}
                                                 </td>
@@ -695,7 +769,7 @@ onUnmounted(() => {
                                     <div>
                                         <p class="text-sm font-medium text-gray-900">{{ payment.term_name }}</p>
                                         <p class="text-xs text-gray-600">
-                                            OR: {{ payment.or_number ?? payment.reference }} · {{ formatDate(payment.created_at) }}
+                                            OR: {{ payment.reference }} · {{ formatDate(payment.created_at) }}
                                         </p>
                                     </div>
                                     <div class="text-right">
@@ -738,7 +812,14 @@ onUnmounted(() => {
                                         <p class="text-sm text-gray-600">
                                             {{ payment.created_at ? formatDate(payment.created_at) : '—' }}
                                         </p>
-                                        <p class="text-xs text-gray-500">OR: {{ payment.or_number ?? payment.reference ?? 'N/A' }}</p>
+                                        <!--
+                                            ✅ FIXED: apply OR No. / Ref No. label logic here too,
+                                            consistent with Dashboard.vue and the transaction dialog below.
+                                        -->
+                                        <p class="text-xs text-gray-500">
+                                            {{ getTransactionDisplayRef(payment).label }}:
+                                            {{ getTransactionDisplayRef(payment).value }}
+                                        </p>
                                     </div>
                                 </div>
                                 <div class="text-right">
@@ -783,9 +864,18 @@ onUnmounted(() => {
                     <div>
                         <h3 class="mb-3 border-b pb-2 text-base font-semibold">Basic Information</h3>
                         <div class="grid grid-cols-2 gap-3">
+                            <!--
+                                ✅ FIXED: dialog previously always showed raw `reference` with the
+                                label "Reference" regardless of payment channel.
+                                Now mirrors the OR No. / Ref No. logic from Dashboard.vue.
+                            -->
                             <div>
-                                <p class="text-xs text-gray-500">Reference</p>
-                                <p class="font-mono text-sm font-medium">{{ selectedTransaction.reference }}</p>
+                                <p class="text-xs text-gray-500">
+                                    {{ getTransactionDisplayRef(selectedTransaction).label }}
+                                </p>
+                                <p class="font-mono text-sm font-medium">
+                                    {{ getTransactionDisplayRef(selectedTransaction).value }}
+                                </p>
                             </div>
                             <div>
                                 <p class="text-xs text-gray-500">Date</p>
