@@ -66,7 +66,10 @@ class PaymentController extends Controller
             $pendingApprovalPayments = $assessment
                 ? Transaction::where('user_id', $user->id)
                     ->where('kind', 'payment')
-                    ->where('status', PaymentStatus::AWAITING_APPROVAL->value)
+                    ->whereIn('status', [
+                        PaymentStatus::AWAITING_APPROVAL->value,
+                        PaymentStatus::AWAITING_PROOF->value,
+                    ])
                     ->get()
                     ->map(fn ($txn) => [
                         'id'               => $txn->id,
@@ -447,7 +450,7 @@ class PaymentController extends Controller
             $user          = $request->user();
             $requestAmount = round((float) $validated['amount'], 2);
             $termId        = $validated['selected_term_id'] ?? null;
-            $termInfo      = $termId ? StudentPaymentTerm::find($termId) : null;
+            $termInfo      = $termId ? StudentPaymentTerm::with('assessment')->find($termId) : null;
 
             if ($termInfo && $termInfo->assessment?->user_id !== $user->id) {
                 return response()->json(['error' => 'Invalid payment term.'], 403);
@@ -476,8 +479,34 @@ class PaymentController extends Controller
                 }
             }
 
-            $transaction = DB::transaction(function () use ($user, $requestAmount, $termInfo, $validated) {
+            // ── Derive year and semester from the term's assessment ────────────
+            // This mirrors TransactionController::payNow() so transactions are
+            // grouped correctly in Transaction History regardless of server date.
+            $assessment      = $termInfo?->assessment;
+            $transactionYear = $assessment
+                ? explode('-', $assessment->school_year)[0]
+                : (string) now()->year;
+            $transactionSem  = $assessment?->semester ?? $this->getCurrentSemesterLabel();
+
+            $transaction = DB::transaction(function () use (
+                $user, $requestAmount, $termInfo, $validated, $transactionYear, $transactionSem
+            ) {
                 $reference = 'BT-' . strtoupper(substr(md5(uniqid()), 0, 8));
+
+                $alreadyPending = Transaction::where('user_id', $user->id)
+                    ->where('kind', 'payment')
+                    ->whereIn('status', [
+                        \App\Enums\PaymentStatus::AWAITING_PROOF->value,
+                        \App\Enums\PaymentStatus::AWAITING_APPROVAL->value,
+                    ])
+                    ->whereJsonContains('meta->selected_term_id', $termId)
+                    ->exists();
+
+                if ($alreadyPending) {
+                    return response()->json([
+                        'error' => 'A payment for this term is already awaiting proof upload or approval. Please complete or cancel the existing submission first.',
+                    ], 422);
+                }
 
                 return Transaction::create([
                     'user_id'          => $user->id,
@@ -485,8 +514,10 @@ class PaymentController extends Controller
                     'kind'             => 'payment',
                     'type'             => $termInfo?->term_name ?? 'Bank Transfer',
                     'amount'           => $requestAmount,
-                    'status'           => PaymentStatus::AWAITING_PROOF->value,
+                    'status'           => \App\Enums\PaymentStatus::AWAITING_PROOF->value,
                     'payment_channel'  => 'bank_transfer',
+                    'year'             => $transactionYear,   // ← FIXED: was missing
+                    'semester'         => $transactionSem,    // ← FIXED: was missing
                     'meta'             => [
                         'payment_method'   => 'bank_transfer',
                         'reference_number' => $validated['reference_number'],
@@ -505,7 +536,7 @@ class PaymentController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Bank transfer error', [
+            \Illuminate\Support\Facades\Log::error('Bank transfer error', [
                 'user_id' => $request->user()?->id,
                 'error'   => $e->getMessage(),
             ]);
@@ -662,5 +693,11 @@ class PaymentController extends Controller
         return $isLiveMode
             ? ['card', 'gcash', 'paymaya', 'dob', 'dob_ubp']
             : ['card', 'gcash', 'paymaya'];
+    }
+
+    private function getCurrentSemesterLabel(): string
+    {
+        $month = now()->month;
+        return ($month >= 6 && $month <= 10) ? '1st Sem' : '2nd Sem';
     }
 }

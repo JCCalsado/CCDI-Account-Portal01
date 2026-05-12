@@ -76,7 +76,10 @@ interface Props {
 const props = defineProps<Props>();
 
 // ─── State ────────────────────────────────────────────────────────────────────
-const breadcrumbs = [{ title: 'Dashboard', href: route('dashboard') }, { title: 'Transaction History' }];
+const breadcrumbs = [
+    { title: 'Dashboard', href: props.backUrl ?? route('dashboard') },
+    { title: 'Transaction History' }
+];
 
 const search              = ref('');
 const expanded            = ref<Record<string, boolean>>({});
@@ -525,7 +528,7 @@ const formatPaymentMethod = (m: string): string => {
                                     <td class="p-3">
                                         <div class="flex gap-2">
                                             <button
-                                                @click="viewTransaction(t)"
+                                                v-if="isStaff" @click="viewTransaction(t)"
                                                 class="rounded-lg bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
                                             >
                                                 View

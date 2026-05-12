@@ -260,9 +260,19 @@ class StudentPaymentService
                 ? "₱{$totalApplied} allocated across: {$termsLabel}"
                 : 'Payment — ' . ($allocation[0]['term_name'] ?? $term->term_name);
 
+            // Backfill year/semester from the assessment if the transaction was
+            // created without them (bank transfer flow pre-fix).
+            $assessmentForYear = $term->assessment;
+            $backfillYear      = $transaction->year
+                ?? ($assessmentForYear ? explode('-', $assessmentForYear->school_year)[0] : (string) now()->year);
+            $backfillSemester  = $transaction->semester
+                ?? $assessmentForYear?->semester;
+
             $transaction->update([
-                'status' => PaymentStatus::PAID->value,
-                'meta'   => array_merge($transaction->meta ?? [], [
+                'status'   => PaymentStatus::PAID->value,
+                'year'     => $backfillYear,
+                'semester' => $backfillSemester,
+                'meta'     => array_merge($transaction->meta ?? [], [
                     'allocation'     => $allocation,
                     'terms_covered'  => $termsCount,
                     'total_applied'  => $totalApplied,

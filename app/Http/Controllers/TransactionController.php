@@ -166,6 +166,9 @@ class TransactionController extends Controller
             'currentTerm'        => $currentTerm,
             'allAssessments'     => $allAssessments,
             'enrolledSubjectsByAssessment' => $enrolledSubjectsByAssessment,
+            'backUrl' => in_array($user->role->value, ['admin', 'accounting'])
+                ? route('accounting.dashboard')
+                : route('student.dashboard'),
         ]);
     }
 
@@ -221,6 +224,15 @@ class TransactionController extends Controller
 
     public function show(Transaction $transaction)
     {
+        $user    = auth()->user();
+        $isStaff = in_array($user->role->value, ['admin', 'accounting']);
+
+        // Students may only view their own transactions
+        if (!$isStaff && $transaction->user_id !== $user->id) {
+            return redirect()->route('student.dashboard')
+                ->with('flash.warning', 'You do not have permission to view that transaction.');
+        }
+
         return Inertia::render('Transactions/Show', [
             'transaction' => $transaction->load('user'),
             'account'     => $transaction->user->account,
