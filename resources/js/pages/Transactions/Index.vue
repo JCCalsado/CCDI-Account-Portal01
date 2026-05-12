@@ -70,6 +70,7 @@ interface Props {
     currentTerm: string;
     allAssessments: Assessment[];
     enrolledSubjectsByAssessment: Record<number, number[]>;
+    backUrl?: string; // ← added: role-aware dashboard link from TransactionController
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ const props = defineProps<Props>();
 // ─── State ────────────────────────────────────────────────────────────────────
 const breadcrumbs = [
     { title: 'Dashboard', href: props.backUrl ?? route('dashboard') },
-    { title: 'Transaction History' }
+    { title: 'Transaction History' },
 ];
 
 const search              = ref('');
@@ -103,8 +104,6 @@ const toggle = (key: string) => {
 };
 
 // ─── Summary per term ─────────────────────────────────────────────────────────
-// total_assessment comes from allAssessments (StudentAssessment.total_assessment).
-// kind='charge' Transaction rows no longer exist — assessment totals are authoritative.
 const assessmentByTermKey = computed(() => {
     const map: Record<string, number> = {};
     for (const a of props.allAssessments) {
@@ -124,11 +123,6 @@ const calculateTermSummary = (termKey: string, transactions: Transaction[]): Ter
 };
 
 // ─── Enrolled Subjects by Term ────────────────────────────────────────────────
-
-/**
- * Builds a subject panel for displaying enrolled subjects for an assessment.
- * Matches structure from StudentFees/Show.vue buildSubjectPanel()
- */
 function buildSubjectPanel(assessment: Assessment) {
     const subjectRows = (assessment.fee_breakdown ?? []).filter(
         (item) => item.category === 'Tuition' || item.category === 'Laboratory',
@@ -196,7 +190,6 @@ function buildSubjectPanel(assessment: Assessment) {
     };
 }
 
-// Subject panels for each transaction term group
 const expandedSubjectTerms = ref<Set<number>>(new Set());
 
 const toggleSubjectTerm = (assessmentId: number) => {
@@ -207,22 +200,16 @@ const toggleSubjectTerm = (assessmentId: number) => {
     }
 };
 
-/**
- * Per-transaction-group subject panels indexed by termKey (e.g., "2026 1st Sem")
- * Returns null if the term has no matching assessment with subjects
- */
 const subjectPanelsByTerm = computed(() => {
     const result: Record<string, ReturnType<typeof buildSubjectPanel> | null> = {};
 
     for (const [termKey] of Object.entries(props.transactionsByTerm ?? {})) {
-        // Extract year and semester from termKey (e.g., "2026 1st Sem")
-        const parts = termKey.split(' ');
-        const year = parts[0];
+        const parts    = termKey.split(' ');
+        const year     = parts[0];
         const semester = parts.slice(1).join(' ');
 
-        // Find matching assessment
         const matchingAssessment = props.allAssessments.find(
-            (a) => a.school_year.startsWith(year) && a.semester === semester
+            (a) => a.school_year.startsWith(year) && a.semester === semester,
         );
 
         if (!matchingAssessment || !matchingAssessment.fee_breakdown?.length) {
@@ -274,43 +261,19 @@ const displayBalance = computed(() => Math.abs(accountBalance.value));
 const canMakePayment = computed(() => accountBalance.value > 0);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-
 const formatDate = (date: string) =>
     new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 
 // ─── Receipt helpers ──────────────────────────────────────────────────────────
-
-/**
- * Returns true only if the term has at least one confirmed paid payment.
- * A term with only awaiting_approval payments cannot produce a valid PDF.
- */
 const canDownloadTermSummary = (transactions: Transaction[]): boolean => {
     return transactions.some((t) => t.kind === 'payment' && t.status === 'paid');
 };
 
-/**
- * Download a SINGLE-PAYMENT receipt PDF for one specific transaction.
- *
- * Calls GET /transactions/{id}/receipt — the PDF shows only that payment:
- * what it was for (term name), amount, method, date, and remaining balance.
- *
- * Used by the 📄 Receipt button on each individual payment row.
- */
 const downloadReceipt = (transactionId: number) => {
     const url = route('transactions.receipt', { transaction: transactionId });
     window.open(url, '_blank');
 };
 
-/**
- * Download a FULL-TERM summary PDF for all transactions in a given term.
- *
- * Calls GET /transactions/download?term=2026+1st+Sem — the PDF shows all
- * confirmed charges and paid payments for the term with balance totals.
- * Terms with only awaiting_approval payments cannot be downloaded.
- *
- * Used by the 📄 Term Summary button on the term-group header.
- */
 const downloadTermSummary = (termKey: string) => {
     const url = route('transactions.download') + '?term=' + encodeURIComponent(termKey);
     window.open(url, '_blank');
@@ -333,14 +296,14 @@ const payNow = () => {
 
 const formatPaymentMethod = (m: string): string => {
     const labels: Record<string, string> = {
-        cash: 'Cash',
-        gcash: 'GCash',
+        cash:          'Cash',
+        gcash:         'GCash',
         bank_transfer: 'Bank Transfer',
-        credit_card: 'Credit Card',
-        debit_card: 'Debit Card',
-        paymaya: 'Maya',
-        maya: 'Maya',
-        paymongo: 'Online Payment',
+        credit_card:   'Credit Card',
+        debit_card:    'Debit Card',
+        paymaya:       'Maya',
+        maya:          'Maya',
+        paymongo:      'Online Payment',
     };
     return labels[m?.toLowerCase()] ?? m ?? '—';
 };
@@ -430,11 +393,6 @@ const formatPaymentMethod = (m: string): string => {
                             </p>
                         </div>
 
-                        <!--
-                            Term-level Receipt button: downloads the FULL TERM SUMMARY PDF.
-                            Only enabled when the term has at least one confirmed (paid) payment.
-                            Awaiting-verification payments are excluded from the PDF.
-                        -->
                         <button
                             :disabled="!canDownloadTermSummary(transactions)"
                             :class="[
@@ -451,7 +409,6 @@ const formatPaymentMethod = (m: string): string => {
                             📄 Term Summary
                         </button>
 
-                        <!-- Chevron -->
                         <svg
                             :class="expanded[termKey] ? 'rotate-180' : ''"
                             xmlns="http://www.w3.org/2000/svg"
@@ -495,10 +452,9 @@ const formatPaymentMethod = (m: string): string => {
                                     </td>
                                     <td class="p-3 text-sm">
                                         <span v-if="t.kind === 'charge'" class="text-gray-400 italic text-xs">—</span>
-                                        <span v-else>{{ formatPaymentMethod(t.payment_channel) }}</span>
+                                        <span v-else>{{ formatPaymentMethod(t.payment_channel ?? '') }}</span>
                                     </td>
                                     <td class="p-3 text-sm">
-                                        <!-- Show term_name from meta if available (e.g. "Prelim"), otherwise type -->
                                         {{ t.meta?.term_name ?? t.type }}
                                     </td>
                                     <td class="p-3 text-sm">
@@ -514,30 +470,46 @@ const formatPaymentMethod = (m: string): string => {
                                         <span
                                             class="rounded-full px-2 py-1 text-xs font-semibold"
                                             :class="{
-                                                'bg-green-100 text-green-800': t.status === 'paid',
+                                                'bg-green-100 text-green-800':  t.status === 'paid',
                                                 'bg-yellow-100 text-yellow-800': t.status === 'pending',
-                                                'bg-blue-100 text-blue-800': t.status === 'awaiting_approval',
-                                                'bg-red-100 text-red-800': t.status === 'failed',
-                                                'bg-gray-100 text-gray-800': t.status === 'cancelled',
+                                                'bg-blue-100 text-blue-800':    t.status === 'awaiting_approval',
+                                                'bg-orange-100 text-orange-800': t.status === 'awaiting_proof',
+                                                'bg-red-100 text-red-800':      t.status === 'failed',
+                                                'bg-gray-100 text-gray-800':    t.status === 'cancelled',
                                             }"
                                         >
-                                            {{ t.status === 'awaiting_approval' ? 'Awaiting Verification' : t.status }}
+                                            {{
+                                                t.status === 'awaiting_approval' ? 'Awaiting Verification'
+                                                : t.status === 'awaiting_proof'  ? 'Upload Proof'
+                                                : t.status
+                                            }}
                                         </span>
                                     </td>
                                     <td class="p-3 text-xs text-gray-500">{{ formatDate(t.created_at) }}</td>
                                     <td class="p-3">
                                         <div class="flex gap-2">
+                                            <!--
+                                                View button — opens local detail dialog.
+                                                Available to ALL users (staff see student info panel;
+                                                students see their own transaction detail).
+                                            -->
                                             <button
-                                                v-if="isStaff" @click="viewTransaction(t)"
+                                                @click="viewTransaction(t)"
                                                 class="rounded-lg bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
                                             >
                                                 View
                                             </button>
+
+                                            <a
+                                                v-if="!isStaff && t.status === 'awaiting_proof' && t.payment_channel === 'bank_transfer'"
+                                                :href="route('payment.proof.show', { transaction: t.id })"
+                                                class="..."
+                                            >
+                                                Upload Proof
+                                            </a>
+
                                             <!--
-                                                Row-level Receipt: downloads a SINGLE-PAYMENT receipt PDF
-                                                for this specific payment transaction only.
-                                                ONLY available for confirmed paid payments.
-                                                Awaiting-verification payments cannot be downloaded.
+                                                Row-level Receipt: confirmed paid payments only.
                                             -->
                                             <button
                                                 v-if="t.kind === 'payment' && t.status === 'paid'"
@@ -547,6 +519,7 @@ const formatPaymentMethod = (m: string): string => {
                                             >
                                                 📄 Receipt
                                             </button>
+
                                             <span
                                                 v-if="t.kind === 'payment' && t.status === 'awaiting_approval'"
                                                 class="cursor-not-allowed rounded-lg bg-gray-200 px-3 py-1 text-xs text-gray-500"
@@ -554,6 +527,7 @@ const formatPaymentMethod = (m: string): string => {
                                             >
                                                 ⏳ Pending
                                             </span>
+
                                             <button
                                                 v-if="t.status === 'pending' && t.kind === 'charge' && !isStaff"
                                                 @click="payNow"
@@ -740,14 +714,19 @@ const formatPaymentMethod = (m: string): string => {
                                     <span
                                         class="inline-block rounded-full px-2 py-0.5 text-xs font-semibold"
                                         :class="{
-                                            'bg-green-100 text-green-800': selectedTransaction.status === 'paid',
+                                            'bg-green-100 text-green-800':   selectedTransaction.status === 'paid',
                                             'bg-yellow-100 text-yellow-800': selectedTransaction.status === 'pending',
-                                            'bg-blue-100 text-blue-800': selectedTransaction.status === 'awaiting_approval',
-                                            'bg-red-100 text-red-800': selectedTransaction.status === 'failed',
-                                            'bg-gray-100 text-gray-800': selectedTransaction.status === 'cancelled',
+                                            'bg-blue-100 text-blue-800':     selectedTransaction.status === 'awaiting_approval',
+                                            'bg-orange-100 text-orange-800': selectedTransaction.status === 'awaiting_proof',
+                                            'bg-red-100 text-red-800':       selectedTransaction.status === 'failed',
+                                            'bg-gray-100 text-gray-800':     selectedTransaction.status === 'cancelled',
                                         }"
                                     >
-                                        {{ selectedTransaction.status === 'awaiting_approval' ? 'Awaiting Verification' : selectedTransaction.status }}
+                                        {{
+                                            selectedTransaction.status === 'awaiting_approval' ? 'Awaiting Verification'
+                                            : selectedTransaction.status === 'awaiting_proof'  ? 'Upload Proof'
+                                            : selectedTransaction.status
+                                        }}
                                     </span>
                                 </div>
                                 <div>
@@ -821,17 +800,20 @@ const formatPaymentMethod = (m: string): string => {
                         <!-- Actions -->
                         <div class="flex justify-end gap-3 border-t pt-4">
                             <Button variant="outline" @click="closeDetailsDialog">Close</Button>
-                            <!--
-                                Dialog receipt button: downloads the SINGLE-PAYMENT receipt for this
-                                specific transaction. Only shown for confirmed PAID payment transactions.
-                                Awaiting-verification payments cannot be downloaded.
-                            -->
                             <Button
                                 v-if="selectedTransaction.kind === 'payment' && selectedTransaction.status === 'paid'"
                                 @click="downloadReceipt(selectedTransaction.id)"
                             >
                                 📄 Payment Receipt
                             </Button>
+                            <a
+                                v-if="!isStaff && selectedTransaction.status === 'awaiting_proof' && selectedTransaction.payment_channel === 'bank_transfer'"
+                                :href="route('payment.proof.show', { transaction: selectedTransaction.id })"
+                                class="inline-flex items-center rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700"
+                                @click="closeDetailsDialog"
+                            >
+                                📎 Upload Proof of Payment
+                            </a>
                             <span
                                 v-if="selectedTransaction.kind === 'payment' && selectedTransaction.status === 'awaiting_approval'"
                                 class="flex items-center rounded-lg bg-amber-100 px-4 py-2 text-sm font-medium text-amber-700"

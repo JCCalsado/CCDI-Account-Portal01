@@ -68,7 +68,7 @@ class PaymentController extends Controller
                     ->where('kind', 'payment')
                     ->whereIn('status', [
                         PaymentStatus::AWAITING_APPROVAL->value,
-                        PaymentStatus::AWAITING_PROOF->value,
+                        PaymentStatus::AWAITING_PROOF->value,   // ← include both
                     ])
                     ->get()
                     ->map(fn ($txn) => [
@@ -93,15 +93,6 @@ class PaymentController extends Controller
                 'lab_units'         => $assessment->lab_units ?? 0,
             ] : null;
 
-            // ── AVAILABLE PAYMENT METHODS ─────────────────────────────────────
-            // Currently only bank_transfer is active.
-            // To re-enable PayMongo once keys are configured, uncomment the
-            // $isLiveMode block below and remove the single-item array.
-            //
-            // $isLiveMode = str_starts_with($this->secretKey, 'sk_live_');
-            // $availablePaymentMethods = $isLiveMode
-            //     ? ['bank_transfer', 'gcash', 'credit_card', 'debit_card']
-            //     : ['bank_transfer', 'credit_card', 'debit_card'];
             $availablePaymentMethods = ['bank_transfer'];
 
             return Inertia::render('Payment/Create', [
@@ -404,7 +395,6 @@ class PaymentController extends Controller
             }
         }
 
-        // ... rest of success() handler is unchanged
         return redirect()->route('student.account', ['tab' => 'history'])
             ->with('flash.info', 'Your payment is being processed. Please check the Payment History tab.');
     }
@@ -479,46 +469,51 @@ class PaymentController extends Controller
                 }
             }
 
-            // ── Derive year and semester from the term's assessment ────────────
-            // This mirrors TransactionController::payNow() so transactions are
-            // grouped correctly in Transaction History regardless of server date.
+            // Derive year and semester from the term's assessment so transactions
+            // are grouped correctly in Transaction History regardless of server date.
             $assessment      = $termInfo?->assessment;
             $transactionYear = $assessment
                 ? explode('-', $assessment->school_year)[0]
                 : (string) now()->year;
             $transactionSem  = $assessment?->semester ?? $this->getCurrentSemesterLabel();
 
+            // ── FIX: $termId must be captured in the use() clause ─────────────
             $transaction = DB::transaction(function () use (
-                $user, $requestAmount, $termInfo, $validated, $transactionYear, $transactionSem
+                $user, $requestAmount, $termInfo, $validated,
+                $transactionYear, $transactionSem, $termId   // ← $termId added
             ) {
-                $reference = 'BT-' . strtoupper(substr(md5(uniqid()), 0, 8));
-
+                // Block duplicate in-flight submissions for the same term
                 $alreadyPending = Transaction::where('user_id', $user->id)
                     ->where('kind', 'payment')
                     ->whereIn('status', [
                         \App\Enums\PaymentStatus::AWAITING_PROOF->value,
                         \App\Enums\PaymentStatus::AWAITING_APPROVAL->value,
                     ])
-                    ->whereJsonContains('meta->selected_term_id', $termId)
+                    ->whereJsonContains('meta->selected_term_id', $termId)  // ← now defined
                     ->exists();
 
                 if ($alreadyPending) {
-                    return response()->json([
-                        'error' => 'A payment for this term is already awaiting proof upload or approval. Please complete or cancel the existing submission first.',
-                    ], 422);
+                    // Throw so DB::transaction rolls back and the catch block
+                    // returns the JSON error response.
+                    throw new \RuntimeException(
+                        'A payment for this term is already awaiting proof upload or approval. ' .
+                        'Please complete or cancel the existing submission first.'
+                    );
                 }
 
+                $reference = 'BT-' . strtoupper(substr(md5(uniqid()), 0, 8));
+
                 return Transaction::create([
-                    'user_id'          => $user->id,
-                    'reference'        => $reference,
-                    'kind'             => 'payment',
-                    'type'             => $termInfo?->term_name ?? 'Bank Transfer',
-                    'amount'           => $requestAmount,
-                    'status'           => \App\Enums\PaymentStatus::AWAITING_PROOF->value,
-                    'payment_channel'  => 'bank_transfer',
-                    'year'             => $transactionYear,   // ← FIXED: was missing
-                    'semester'         => $transactionSem,    // ← FIXED: was missing
-                    'meta'             => [
+                    'user_id'         => $user->id,
+                    'reference'       => $reference,
+                    'kind'            => 'payment',
+                    'type'            => $termInfo?->term_name ?? 'Bank Transfer',
+                    'amount'          => $requestAmount,
+                    'status'          => \App\Enums\PaymentStatus::AWAITING_PROOF->value,
+                    'payment_channel' => 'bank_transfer',
+                    'year'            => $transactionYear,
+                    'semester'        => $transactionSem,
+                    'meta'            => [
                         'payment_method'   => 'bank_transfer',
                         'reference_number' => $validated['reference_number'],
                         'selected_term_id' => $termInfo?->id,
@@ -535,8 +530,11 @@ class PaymentController extends Controller
                 'transaction_id' => $transaction->id,
             ]);
 
+        } catch (\RuntimeException $e) {
+            // Duplicate-guard rejection — user-facing 422
+            return response()->json(['error' => $e->getMessage()], 422);
         } catch (\Exception $e) {
-            \Illuminate\Support\Facades\Log::error('Bank transfer error', [
+            Log::error('Bank transfer error', [
                 'user_id' => $request->user()?->id,
                 'error'   => $e->getMessage(),
             ]);
