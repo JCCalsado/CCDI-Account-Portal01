@@ -264,6 +264,12 @@ const canMakePayment = computed(() => accountBalance.value > 0);
 const formatDate = (date: string) =>
     new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 
+const toYearRange = (year: string | number | null | undefined): string => {
+    if (!year) return '—';
+    const y = parseInt(String(year), 10);
+    return isNaN(y) ? String(year) : `${y}-${y + 1}`;
+};
+
 // ─── Receipt helpers ──────────────────────────────────────────────────────────
 const canDownloadTermSummary = (transactions: Transaction[]): boolean => {
     return transactions.some((t) => t.kind === 'payment' && t.status === 'paid');
@@ -428,7 +434,7 @@ const formatPaymentMethod = (m: string): string => {
                         <table class="w-full border-collapse text-left">
                             <thead>
                                 <tr class="bg-gray-100 text-xs text-gray-600 uppercase">
-                                    <th class="p-3 font-semibold">OR No.</th>
+                                    <th class="p-3 font-semibold">OR / REF No.</th>
                                     <th v-if="isStaff" class="p-3 font-semibold">Student</th>
                                     <th class="p-3 font-semibold">Method</th>
                                     <th class="p-3 font-semibold">Category</th>
@@ -442,7 +448,12 @@ const formatPaymentMethod = (m: string): string => {
                             <tbody>
                                 <tr v-for="t in transactions" :key="t.id" class="border-b transition-colors hover:bg-gray-50">
                                     <td class="p-3 font-mono text-xs">
-                                        <p class="font-medium text-gray-800">{{ t.or_number ?? '—' }}</p>
+                                        <p class="font-medium text-gray-800">
+                                            {{ t.or_number ?? t.meta?.reference_number ?? '—' }}
+                                        </p>
+                                        <p class="mt-0.5 font-sans text-xs text-gray-400">
+                                            {{ (t.payment_channel ?? '').toLowerCase() === 'bank_transfer' ? 'Ref No.' : 'OR No.' }}
+                                        </p>
                                     </td>
                                     <td v-if="isStaff" class="p-3 text-sm">
                                         <div>
@@ -459,7 +470,7 @@ const formatPaymentMethod = (m: string): string => {
                                     </td>
                                     <td class="p-3 text-sm">
                                         <span v-if="t.year || t.semester" class="font-medium">
-                                            {{ [t.year, t.semester].filter(Boolean).join(' ') }}
+                                            {{ toYearRange(t.year) }} {{ t.semester }}
                                         </span>
                                         <span v-else class="text-gray-400">—</span>
                                     </td>
@@ -697,7 +708,7 @@ const formatPaymentMethod = (m: string): string => {
                                 <div>
                                     <p class="text-xs text-gray-500">Term</p>
                                     <p class="text-sm font-medium">
-                                        {{ [selectedTransaction.year, selectedTransaction.semester].filter(Boolean).join(' ') || '—' }}
+                                        {{ selectedTransaction.year ? toYearRange(selectedTransaction.year) + ' ' + (selectedTransaction.semester ?? '') : '—' }}
                                     </p>
                                 </div>
                                 <div>
