@@ -39,12 +39,23 @@ class StudentFeeController extends Controller
     }
 
     /**
-     * Return all fully-paid (status = 'completed') assessments for a student,
-     * sorted chronologically (school_year ASC, then 1st → 2nd → Summer).
+     * Advance a year level string by one step.
      *
-     * A 'completed' status is only set in store() after confirming the account
-     * balance is zero, so every completed assessment is fully paid by definition.
+     * Canonical values: '1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'
+     * Returns the next level, or the same value if already at max / unrecognised.
      */
+    public static function advanceYearLevel(string $current): string
+    {
+        $map = [
+            '1st Year' => '2nd Year',
+            '2nd Year' => '3rd Year',
+            '3rd Year' => '4th Year',
+            '4th Year' => '5th Year',
+        ];
+
+        return $map[$current] ?? $current;
+    }
+
     /**
      * Return all fully-paid assessments for a student, sorted chronologically.
      *
@@ -66,11 +77,9 @@ class StudentFeeController extends Controller
         return StudentAssessment::where('user_id', $userId)
             ->whereIn('status', ['completed', 'active'])
             ->with('paymentTerms')
-            ->select('id', 'semester', 'school_year', 'total_assessment', 'status')
+            ->select('id', 'semester', 'school_year', 'total_assessment', 'status', 'year_level')
             ->get()
             ->filter(function ($a) {
-                // Completed: always fully paid by store() contract.
-                // Active: fully paid only when all payment term balances sum to 0.
                 return $a->status === 'completed'
                     || $a->paymentTerms->sum('balance') <= 0;
             })
@@ -84,6 +93,7 @@ class StudentFeeController extends Controller
                 'school_year'      => $a->school_year,
                 'assessment_id'    => $a->id,
                 'total_assessment' => (float) $a->total_assessment,
+                'year_level'       => $a->year_level,   // ← pass stored year_level for advancement calc
             ])
             ->all();
     }
@@ -231,6 +241,8 @@ class StudentFeeController extends Controller
             'discount_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'term_percentages'    => ['nullable', 'array'],
             'term_percentages.*'  => ['numeric', 'min:0', 'max:100'],
+            // ← Accept the derived year_level from the frontend
+            'year_level'          => ['nullable', 'string', 'max:50'],
         ]);
 
         $validated['lec_units']           = (float) $validated['lec_units'];
@@ -292,6 +304,10 @@ class StudentFeeController extends Controller
                 $student          = User::findOrFail($validated['user_id']);
                 $assessmentNumber = StudentAssessment::generateAssessmentNumber();
 
+                // Use the derived year level sent from the frontend.
+                // Fall back to the student's DB year level if not provided.
+                $yearLevelForAssessment = $validated['year_level'] ?? $student->year_level;
+
                 $assessment = StudentAssessment::create([
                     'assessment_number'   => $assessmentNumber,
                     'user_id'             => $validated['user_id'],
@@ -307,7 +323,7 @@ class StudentFeeController extends Controller
                     'tuition_fee'         => $fees['tuition_fee'],
                     'lab_fee'             => $fees['lab_fee'],
                     'misc_fee'            => $fees['misc_fee'],
-                    'year_level'          => $student->year_level,
+                    'year_level'          => $yearLevelForAssessment,  // ← derived, not raw DB
                     'total_assessment'    => $fees['total'],
                     'status'              => 'active',
                 ]);
@@ -338,6 +354,7 @@ class StudentFeeController extends Controller
                         'misc_fee'            => $fees['misc_fee'],
                         'school_year'         => $validated['school_year'],
                         'discount_applied'    => $fees['discount_applied'],
+                        'year_level'          => $yearLevelForAssessment,
                     ]),
                 ]);
 
@@ -375,7 +392,6 @@ class StudentFeeController extends Controller
         $tuitionPerUnit = (float) (\App\Models\FeeSetting::where('key', 'tuition_per_unit')->value('amount') ?? 364.00);
 
         $allAssessmentsFormatted = $allAssessmentsRaw->map(function ($a) use ($user, $tuitionPerUnit) {
-            // Entrepreneurship fee has no dedicated column — recover by subtraction.
             $entrepFee = max(0.0, round(
                 (float) $a->total_assessment
                 - (float) $a->tuition_fee
@@ -384,7 +400,6 @@ class StudentFeeController extends Controller
                 2
             ));
 
-            // Lab line displayed = stored lab_fee (lab subjects × ₱1,656) + entrep
             $labAndEntrepFee = round((float) $a->lab_fee + $entrepFee, 2);
 
             return [
@@ -398,7 +413,7 @@ class StudentFeeController extends Controller
                 'tuition_per_unit'     => $tuitionPerUnit,
                 'lab_fee'              => $labAndEntrepFee,
                 'entrepreneurship_fee' => $entrepFee,
-                'misc_fee'             => (float) $a->misc_fee,          // stored value — not live fee_settings
+                'misc_fee'             => (float) $a->misc_fee,
                 'other_fees'           => round($labAndEntrepFee + (float) $a->misc_fee, 2),
                 'lec_units'            => (float) $a->lec_units,
                 'nstp_lec_units'       => (float) ($a->nstp_lec_units ?? 0),
@@ -419,14 +434,14 @@ class StudentFeeController extends Controller
                         'name'     => 'Laboratory Fee',
                         'code'     => 'LAB',
                         'units'    => (int) ($a->lab_subjects ?? $a->lab_units),
-                        'amount'   => $labAndEntrepFee,   // lab_subjects × ₱1,656 + ₱600 entrep
+                        'amount'   => $labAndEntrepFee,
                     ],
                     [
                         'category' => 'Miscellaneous',
                         'name'     => 'Miscellaneous Fee',
                         'code'     => 'MISC',
                         'units'    => null,
-                        'amount'   => (float) $a->misc_fee,  // stored at creation time
+                        'amount'   => (float) $a->misc_fee,
                     ],
                 ],
                 'status'       => $a->status,
@@ -444,9 +459,6 @@ class StudentFeeController extends Controller
         })->values()->all();
 
         $studentRecord = $user->student;
-        // Pre-fetch bank-transfer transactions for this student so we can recover
-        // reference_number for Payment records that were approved before the
-        // finalizeApprovedPayment fix (those have or_number = null on the Payment row).
         $btTransactionsByAssessment = \App\Models\Transaction::where('user_id', $userId)
             ->where('kind', 'payment')
             ->where('payment_channel', 'bank_transfer')
@@ -459,13 +471,9 @@ class StudentFeeController extends Controller
                 ->orderByDesc('created_at')
                 ->get()
                 ->map(function ($p) use ($btTransactionsByAssessment) {
-                    // Resolve the display reference:
-                    // 1. Use or_number if present (cash payments always have this).
-                    // 2. For bank transfers with a null or_number, find the matching
-                    //    Transaction and pull meta->reference_number from it.
                     $orNumber = $p->or_number;
                     if (! $orNumber && $p->payment_method === 'bank_transfer') {
-                        $key  = (string) $p->student_assessment_id;
+                        $key      = (string) $p->student_assessment_id;
                         $orNumber = ($btTransactionsByAssessment[$key] ?? collect())
                             ->map(fn ($t) => $t->meta['reference_number'] ?? null)
                             ->filter()
@@ -506,7 +514,6 @@ class StudentFeeController extends Controller
                 'created_at'      => $t->created_at?->toDateTimeString(),
             ])->all();
 
-        // Active assessment — same entrep recovery pattern
         $activeEntrepFee = $assessment
             ? max(0.0, round(
                 (float) $assessment->total_assessment
@@ -535,7 +542,7 @@ class StudentFeeController extends Controller
             'tuition_fee'          => (float) $assessment->tuition_fee,
             'lab_fee'              => $activeLabAndEntrepFee,
             'entrepreneurship_fee' => $activeEntrepFee,
-            'misc_fee'             => (float) $assessment->misc_fee,   // stored — not live
+            'misc_fee'             => (float) $assessment->misc_fee,
             'other_fees'           => round($activeLabAndEntrepFee + (float) $assessment->misc_fee, 2),
             'fee_breakdown'        => [
                 [
@@ -550,14 +557,14 @@ class StudentFeeController extends Controller
                     'name'     => 'Laboratory Fee',
                     'code'     => 'LAB',
                     'units'    => (int) ($assessment->lab_subjects ?? $assessment->lab_units),
-                    'amount'   => $activeLabAndEntrepFee,  // lab + entrep
+                    'amount'   => $activeLabAndEntrepFee,
                 ],
                 [
                     'category' => 'Miscellaneous',
                     'name'     => 'Miscellaneous Fee',
                     'code'     => 'MISC',
                     'units'    => null,
-                    'amount'   => (float) $assessment->misc_fee,  // stored value
+                    'amount'   => (float) $assessment->misc_fee,
                 ],
             ],
             'status'               => $assessment->status,
@@ -574,10 +581,6 @@ class StudentFeeController extends Controller
             ])->values()->all(),
         ] : null;
 
-        // miscItems is only used for the drill-down tooltip/accordion in Show.vue.
-        // Pass the STORED misc_fee total so the breakdown is anchored to creation time,
-        // but still pass live fee_settings items for labeling purposes.
-        // The frontend totalMiscellaneous should use assessment.misc_fee, not sum(miscItems).
         $miscItems = \App\Models\FeeSetting::whereIn('category', ['miscellaneous', 'other'])
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -835,6 +838,8 @@ class StudentFeeController extends Controller
         $validated = $request->validate([
             'student_id' => 'required|exists:users,id',
             'semester'   => 'required|string',
+            // ← Accept the derived year level from the frontend
+            'year_level' => 'nullable|string|max:50',
         ]);
 
         $student = User::findOrFail($validated['student_id']);
@@ -854,17 +859,22 @@ class StudentFeeController extends Controller
             ]);
         }
 
+        // Use the derived year level if the frontend computed one; otherwise fall
+        // back to the student's stored DB value. This is what makes the Unit
+        // Breakdown table pull the correct curriculum after a year-level advance.
+        $effectiveYearLevel = $validated['year_level'] ?? $student->year_level;
+
         $semesterDb = AssessmentService::normalizeSemester($validated['semester']);
 
         $curriculum = AssessmentService::getCurriculumUnits(
             $student->course,
-            $student->year_level,
+            $effectiveYearLevel,
             $validated['semester']
         );
 
         $preset = CourseUnitPreset::forCourseYearSem(
             $student->course,
-            $student->year_level,
+            $effectiveYearLevel,
             $semesterDb
         );
 
@@ -872,7 +882,7 @@ class StudentFeeController extends Controller
             if (! $preset) {
                 return response()->json([
                     'found'   => false,
-                    'message' => "No curriculum data found for {$student->course} — {$student->year_level} — {$semesterDb}. "
+                    'message' => "No curriculum data found for {$student->course} — {$effectiveYearLevel} — {$semesterDb}. "
                             . "Add a Course Unit Preset in Fee Settings or seed subjects.",
                 ]);
             }
@@ -891,7 +901,7 @@ class StudentFeeController extends Controller
                 'pathfit_units'      => 0,
                 'subjects'           => [],
                 'course'             => $student->course,
-                'year_level'         => $student->year_level,
+                'year_level'         => $effectiveYearLevel,
                 'message'            => 'Units auto-filled from Course Unit Preset (no subject-level data).',
             ]);
         }
@@ -911,7 +921,7 @@ class StudentFeeController extends Controller
             'pathfit_units'      => $curriculum['pathfit_units'],
             'subjects'           => $curriculum['subjects'],
             'course'             => $student->course,
-            'year_level'         => $student->year_level,
+            'year_level'         => $effectiveYearLevel,
         ]);
     }
 
@@ -1058,7 +1068,7 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  STORE STUDENT  ← FIXED
+    //  STORE STUDENT
     // ─────────────────────────────────────────────────────────────
 
     public function storeStudent(Request $request)
@@ -1151,7 +1161,7 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  UPDATE STUDENT (Admin only)  ← FIXED
+    //  UPDATE STUDENT (Admin only)
     // ─────────────────────────────────────────────────────────────
 
     public function updateStudent(Request $request, Student $student)

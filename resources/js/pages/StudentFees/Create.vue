@@ -29,6 +29,7 @@ interface PaidSemester {
   school_year: string
   assessment_id: number
   total_assessment: number
+  year_level: string | null
 }
 
 interface PreselectedStudent {
@@ -71,26 +72,45 @@ const breadcrumbs = [
   { title: 'New Assessment', href: route('student-fees.create') },
 ]
 
+// ─── Year Level Progression ───────────────────────────────────────────────────
+
+/**
+ * Canonical year level advancement map.
+ * Must match the server-side advanceYearLevel() helper.
+ */
+const YEAR_LEVEL_MAP: Record<string, string> = {
+  '1st Year': '2nd Year',
+  '2nd Year': '3rd Year',
+  '3rd Year': '4th Year',
+  '4th Year': '5th Year',
+}
+
+function advanceYearLevel(current: string): string {
+  return YEAR_LEVEL_MAP[current] ?? current
+}
+
 // ─── Paid Semester Logic ──────────────────────────────────────────────────────
 
 const SEM_ORDER: Record<string, number> = { '1st': 1, '2nd': 2, 'Summer': 3 }
 
 /**
  * Given the list of fully-paid assessments, compute the next recommended
- * semester and school year that Accounting should create an assessment for.
+ * semester, school year, AND year level for the next assessment.
  *
- * Progression:
- *   1st → 2nd (same school year)
- *   2nd → 1st (next school year)
- *   Summer → 1st (next school year)
- *   no history → current school year, 1st semester
+ * Year level advancement rules:
+ *   - 1st Sem → 2nd Sem of the same school year → SAME year level
+ *   - 2nd Sem (or Summer) → 1st Sem of the next school year → ADVANCE year level
+ *   - No history → use the student's stored DB year level as-is
  */
-function computeNextSemester(paid: PaidSemester[]): { semester: '1st' | '2nd' | 'Summer'; school_year: string } {
+function computeNextSemesterAndYear(
+  paid: PaidSemester[],
+  studentYearLevel: string,
+): { semester: '1st' | '2nd' | 'Summer'; school_year: string; year_level: string } {
   const currentYear = new Date().getFullYear()
   const defaultYear = `${currentYear}-${currentYear + 1}`
 
   if (!paid.length) {
-    return { semester: '1st', school_year: defaultYear }
+    return { semester: '1st', school_year: defaultYear, year_level: studentYearLevel }
   }
 
   const sorted = [...paid].sort((a, b) => {
@@ -101,13 +121,24 @@ function computeNextSemester(paid: PaidSemester[]): { semester: '1st' | '2nd' | 
   const last = sorted[sorted.length - 1]
 
   if (last.semester === '1st') {
-    return { semester: '2nd', school_year: last.school_year }
+    // 1st → 2nd of the same school year: year level stays the same
+    return {
+      semester:    '2nd',
+      school_year: last.school_year,
+      year_level:  last.year_level ?? studentYearLevel,
+    }
   }
 
-  // 2nd or Summer → advance to 1st of next academic year
+  // 2nd or Summer → 1st of next academic year: year level advances
   const [startStr] = last.school_year.split('-')
   const startYear  = parseInt(startStr, 10)
-  return { semester: '1st', school_year: `${startYear + 1}-${startYear + 2}` }
+  const lastYl     = last.year_level ?? studentYearLevel
+
+  return {
+    semester:    '1st',
+    school_year: `${startYear + 1}-${startYear + 2}`,
+    year_level:  advanceYearLevel(lastYl),
+  }
 }
 
 // ─── Student Search ───────────────────────────────────────────────────────────
@@ -117,6 +148,20 @@ const searchResults   = ref<PreselectedStudent[]>([])
 const searchLoading   = ref(false)
 const selectedStudent = ref<PreselectedStudent | null>(props.preselectedStudent ?? null)
 const paidSemesters   = ref<PaidSemester[]>(props.preselectedStudent?.paid_semesters ?? [])
+
+/**
+ * The year level to use for this new assessment — derived from paid semester
+ * history. This may be one level ahead of the student's stored DB year_level
+ * when they are crossing into a new academic year.
+ */
+const computedYearLevel = ref<string>(
+  props.preselectedStudent
+    ? computeNextSemesterAndYear(
+        props.preselectedStudent.paid_semesters ?? [],
+        props.preselectedStudent.year_level,
+      ).year_level
+    : ''
+)
 
 const hasRemainingBalance = computed(
   () => (selectedStudent.value?.remaining_balance ?? 0) > 0
@@ -168,21 +213,25 @@ function selectStudent(student: PreselectedStudent) {
   curriculumMessage.value  = ''
   hasNstp.value            = false
 
-  // Auto-advance semester + school year based on paid history
-  const next        = computeNextSemester(paidSemesters.value)
-  form.semester     = next.semester
-  form.school_year  = next.school_year
+  // Auto-advance semester, school year, AND year level based on paid history
+  const next            = computeNextSemesterAndYear(paidSemesters.value, student.year_level)
+  form.semester         = next.semester
+  form.school_year      = next.school_year
+  computedYearLevel.value = next.year_level
+  form.year_level       = next.year_level
 }
 
 function clearStudent() {
-  selectedStudent.value    = null
-  paidSemesters.value      = []
-  form.user_id             = 0
-  form.lec_units           = 0
-  form.lab_units           = 0
-  curriculumSubjects.value = []
-  curriculumMessage.value  = ''
-  hasNstp.value            = false
+  selectedStudent.value     = null
+  paidSemesters.value       = []
+  computedYearLevel.value   = ''
+  form.user_id              = 0
+  form.year_level           = ''
+  form.lec_units            = 0
+  form.lab_units            = 0
+  curriculumSubjects.value  = []
+  curriculumMessage.value   = ''
+  hasNstp.value             = false
 }
 
 // ─── Curriculum Auto-Populate ─────────────────────────────────────────────────
@@ -192,32 +241,17 @@ const curriculumSubjects = ref<CurriculumSubject[]>([])
 const curriculumMessage  = ref('')
 
 // ── NSTP state ────────────────────────────────────────────────────────────────
-//
-// hasNstp  = user-controllable checkbox.
-//            Pre-populated from the curriculum API (preset.has_nstp OR subjects detection).
-//            Can be toggled manually by accounting to handle irregular students or edge cases.
-//
-// nstpLecUnits = pure computed from hasNstp.
-//                Always 1.5 when NSTP is active, always 0 when not.
-//                Never a stale ref — derived solely from the checkbox.
-//
 const hasNstp = ref(false)
 
 const NSTP_UNITS = 1.5  // mirrors AssessmentService::NSTP_MINIMUM_UNITS
 
 // ─── Form ─────────────────────────────────────────────────────────────────────
-//
-// form.lec_units   = BILLABLE lecture units only — NSTP excluded.
-//                    This is what the backend expects and what AssessmentService::compute()
-//                    receives as the `$lecUnits` parameter.
-//
-// form.nstp_lec_units = 1.5 when NSTP is on, 0 when off.
-//                       Sent to the backend separately.
-//
+
 const form = useForm({
   user_id:             props.preselectedStudent?.id ?? 0,
   semester:            '1st' as '1st' | '2nd' | 'Summer',
   school_year:         '',
+  year_level:          '',     // ← derived year level sent to the backend
   lec_units:           0,
   lab_units:           0,
   nstp_lec_units:      0,
@@ -225,11 +259,16 @@ const form = useForm({
   term_percentages:    {} as Record<string, number>,
 })
 
-// Initialise semester / school_year from paid history if a student was preselected
+// Initialise semester / school_year / year_level from paid history if a student was preselected
 if (props.preselectedStudent) {
-  const next       = computeNextSemester(props.preselectedStudent.paid_semesters ?? [])
-  form.semester    = next.semester
-  form.school_year = next.school_year
+  const next         = computeNextSemesterAndYear(
+    props.preselectedStudent.paid_semesters ?? [],
+    props.preselectedStudent.year_level,
+  )
+  form.semester      = next.semester
+  form.school_year   = next.school_year
+  form.year_level    = next.year_level
+  computedYearLevel.value = next.year_level
 } else {
   const currentYear = new Date().getFullYear()
   form.school_year  = `${currentYear}-${currentYear + 1}`
@@ -251,11 +290,13 @@ async function loadCurriculum() {
   hasNstp.value            = false
 
   try {
-    const res  = await fetch(
-      route('student-fees.curriculum-units') +
-      '?student_id=' + student.id +
-      '&semester='   + encodeURIComponent(form.semester)
-    )
+    // Pass the derived year_level so the API queries the correct curriculum level
+    const url = route('student-fees.curriculum-units')
+      + '?student_id=' + student.id
+      + '&semester='   + encodeURIComponent(form.semester)
+      + '&year_level=' + encodeURIComponent(computedYearLevel.value || student.year_level)
+
+    const res  = await fetch(url)
     const data = await res.json()
 
     if (data.found) {
@@ -264,7 +305,6 @@ async function loadCurriculum() {
       form.lab_units           = data.lab_subject_count
       hasNstp.value            = data.has_nstp ?? false
 
-      // Soft warning when units came from preset, not subjects table
       if (data.source === 'preset') {
         curriculumMessage.value = data.message ?? 'Units auto-filled from preset — no subject breakdown available.'
       } else {
@@ -286,25 +326,17 @@ watch([selectedStudent, () => form.semester], () => {
 
 // ─── Derived NSTP values ──────────────────────────────────────────────────────
 
-// Always derived from the checkbox — never stale.
 const nstpLecUnits = computed(() => hasNstp.value ? NSTP_UNITS : 0)
 
 // Keep form.nstp_lec_units in sync for backend submission
 watch(nstpLecUnits, (val) => { form.nstp_lec_units = val }, { immediate: true })
 
 // ─── Live Fee Computation ─────────────────────────────────────────────────────
-//
-// Discount rules (mirrors AssessmentService::compute exactly):
-//   discount < 100% : applies to ALL lec units including NSTP
-//   discount = 100% : all billable lec units → ₱0, NSTP (1.5 units) charged at full price
-//   lab + misc      : never discounted regardless
-//
+
 const rate = computed(() => props.feeRates.tuition_per_unit)
 
-// Total lec units for display and billing = billable + NSTP
 const totalLecUnits = computed(() => Number(form.lec_units) + nstpLecUnits.value)
 
-// Raw tuition before any discount
 const rawTotalTuition    = computed(() => totalLecUnits.value * rate.value)
 const rawBillableTuition = computed(() => Number(form.lec_units) * rate.value)
 const nstpTuition        = computed(() => nstpLecUnits.value * rate.value)
@@ -313,11 +345,9 @@ const pct = computed(() => Number(form.discount_percentage) || 0)
 
 const discountSaving = computed(() => {
   if (pct.value === 100) {
-    // 100% discount: entire billable (non-NSTP) tuition waived
     return rawBillableTuition.value
   }
   if (pct.value > 0) {
-    // Partial: discount on ALL lec units including NSTP
     return Math.round(rawTotalTuition.value * (pct.value / 100) * 100) / 100
   }
   return 0
@@ -325,7 +355,6 @@ const discountSaving = computed(() => {
 
 const tuitionFee = computed(() => {
   if (pct.value === 100) {
-    // Only NSTP survives the 100% discount
     return nstpTuition.value
   }
   return Math.round((rawTotalTuition.value - discountSaving.value) * 100) / 100
@@ -346,19 +375,12 @@ const tuitionAndLab = computed(() =>
 )
 
 // ─── Lecture Units Input ──────────────────────────────────────────────────────
-//
-// The input field displays totalLecUnits (billable + NSTP).
-// When accounting types a new value, we back-calculate billable = typed - nstpLecUnits.
-// This means the NSTP checkbox state at the moment of override determines the split.
-// If NSTP is checked and accounting types 20 → billable stored as 18.5 (20 - 1.5).
-// If NSTP is unchecked and accounting types 20 → billable stored as 20 (20 - 0).
-//
+
 const displayLecUnits = computed({
   get() {
     return totalLecUnits.value
   },
   set(val: number) {
-    // Strip NSTP portion before storing billable units
     form.lec_units = Math.max(0, Number(val) - nstpLecUnits.value)
   },
 })
@@ -416,7 +438,8 @@ function submit() {
   if (!selectedStudent.value) return
   if (hasRemainingBalance.value) return
   form.user_id          = selectedStudent.value.id
-  form.nstp_lec_units   = nstpLecUnits.value   // 1.5 or 0
+  form.year_level       = computedYearLevel.value || selectedStudent.value.year_level
+  form.nstp_lec_units   = nstpLecUnits.value
   form.term_percentages = { ...editablePercentages.value }
 
   form.post(route('student-fees.store'), {
@@ -471,7 +494,11 @@ function semLabel(s: string) {
                 <div>
                   <p class="font-semibold text-blue-900 dark:text-blue-100">{{ selectedStudent.name }}</p>
                   <p class="text-sm text-blue-700 dark:text-blue-300">
-                    {{ selectedStudent.account_id }} · {{ selectedStudent.course }} · {{ selectedStudent.year_level }}
+                    <!-- FIX #2: Clear "Acct. No." label so accounting staff never have to guess -->
+                    <span class="font-medium text-blue-500 dark:text-blue-400 text-xs uppercase tracking-wide mr-0.5">Acct. No.</span>
+                    {{ selectedStudent.account_id }}
+                    &nbsp;·&nbsp;{{ selectedStudent.course }}
+                    &nbsp;·&nbsp;{{ selectedStudent.year_level }}
                     <span v-if="selectedStudent.is_irregular"
                       class="ml-2 inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
                       <AlertTriangle class="h-3 w-3" /> Irregular
@@ -480,6 +507,16 @@ function semLabel(s: string) {
                       class="ml-2 inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
                       ✓ Regular
                     </span>
+                  </p>
+                  <!-- FIX #1: Show when year level is being advanced -->
+                  <p
+                    v-if="computedYearLevel && computedYearLevel !== selectedStudent.year_level"
+                    class="mt-1 text-xs text-amber-700 font-medium flex items-center gap-1"
+                  >
+                    <Info class="h-3 w-3" />
+                    Year level auto-advanced to
+                    <span class="font-bold">{{ computedYearLevel }}</span>
+                    for this assessment.
                   </p>
                 </div>
                 <Button variant="outline" size="sm" @click="clearStudent">Change</Button>
@@ -513,7 +550,12 @@ function semLabel(s: string) {
                         {{ s.paid_semesters.length }} sem{{ s.paid_semesters.length > 1 ? 's' : '' }} paid
                       </span>
                     </p>
-                    <p class="text-xs text-muted-foreground">{{ s.account_id }} · {{ s.course }} · {{ s.year_level }}</p>
+                    <!-- FIX #2: Label also in search result rows -->
+                    <p class="text-xs text-muted-foreground">
+                      <span class="font-medium">Acct. No.</span> {{ s.account_id }}
+                      &nbsp;·&nbsp;{{ s.course }}
+                      &nbsp;·&nbsp;{{ s.year_level }}
+                    </p>
                   </button>
                 </div>
                 <p v-if="form.errors.user_id" class="text-sm text-destructive mt-1">
@@ -523,7 +565,7 @@ function semLabel(s: string) {
             </CardContent>
           </Card>
 
-          <!-- ── Paid Semester History (shown only when student has paid semesters) ── -->
+          <!-- ── Paid Semester History ── -->
           <Card v-if="paidSemesters.length > 0" class="border-green-200 bg-green-50/40">
             <CardHeader class="pb-3">
               <CardTitle class="flex items-center gap-2 text-base text-green-800">
@@ -565,7 +607,6 @@ function semLabel(s: string) {
               <CardTitle class="text-base">Enrollment Period</CardTitle>
             </CardHeader>
             <CardContent class="grid grid-cols-2 gap-4">
-              <!-- Semester — styled button group replacing plain <select> so we can disable paid options -->
               <div class="space-y-1.5">
                 <Label>Semester</Label>
                 <div class="flex gap-2">
@@ -584,7 +625,6 @@ function semLabel(s: string) {
                             : 'border-input bg-background text-muted-foreground hover:bg-muted',
                       ]"
                     >
-                      <!-- Paid checkmark badge -->
                       <span
                         v-if="isSemesterPaid(sem)"
                         class="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-white"
@@ -596,7 +636,6 @@ function semLabel(s: string) {
                     </button>
                   </template>
                 </div>
-                <!-- Warn if ALL semesters of this school year are paid -->
                 <p
                   v-if="SEMESTERS.every(s => isSemesterPaid(s))"
                   class="flex items-center gap-1.5 text-xs text-amber-700 font-medium mt-1"
@@ -617,17 +656,20 @@ function semLabel(s: string) {
 
           <!-- Unit Breakdown Table -->
           <!--
-            Lec Units column = totalLecUnits (billable + NSTP when checked).
-            Total Units      = totalLecUnits + lab_units.
-            This reflects exactly what the student is billed for.
+            FIX #1 + #3: computedYearLevel is used — NOT selectedStudent.year_level.
+            This ensures the table reflects the year level for the semester
+            being assessed, which may be one level ahead of the DB value.
           -->
           <div v-if="selectedStudent && (curriculumSubjects.length > 0 || form.lec_units > 0 || hasNstp)"
                class="rounded-xl border border-gray-200 bg-white overflow-hidden">
             <div class="px-5 py-3 bg-gray-50 border-b border-gray-200">
               <h3 class="text-sm font-semibold text-gray-700">Unit Breakdown</h3>
               <p class="text-xs text-gray-400 mt-0.5">
-                {{ selectedStudent.course }} &middot; {{ selectedStudent.year_level }} &middot;
-                {{ semLabel(form.semester) }} &middot; {{ form.school_year }}
+                {{ selectedStudent.course }} &middot;
+                <span :class="computedYearLevel !== selectedStudent.year_level ? 'text-amber-600 font-medium' : ''">
+                  {{ computedYearLevel || selectedStudent.year_level }}
+                </span>
+                &middot; {{ semLabel(form.semester) }} &middot; {{ form.school_year }}
               </p>
             </div>
             <table class="w-full text-sm">
@@ -645,9 +687,19 @@ function semLabel(s: string) {
               <tbody>
                 <tr class="border-t border-gray-100">
                   <td class="px-5 py-3 text-gray-700">{{ selectedStudent.course }}</td>
-                  <td class="px-5 py-3 text-gray-700">{{ selectedStudent.year_level }}</td>
+                  <!-- FIX #3: Always use computedYearLevel here, not selectedStudent.year_level -->
+                  <td class="px-5 py-3 text-gray-700">
+                    <span :class="computedYearLevel !== selectedStudent.year_level ? 'text-amber-700 font-semibold' : ''">
+                      {{ computedYearLevel || selectedStudent.year_level }}
+                    </span>
+                    <span
+                      v-if="computedYearLevel && computedYearLevel !== selectedStudent.year_level"
+                      class="block text-xs text-amber-600 font-normal"
+                    >
+                      (was {{ selectedStudent.year_level }})
+                    </span>
+                  </td>
                   <td class="px-5 py-3 text-gray-700">{{ semLabel(form.semester) }}</td>
-                  <!-- Lec Units: billable + NSTP (1.5) when NSTP is active -->
                   <td class="px-4 py-3 text-center font-mono font-semibold text-gray-900">
                     {{ totalLecUnits }}
                     <span v-if="hasNstp" class="block text-xs font-normal text-amber-600">
@@ -656,7 +708,6 @@ function semLabel(s: string) {
                   </td>
                   <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
                   <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
-                  <!-- Total = billable lec + NSTP (if active) + lab -->
                   <td class="px-4 py-3 text-center font-mono font-bold text-blue-700">
                     {{ totalLecUnits + Number(form.lab_units) }}
                   </td>
@@ -692,12 +743,10 @@ function semLabel(s: string) {
             <CardContent class="space-y-5">
 
               <div class="grid grid-cols-2 gap-6">
-                <!-- Lecture Units input -->
                 <div class="space-y-1.5">
                   <Label for="lec_units" class="flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
                     Lecture Units
-                    <!-- Label is conditional: only mention NSTP when it's actually active -->
                     <span v-if="hasNstp" class="text-xs text-amber-600 font-medium">(incl. 1.5 NSTP)</span>
                     <span v-else class="text-xs text-muted-foreground">(billable only)</span>
                   </Label>
@@ -710,7 +759,6 @@ function semLabel(s: string) {
                   <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
                 </div>
 
-                <!-- Lab Subjects input -->
                 <div class="space-y-1.5">
                   <Label for="lab_units" class="flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full bg-orange-500 inline-block"></span>
@@ -753,7 +801,6 @@ function semLabel(s: string) {
                       </template>
                     </p>
                   </div>
-                  <!-- Live NSTP fee indicator when checked -->
                   <div v-if="hasNstp" class="shrink-0 text-right">
                     <p class="text-xs font-mono font-semibold text-amber-700">
                       + {{ formatCurrency(nstpTuition) }}
@@ -776,7 +823,6 @@ function semLabel(s: string) {
             </CardHeader>
             <CardContent class="space-y-4">
 
-              <!-- NSTP 100% discount notice -->
               <div
                 v-if="hasNstp && pct === 100"
                 class="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-300 p-3 text-sm text-amber-900"
@@ -840,7 +886,6 @@ function semLabel(s: string) {
                 </p>
               </div>
 
-              <!-- Discount breakdown panel -->
               <div
                 v-if="pct > 0"
                 class="rounded-md bg-green-50 border border-green-200 p-3 space-y-1.5 text-sm"
@@ -849,7 +894,6 @@ function semLabel(s: string) {
                   Effective Fees After Discount
                 </p>
 
-                <!-- Partial discount (< 100%): NSTP included in discount -->
                 <template v-if="pct < 100">
                   <template v-if="hasNstp">
                     <div class="flex justify-between text-green-800 text-xs">
@@ -881,7 +925,6 @@ function semLabel(s: string) {
                   </div>
                 </template>
 
-                <!-- 100% discount: billable lec units → ₱0, NSTP survives if checked -->
                 <template v-else>
                   <div class="flex justify-between text-green-800 text-xs">
                     <span>Billable tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
@@ -980,7 +1023,6 @@ function semLabel(s: string) {
                   </span>
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
                 </div>
-                <!-- NSTP sub-line in fee sidebar -->
                 <div v-if="hasNstp" class="flex justify-between text-xs text-amber-600 pl-2">
                   <span>incl. 1.5 NSTP units</span>
                   <span>{{ formatCurrency(nstpTuition) }}</span>
