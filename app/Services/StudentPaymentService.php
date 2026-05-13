@@ -238,11 +238,17 @@ class StudentPaymentService
             // ── Create Payment audit records per term ──────────────────────────
             foreach ($allocation as $alloc) {
                 if ($user->student) {
+                    // For bank transfers the reference lives in meta->reference_number
+                    // (or_number on the Transaction is null). Copy it into Payment.or_number
+                    // so the payments table has the correct identifier going forward.
+                    $paymentOrNumber = $transaction->or_number
+                        ?? ($transaction->meta['reference_number'] ?? null);
+
                     Payment::create([
                         'student_id'            => $user->student->id,
                         'student_assessment_id' => $term->student_assessment_id,
                         'amount'                => $alloc['applied'],
-                        'or_number'             => $transaction->or_number ?? null,
+                        'or_number'             => $paymentOrNumber,
                         'payment_method'        => $transaction->payment_channel,
                         'description'           => 'Payment — ' . $alloc['term_name'],
                         'status'                => PaymentStatus::COMPLETED->value,

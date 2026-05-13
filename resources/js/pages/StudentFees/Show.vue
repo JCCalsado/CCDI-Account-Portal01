@@ -834,39 +834,6 @@ const formatPaymentMethod = (m: string): string => {
                     </Link>
                     <div>
                         <h1 class="text-2xl font-bold text-gray-900">{{ student.name }}</h1>
-                        <p class="mt-0.5 text-sm text-gray-500">
-                            {{ student.account_id }} &middot;
-                            <span class="font-medium">{{
-                                selectedAssessment?.course || student.course || '—'
-                            }}</span>
-                            <span
-                                v-if="
-                                    selectedAssessment?.course &&
-                                    selectedAssessment.course !== student.course
-                                "
-                                class="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700"
-                            >
-                                Assessment Course
-                            </span>
-                            &middot;
-                            <span
-                                v-if="selectedAssessment?.year_level"
-                                class="font-medium text-blue-700"
-                                >{{ selectedAssessment.year_level }}</span
-                            >
-                            <span v-else>{{ student.year_level }}</span>
-                            &middot;
-                            <span
-                                :class="[
-                                    'ml-2 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold',
-                                    student.is_irregular
-                                        ? 'bg-amber-100 text-amber-700'
-                                        : 'bg-blue-100 text-blue-700',
-                                ]"
-                            >
-                                {{ student.is_irregular ? 'Irregular' : 'Regular' }}
-                            </span>
-                        </p>
                     </div>
                 </div>
                 <div class="flex items-center gap-2">
@@ -882,17 +849,12 @@ const formatPaymentMethod = (m: string): string => {
                     </select>
                     <a :href="exportUrl" target="_blank">
                         <Button variant="outline" size="sm">
-                            <Download class="mr-2 h-4 w-4" /> Export PDF
+                            <Download class="mr-2 h-4 w-4" /> Assessment
                         </Button>
                     </a>
                     <a v-if="selectedAssessment" :href="route('student-fees.export-pdf', student.id) + (selectedAssessmentId ? '?assessment_id=' + selectedAssessmentId + '&type=receipt' : '?type=receipt')" target="_blank">
                         <Button variant="outline" size="sm">
                             <Download class="mr-2 h-4 w-4" /> Receipt
-                        </Button>
-                    </a>
-                    <a v-if="selectedAssessment" :href="exportUrl" target="_blank">
-                        <Button variant="outline" size="sm">
-                            <Download class="mr-2 h-4 w-4" /> Assessment
                         </Button>
                     </a>
                     <Link v-if="isAccounting" :href="route('student-fees.edit-student', student.student_db_id)">
@@ -1171,11 +1133,23 @@ const formatPaymentMethod = (m: string): string => {
                         </div>
                         <div>
                             <Label class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</Label>
-                            <span
-                                class="mt-0.5 inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                                :class="getStudentStatusColor(student.status)"
-                                >{{ student.status }}</span
-                            >
+                            <div class="mt-0.5 flex flex-wrap items-center gap-2">
+                                <span
+                                    class="inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="getStudentStatusColor(student.status)"
+                                    >{{ student.status }}</span
+                                >
+                                <span
+                                    :class="[
+                                        'inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold',
+                                        student.is_irregular
+                                            ? 'bg-amber-100 text-amber-700'
+                                            : 'bg-blue-100 text-blue-700',
+                                    ]"
+                                >
+                                    {{ student.is_irregular ? 'Irregular' : 'Regular' }}
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </CardContent>
@@ -1407,7 +1381,7 @@ const formatPaymentMethod = (m: string): string => {
                                     </th>
                                     <th 
                                         class="px-6 py-3 text-left text-xs font-semibold tracking-wider text-gray-500 uppercase">
-                                        OR No.
+                                        OR / Ref No.
                                     </th>
                                     <th
                                         class="px-6 py-3 text-left text-xs font-semibold tracking-wider text-gray-500 uppercase"
@@ -1457,9 +1431,10 @@ const formatPaymentMethod = (m: string): string => {
                                         {{ formatDateShort(payment.paid_at) }}
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
-                                        <span class="font-mono text-xs text-gray-700">{{
-                                             payment.or_number ?? '—'
-                                        }}</span>
+                                        <span class="font-mono text-xs text-gray-700">{{ payment.or_number ?? '—' }}</span>
+                                        <p class="mt-0.5 text-xs text-gray-400">
+                                            {{ payment.payment_method?.toLowerCase() === 'bank_transfer' ? 'Ref No.' : 'OR No.' }}
+                                        </p>
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
                                         <span
@@ -1586,13 +1561,13 @@ const formatPaymentMethod = (m: string): string => {
                             <table class="w-full border-collapse text-left">
                                 <thead>
                                     <tr class="bg-gray-50 text-xs text-gray-500 uppercase">
-                                        <th class="px-4 py-3 font-semibold">OR No.</th>
-                                        <th class="px-4 py-3 font-semibold">Type</th>
+                                        <th class="px-4 py-3 font-semibold">Date</th>
+                                        <th class="px-4 py-3 font-semibold">OR / Ref No.</th>
+                                        <th class="px-4 py-3 font-semibold">Method</th>
                                         <th class="px-4 py-3 font-semibold">Category</th>
                                         <th class="px-4 py-3 font-semibold">Year & Semester</th>
                                         <th class="px-4 py-3 font-semibold">Amount</th>
                                         <th class="px-4 py-3 font-semibold">Status</th>
-                                        <th class="px-4 py-3 font-semibold">Date</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1601,14 +1576,19 @@ const formatPaymentMethod = (m: string): string => {
                                         :key="t.id"
                                         class="border-b border-gray-100 transition-colors hover:bg-gray-50"
                                     >
-                                        <td class="px-4 py-3 font-mono text-xs text-gray-700">
-                                            {{ t.or_number ?? '—' }}
+                                        <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                                            {{ formatDateShort(t.created_at) }}
                                         </td>
-                                        <td class="px-4 py-3">
-                                            <span
-                                                class="rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800"
-                                                >payment</span
-                                            >
+                                        <td class="px-4 py-3 font-mono text-xs text-gray-700 whitespace-nowrap">
+                                            {{ t.or_number ?? t.meta?.reference_number ?? '—' }}
+                                            <p class="mt-0.5 font-sans text-xs text-gray-400">
+                                                {{ (t.payment_channel ?? '').toLowerCase() === 'bank_transfer' ? 'Ref No.' : 'OR No.' }}
+                                            </p>
+                                        </td>
+                                        <td class="px-4 py-3 whitespace-nowrap">
+                                            <span class="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 capitalize">
+                                                {{ formatPaymentMethod(t.payment_channel ?? '') }}
+                                            </span>
                                         </td>
                                         <td class="px-4 py-3 text-sm text-gray-700">
                                             {{ t.type }}
@@ -1651,9 +1631,6 @@ const formatPaymentMethod = (m: string): string => {
                                                         : t.status
                                                 }}
                                             </span>
-                                        </td>
-                                        <td class="px-4 py-3 text-xs text-gray-500">
-                                            {{ formatDateShort(t.created_at) }}
                                         </td>
                                     </tr>
                                 </tbody>

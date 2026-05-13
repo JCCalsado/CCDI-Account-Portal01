@@ -20,6 +20,7 @@ interface PaymentTerm {
 
 interface Assessment {
     id: number;
+    semester: string | null;
     total_assessment: number;
     paymentTerms: PaymentTerm[];
 }
@@ -332,6 +333,7 @@ const submitDrop = () => {
                             </th>
                             <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Course</th>
                             <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Year Level</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Semester</th>
                             <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
                             <th
                                 @click="toggleSort('balance')"
@@ -361,6 +363,12 @@ const submitDrop = () => {
                             </td>
                             <td class="px-5 py-3.5 text-sm text-muted-foreground">{{ student.course }}</td>
                             <td class="px-5 py-3.5 text-sm text-muted-foreground">{{ student.year_level }}</td>
+                            <td class="px-5 py-3.5 text-sm text-muted-foreground">
+                                <span v-if="student.latestAssessment?.semester" class="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                                    {{ student.latestAssessment.semester }}
+                                </span>
+                                <span v-else class="text-muted-foreground/40">—</span>
+                            </td>
                             <td class="px-5 py-3.5">
                                 <span :class="getStatusConfig(student.status).badge">{{ getStatusConfig(student.status).label }}</span>
                             </td>

@@ -93,6 +93,7 @@ class StudentFeeController extends Controller
             'account'           => $u->account ? ['balance' => max(0, (float) $u->account->balance)] : null,
             'latestAssessment'  => $u->latestAssessment ? [
                 'id'               => $u->latestAssessment->id,
+                'semester'         => $u->latestAssessment->semester,
                 'total_assessment' => $u->latestAssessment->total_assessment,
                 'paymentTerms'     => $u->latestAssessment->paymentTerms->map(fn ($t) => [
                     'id'         => $t->id,
@@ -392,25 +393,47 @@ class StudentFeeController extends Controller
         })->values()->all();
 
         $studentRecord = $user->student;
+        // Pre-fetch bank-transfer transactions for this student so we can recover
+        // reference_number for Payment records that were approved before the
+        // finalizeApprovedPayment fix (those have or_number = null on the Payment row).
+        $btTransactionsByAssessment = \App\Models\Transaction::where('user_id', $userId)
+            ->where('kind', 'payment')
+            ->where('payment_channel', 'bank_transfer')
+            ->get()
+            ->groupBy(fn ($t) => (string) ($t->meta['assessment_id'] ?? ''));
+
         $payments      = $studentRecord
             ? \App\Models\Payment::where('student_id', $studentRecord->id)
                 ->with('assessment')
                 ->orderByDesc('created_at')
                 ->get()
-                ->map(fn ($p) => [
-                    'id'               => $p->id,
-                    'assessment_id'    => $p->student_assessment_id,
-                    'amount'           => (float) $p->amount,
-                    'payment_method'   => $p->payment_method,
-                    'reference_number' => $p->paymongo_payment_id
-                        ?? ($p->meta['reference_number'] ?? null),
-                    'or_number'        => $p->or_number ?? null,
-                    'description'      => $p->description ?? 'Payment',
-                    'status'           => $p->status,
-                    'paid_at'          => $p->created_at?->toDateString(),
-                    'school_year'      => $p->assessment?->school_year,
-                    'semester'         => $p->assessment?->semester,
-                ])->all()
+                ->map(function ($p) use ($btTransactionsByAssessment) {
+                    // Resolve the display reference:
+                    // 1. Use or_number if present (cash payments always have this).
+                    // 2. For bank transfers with a null or_number, find the matching
+                    //    Transaction and pull meta->reference_number from it.
+                    $orNumber = $p->or_number;
+                    if (! $orNumber && $p->payment_method === 'bank_transfer') {
+                        $key  = (string) $p->student_assessment_id;
+                        $orNumber = ($btTransactionsByAssessment[$key] ?? collect())
+                            ->map(fn ($t) => $t->meta['reference_number'] ?? null)
+                            ->filter()
+                            ->first();
+                    }
+
+                    return [
+                        'id'               => $p->id,
+                        'assessment_id'    => $p->student_assessment_id,
+                        'amount'           => (float) $p->amount,
+                        'payment_method'   => $p->payment_method,
+                        'or_number'        => $orNumber,
+                        'description'      => $p->description ?? 'Payment',
+                        'status'           => $p->status,
+                        'paid_at'          => $p->created_at?->toDateString(),
+                        'school_year'      => $p->assessment?->school_year,
+                        'semester'         => $p->assessment?->semester,
+                    ];
+                })->all()
             : [];
 
         $transactions = Transaction::where('user_id', $userId)
@@ -418,17 +441,18 @@ class StudentFeeController extends Controller
             ->orderByDesc('created_at')
             ->get()
             ->map(fn ($t) => [
-                'id'         => $t->id,
-                'kind'       => $t->kind,
-                'type'       => $t->type ?? ucfirst($t->kind),
-                'amount'     => (float) $t->amount,
-                'reference'  => $t->reference,
-                'or_number'  => $t->or_number ?? null,
-                'status'     => $t->status,
-                'year'       => $t->year,
-                'semester'   => $t->semester,
-                'meta'       => $t->meta,
-                'created_at' => $t->created_at?->toDateTimeString(),
+                'id'              => $t->id,
+                'kind'            => $t->kind,
+                'type'            => $t->type ?? ucfirst($t->kind),
+                'amount'          => (float) $t->amount,
+                'reference'       => $t->reference,
+                'or_number'       => $t->or_number ?? null,
+                'payment_channel' => $t->payment_channel ?? ($t->meta['payment_method'] ?? null),
+                'status'          => $t->status,
+                'year'            => $t->year,
+                'semester'        => $t->semester,
+                'meta'            => $t->meta,
+                'created_at'      => $t->created_at?->toDateTimeString(),
             ])->all();
 
         // Active assessment — same entrep recovery pattern
@@ -923,7 +947,7 @@ class StudentFeeController extends Controller
             $latestPayment = $user->transactions()
                 ->where('kind', 'payment')
                 ->where('status', 'paid')
-                ->where('semester', $assessment->semester)
+                ->whereJsonContains('meta->assessment_id', $assessment->id)
                 ->with('user.account', 'user.student')
                 ->latest('paid_at')
                 ->first();
