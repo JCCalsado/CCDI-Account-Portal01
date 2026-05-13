@@ -107,8 +107,7 @@ const toggle = (key: string) => {
 const assessmentByTermKey = computed(() => {
     const map: Record<string, number> = {};
     for (const a of props.allAssessments) {
-        const startYear = parseInt(String(a.school_year?.split('-')[0] ?? ''), 10);
-        const key = `${startYear} ${a.semester}`;
+        const key = `${a.school_year} ${a.semester}`;
         map[key] = a.total_assessment ?? 0;
     }
     return map;
@@ -204,12 +203,12 @@ const subjectPanelsByTerm = computed(() => {
     const result: Record<string, ReturnType<typeof buildSubjectPanel> | null> = {};
 
     for (const [termKey] of Object.entries(props.transactionsByTerm ?? {})) {
-        const parts    = termKey.split(' ');
-        const year     = parts[0];
-        const semester = parts.slice(1).join(' ');
+        const parts      = termKey.split(' ');
+        const schoolYear = parts[0];
+        const semester   = parts.slice(1).join(' ');
 
         const matchingAssessment = props.allAssessments.find(
-            (a) => a.school_year.startsWith(year) && a.semester === semester,
+            (a) => a.school_year === schoolYear && a.semester === semester,
         );
 
         if (!matchingAssessment || !matchingAssessment.fee_breakdown?.length) {

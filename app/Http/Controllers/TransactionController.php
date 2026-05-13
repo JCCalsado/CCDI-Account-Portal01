@@ -92,8 +92,7 @@ class TransactionController extends Controller
                 ->first();
 
             if ($latestAssessment) {
-                $yearNum     = explode('-', $latestAssessment->school_year)[0] ?? now()->year;
-                $currentTerm = trim("{$yearNum} {$latestAssessment->semester}");
+                $currentTerm = trim("{$latestAssessment->school_year} {$latestAssessment->semester}");
             } else {
                 $currentTerm = $this->getCurrentTerm();
             }
@@ -539,20 +538,33 @@ class TransactionController extends Controller
     private function getTransactionGroupKey(object $txn): string
     {
         if (!empty($txn->year) && !empty($txn->semester)) {
-            return "{$txn->year} {$txn->semester}";
+            $schoolYear = $this->formatSchoolYear($txn->year);
+            return "{$schoolYear} {$txn->semester}";
         }
 
         if (empty($txn->year) && empty($txn->semester)) {
             return $this->getCurrentTerm();
         }
 
-        $label = trim("{$txn->year} {$txn->semester}");
-        return $label ?: $this->getCurrentTerm();
+        if (!empty($txn->year)) {
+            $schoolYear = $this->formatSchoolYear($txn->year);
+            $label      = trim("{$schoolYear} {$txn->semester}");
+            return $label ?: $this->getCurrentTerm();
+        }
+
+        return $this->getCurrentTerm();
     }
 
     private function getCurrentTerm(): string
     {
-        return now()->year . ' ' . $this->getCurrentSemesterLabel();
+        $schoolYear = $this->formatSchoolYear(now()->year);
+        return "{$schoolYear} " . $this->getCurrentSemesterLabel();
+    }
+
+    private function formatSchoolYear(string | int $year): string
+    {
+        $yearNum = (int) $year;
+        return "{$yearNum}-" . ($yearNum + 1);
     }
 
     private function getCurrentSemesterLabel(): string

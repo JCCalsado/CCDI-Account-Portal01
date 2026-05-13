@@ -2,7 +2,7 @@
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import AppLayout from '@/layouts/AppLayout.vue';
-import { Head, Link, useForm } from '@inertiajs/vue3';
+import { Head, Link, useForm, usePage } from '@inertiajs/vue3';
 import { AlertCircle, Bell, CalendarClock, CheckCircle, Clock } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 
@@ -87,6 +87,8 @@ const props = defineProps<{
 }>();
 
 const breadcrumbs = [{ title: 'Dashboard', href: route('dashboard') }, { title: 'Student Dashboard' }];
+
+const authUser = computed(() => (usePage().props.auth as any)?.user);
 
 // ── Financial normalization ───────────────────────────────────────────────────
 
@@ -358,7 +360,7 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                 <div class="relative z-10 flex items-start justify-between gap-4">
                     <div>
                         <p class="mb-1 text-sm font-medium text-blue-200">Student Portal</p>
-                        <h1 class="text-2xl font-bold text-white">Welcome back, Student!</h1>
+                        <h1 class="text-2xl font-bold text-white">Welcome back, {{ authUser?.name ?? 'Student' }}</h1>
                         <p class="mt-1 text-sm text-blue-100/80">Here's your financial overview and important updates</p>
                     </div>
                     <div class="flex-shrink-0 text-right">
