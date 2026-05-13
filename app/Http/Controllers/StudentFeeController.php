@@ -38,6 +38,56 @@ class StudentFeeController extends Controller
         return $user->last_name . ', ' . $user->first_name . $mi;
     }
 
+    /**
+     * Return all fully-paid (status = 'completed') assessments for a student,
+     * sorted chronologically (school_year ASC, then 1st → 2nd → Summer).
+     *
+     * A 'completed' status is only set in store() after confirming the account
+     * balance is zero, so every completed assessment is fully paid by definition.
+     */
+    /**
+     * Return all fully-paid assessments for a student, sorted chronologically.
+     *
+     * "Fully paid" covers two states:
+     *
+     *   status = 'completed' — set by store() when a new assessment is created,
+     *     after the account balance is verified to be zero. Always fully paid.
+     *
+     *   status = 'active' with sum(payment_terms.balance) = 0 — the student has
+     *     paid their current assessment in full but no new assessment has been
+     *     created yet, so store() has never flipped it to 'completed'.
+     *     This is the common case: student finished paying 1st Sem and now
+     *     Accounting is about to create the 2nd Sem assessment.
+     */
+    private function getPaidSemesters(int $userId): array
+    {
+        $semesterOrder = ['1st' => 1, '2nd' => 2, 'Summer' => 3];
+
+        return StudentAssessment::where('user_id', $userId)
+            ->whereIn('status', ['completed', 'active'])
+            ->with('paymentTerms')
+            ->select('id', 'semester', 'school_year', 'total_assessment', 'status')
+            ->get()
+            ->filter(function ($a) {
+                // Completed: always fully paid by store() contract.
+                // Active: fully paid only when all payment term balances sum to 0.
+                return $a->status === 'completed'
+                    || $a->paymentTerms->sum('balance') <= 0;
+            })
+            ->sortBy([
+                fn ($a, $b) => strcmp($a->school_year, $b->school_year),
+                fn ($a, $b) => ($semesterOrder[$a->semester] ?? 99) <=> ($semesterOrder[$b->semester] ?? 99),
+            ])
+            ->values()
+            ->map(fn ($a) => [
+                'semester'         => $a->semester,
+                'school_year'      => $a->school_year,
+                'assessment_id'    => $a->id,
+                'total_assessment' => (float) $a->total_assessment,
+            ])
+            ->all();
+    }
+
     // ─────────────────────────────────────────────────────────────
     //  INDEX
     // ─────────────────────────────────────────────────────────────
@@ -152,6 +202,7 @@ class StudentFeeController extends Controller
                     'year_level'        => $student->year_level,
                     'is_irregular'      => (bool) $student->is_irregular,
                     'remaining_balance' => max(0, (float) ($student->account?->balance ?? 0)),
+                    'paid_semesters'    => $this->getPaidSemesters($student->id),
                 ];
             }
         }
@@ -759,15 +810,18 @@ class StudentFeeController extends Controller
             ->select('id', 'last_name', 'first_name', 'middle_initial', 'account_id', 'course', 'year_level', 'is_irregular')
             ->limit(10)
             ->get()
-            ->map(fn ($u) => [
-                'id'                => $u->id,
-                'name'              => $this->buildStudentName($u),
-                'account_id'        => $u->account_id,
-                'course'            => $u->course,
-                'year_level'        => $u->year_level,
-                'is_irregular'      => (bool) $u->is_irregular,
-                'remaining_balance' => max(0, (float) ($u->account?->balance ?? 0)),
-            ]);
+            ->map(function ($u) {
+                return [
+                    'id'                => $u->id,
+                    'name'              => $this->buildStudentName($u),
+                    'account_id'        => $u->account_id,
+                    'course'            => $u->course,
+                    'year_level'        => $u->year_level,
+                    'is_irregular'      => (bool) $u->is_irregular,
+                    'remaining_balance' => max(0, (float) ($u->account?->balance ?? 0)),
+                    'paid_semesters'    => $this->getPaidSemesters($u->id),
+                ];
+            });
 
         return response()->json(['students' => $students]);
     }

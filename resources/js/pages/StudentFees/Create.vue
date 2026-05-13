@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDataFormatting } from '@/composables/useDataFormatting'
 import {
   Search, User, BookOpen, Calculator,
-  CheckCircle2, Loader2, AlertTriangle, Info,
+  CheckCircle2, Loader2, AlertTriangle, Info, History,
 } from 'lucide-vue-next'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -24,6 +24,13 @@ interface FeeRates {
   payment_terms: Array<{ term_name: string; term_order: number; percentage: number }>
 }
 
+interface PaidSemester {
+  semester: '1st' | '2nd' | 'Summer'
+  school_year: string
+  assessment_id: number
+  total_assessment: number
+}
+
 interface PreselectedStudent {
   id: number
   name: string
@@ -32,6 +39,7 @@ interface PreselectedStudent {
   year_level: string
   is_irregular: boolean
   remaining_balance: number
+  paid_semesters: PaidSemester[]
 }
 
 interface CurriculumSubject {
@@ -63,16 +71,76 @@ const breadcrumbs = [
   { title: 'New Assessment', href: route('student-fees.create') },
 ]
 
+// ─── Paid Semester Logic ──────────────────────────────────────────────────────
+
+const SEM_ORDER: Record<string, number> = { '1st': 1, '2nd': 2, 'Summer': 3 }
+
+/**
+ * Given the list of fully-paid assessments, compute the next recommended
+ * semester and school year that Accounting should create an assessment for.
+ *
+ * Progression:
+ *   1st → 2nd (same school year)
+ *   2nd → 1st (next school year)
+ *   Summer → 1st (next school year)
+ *   no history → current school year, 1st semester
+ */
+function computeNextSemester(paid: PaidSemester[]): { semester: '1st' | '2nd' | 'Summer'; school_year: string } {
+  const currentYear = new Date().getFullYear()
+  const defaultYear = `${currentYear}-${currentYear + 1}`
+
+  if (!paid.length) {
+    return { semester: '1st', school_year: defaultYear }
+  }
+
+  const sorted = [...paid].sort((a, b) => {
+    if (a.school_year !== b.school_year) return a.school_year.localeCompare(b.school_year)
+    return (SEM_ORDER[a.semester] ?? 99) - (SEM_ORDER[b.semester] ?? 99)
+  })
+
+  const last = sorted[sorted.length - 1]
+
+  if (last.semester === '1st') {
+    return { semester: '2nd', school_year: last.school_year }
+  }
+
+  // 2nd or Summer → advance to 1st of next academic year
+  const [startStr] = last.school_year.split('-')
+  const startYear  = parseInt(startStr, 10)
+  return { semester: '1st', school_year: `${startYear + 1}-${startYear + 2}` }
+}
+
 // ─── Student Search ───────────────────────────────────────────────────────────
 
 const studentSearch   = ref('')
 const searchResults   = ref<PreselectedStudent[]>([])
 const searchLoading   = ref(false)
 const selectedStudent = ref<PreselectedStudent | null>(props.preselectedStudent ?? null)
+const paidSemesters   = ref<PaidSemester[]>(props.preselectedStudent?.paid_semesters ?? [])
 
 const hasRemainingBalance = computed(
   () => (selectedStudent.value?.remaining_balance ?? 0) > 0
 )
+
+/**
+ * Returns true if the given semester is already fully paid for the
+ * currently selected school year. Used to disable semester buttons.
+ */
+function isSemesterPaid(semester: string): boolean {
+  return paidSemesters.value.some(
+    (ps) => ps.semester === semester && ps.school_year === form.school_year
+  )
+}
+
+/**
+ * Returns the PaidSemester record for a given semester + current school year,
+ * or null if not paid.
+ */
+function getPaidRecord(semester: string): PaidSemester | null {
+  return paidSemesters.value.find(
+    (ps) => ps.semester === semester && ps.school_year === form.school_year
+  ) ?? null
+}
 
 let searchTimeout: ReturnType<typeof setTimeout>
 
@@ -92,16 +160,23 @@ async function searchStudents() {
 
 function selectStudent(student: PreselectedStudent) {
   selectedStudent.value    = student
+  paidSemesters.value      = student.paid_semesters ?? []
   searchResults.value      = []
   studentSearch.value      = ''
   form.user_id             = student.id
   curriculumSubjects.value = []
   curriculumMessage.value  = ''
   hasNstp.value            = false
+
+  // Auto-advance semester + school year based on paid history
+  const next        = computeNextSemester(paidSemesters.value)
+  form.semester     = next.semester
+  form.school_year  = next.school_year
 }
 
 function clearStudent() {
   selectedStudent.value    = null
+  paidSemesters.value      = []
   form.user_id             = 0
   form.lec_units           = 0
   form.lab_units           = 0
@@ -150,8 +225,15 @@ const form = useForm({
   term_percentages:    {} as Record<string, number>,
 })
 
-const currentYear = new Date().getFullYear()
-form.school_year  = `${currentYear}-${currentYear + 1}`
+// Initialise semester / school_year from paid history if a student was preselected
+if (props.preselectedStudent) {
+  const next       = computeNextSemester(props.preselectedStudent.paid_semesters ?? [])
+  form.semester    = next.semester
+  form.school_year = next.school_year
+} else {
+  const currentYear = new Date().getFullYear()
+  form.school_year  = `${currentYear}-${currentYear + 1}`
+}
 
 async function loadCurriculum() {
   const student = selectedStudent.value
@@ -343,6 +425,22 @@ function submit() {
     onFinish: ()       => console.log('[submit] finished'),
   })
 }
+
+// ─── Paid History Helpers ─────────────────────────────────────────────────────
+
+/** All distinct school years that appear in paid semesters, sorted desc */
+const paidSchoolYears = computed(() => {
+  const years = [...new Set(paidSemesters.value.map((ps) => ps.school_year))]
+  return years.sort((a, b) => b.localeCompare(a))
+})
+
+const SEMESTERS: Array<'1st' | '2nd' | 'Summer'> = ['1st', '2nd', 'Summer']
+
+function semLabel(s: string) {
+  if (s === '1st') return '1st Semester'
+  if (s === '2nd') return '2nd Semester'
+  return 'Summer'
+}
 </script>
 
 <template>
@@ -409,6 +507,11 @@ function submit() {
                     <p class="font-medium text-sm flex items-center gap-2">
                       {{ s.name }}
                       <span v-if="s.is_irregular" class="text-xs text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">Irregular</span>
+                      <span v-if="s.paid_semesters?.length"
+                        class="text-xs text-green-700 bg-green-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                        <CheckCircle2 class="h-3 w-3" />
+                        {{ s.paid_semesters.length }} sem{{ s.paid_semesters.length > 1 ? 's' : '' }} paid
+                      </span>
                     </p>
                     <p class="text-xs text-muted-foreground">{{ s.account_id }} · {{ s.course }} · {{ s.year_level }}</p>
                   </button>
@@ -420,24 +523,90 @@ function submit() {
             </CardContent>
           </Card>
 
+          <!-- ── Paid Semester History (shown only when student has paid semesters) ── -->
+          <Card v-if="paidSemesters.length > 0" class="border-green-200 bg-green-50/40">
+            <CardHeader class="pb-3">
+              <CardTitle class="flex items-center gap-2 text-base text-green-800">
+                <History class="h-4 w-4 text-green-600" />
+                Completed Semesters
+              </CardTitle>
+            </CardHeader>
+            <CardContent class="space-y-4">
+              <div v-for="year in paidSchoolYears" :key="year" class="space-y-1.5">
+                <p class="text-xs font-semibold text-green-700 uppercase tracking-wide">
+                  SY {{ year }}
+                </p>
+                <div class="flex flex-wrap gap-2">
+                  <template v-for="sem in SEMESTERS" :key="sem">
+                    <div
+                      v-if="paidSemesters.some(ps => ps.semester === sem && ps.school_year === year)"
+                      class="inline-flex items-center gap-1.5 rounded-full bg-green-100 border border-green-300 px-3 py-1 text-xs font-semibold text-green-800"
+                    >
+                      <CheckCircle2 class="h-3.5 w-3.5 text-green-600" />
+                      {{ semLabel(sem) }}
+                      <span class="text-green-600 font-normal">
+                        · {{ formatCurrency(paidSemesters.find(ps => ps.semester === sem && ps.school_year === year)!.total_assessment) }}
+                      </span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <p class="text-xs text-green-700/70 mt-1">
+                New assessment auto-advanced to
+                <span class="font-semibold">{{ semLabel(form.semester) }} · SY {{ form.school_year }}</span>.
+                You may change the semester below if needed.
+              </p>
+            </CardContent>
+          </Card>
+
           <!-- Semester / School Year -->
           <Card>
             <CardHeader>
               <CardTitle class="text-base">Enrollment Period</CardTitle>
             </CardHeader>
             <CardContent class="grid grid-cols-2 gap-4">
+              <!-- Semester — styled button group replacing plain <select> so we can disable paid options -->
               <div class="space-y-1.5">
-                <Label for="semester">Semester</Label>
-                <select
-                  id="semester" v-model="form.semester"
-                  class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                <Label>Semester</Label>
+                <div class="flex gap-2">
+                  <template v-for="sem in SEMESTERS" :key="sem">
+                    <button
+                      type="button"
+                      :disabled="isSemesterPaid(sem)"
+                      :title="isSemesterPaid(sem) ? `${semLabel(sem)} (${form.school_year}) is already fully paid` : ''"
+                      @click="!isSemesterPaid(sem) && (form.semester = sem)"
+                      :class="[
+                        'relative flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-all',
+                        isSemesterPaid(sem)
+                          ? 'cursor-not-allowed border-green-300 bg-green-50 text-green-700 opacity-80'
+                          : form.semester === sem
+                            ? 'border-blue-500 bg-blue-500 text-white shadow-sm'
+                            : 'border-input bg-background text-muted-foreground hover:bg-muted',
+                      ]"
+                    >
+                      <!-- Paid checkmark badge -->
+                      <span
+                        v-if="isSemesterPaid(sem)"
+                        class="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-white"
+                      >
+                        <CheckCircle2 class="h-3 w-3" />
+                      </span>
+                      {{ sem === 'Summer' ? 'Summer' : sem + ' Sem' }}
+                      <span v-if="isSemesterPaid(sem)" class="ml-1 text-xs font-normal opacity-75">Paid</span>
+                    </button>
+                  </template>
+                </div>
+                <!-- Warn if ALL semesters of this school year are paid -->
+                <p
+                  v-if="SEMESTERS.every(s => isSemesterPaid(s))"
+                  class="flex items-center gap-1.5 text-xs text-amber-700 font-medium mt-1"
                 >
-                  <option value="1st">1st Semester</option>
-                  <option value="2nd">2nd Semester</option>
-                  <option value="Summer">Summer</option>
-                </select>
+                  <AlertTriangle class="h-3.5 w-3.5" />
+                  All semesters for SY {{ form.school_year }} are paid. Please update the School Year.
+                </p>
                 <p v-if="form.errors.semester" class="text-sm text-destructive">{{ form.errors.semester }}</p>
               </div>
+
               <div class="space-y-1.5">
                 <Label for="school_year">School Year</Label>
                 <Input id="school_year" v-model="form.school_year" placeholder="e.g. 2025-2026" />
@@ -458,8 +627,7 @@ function submit() {
               <h3 class="text-sm font-semibold text-gray-700">Unit Breakdown</h3>
               <p class="text-xs text-gray-400 mt-0.5">
                 {{ selectedStudent.course }} &middot; {{ selectedStudent.year_level }} &middot;
-                {{ form.semester === '1st' ? '1st Semester' : form.semester === '2nd' ? '2nd Semester' : 'Summer' }}
-                &middot; {{ form.school_year }}
+                {{ semLabel(form.semester) }} &middot; {{ form.school_year }}
               </p>
             </div>
             <table class="w-full text-sm">
@@ -478,9 +646,7 @@ function submit() {
                 <tr class="border-t border-gray-100">
                   <td class="px-5 py-3 text-gray-700">{{ selectedStudent.course }}</td>
                   <td class="px-5 py-3 text-gray-700">{{ selectedStudent.year_level }}</td>
-                  <td class="px-5 py-3 text-gray-700">
-                    {{ form.semester === '1st' ? '1st Semester' : form.semester === '2nd' ? '2nd Semester' : 'Summer' }}
-                  </td>
+                  <td class="px-5 py-3 text-gray-700">{{ semLabel(form.semester) }}</td>
                   <!-- Lec Units: billable + NSTP (1.5) when NSTP is active -->
                   <td class="px-4 py-3 text-center font-mono font-semibold text-gray-900">
                     {{ totalLecUnits }}
@@ -785,7 +951,7 @@ function submit() {
             <Button variant="outline" @click="router.visit(route('student-fees.index'))">Cancel</Button>
             <button
               type="button"
-              :disabled="form.processing || !selectedStudent || totalAssessment === 0 || hasRemainingBalance"
+              :disabled="form.processing || !selectedStudent || totalAssessment === 0 || hasRemainingBalance || isSemesterPaid(form.semester)"
               class="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs transition-all hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
               @click.prevent="submit"
             >
