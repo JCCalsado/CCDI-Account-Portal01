@@ -322,7 +322,7 @@ async function loadCurriculum() {
 
 watch([selectedStudent, () => form.semester], () => {
   if (selectedStudent.value && !selectedStudent.value.is_irregular) loadCurriculum()
-})
+}, { immediate: true })
 
 // ─── Derived NSTP values ──────────────────────────────────────────────────────
 
@@ -494,11 +494,11 @@ function semLabel(s: string) {
                 <div>
                   <p class="font-semibold text-blue-900 dark:text-blue-100">{{ selectedStudent.name }}</p>
                   <p class="text-sm text-blue-700 dark:text-blue-300">
-                    <!-- FIX #2: Clear "Acct. No." label so accounting staff never have to guess -->
-                    <span class="font-medium text-blue-500 dark:text-blue-400 text-xs uppercase tracking-wide mr-0.5">Acct. No.</span>
+                    <!-- FIX #2: Clear "Acct. Id." label so accounting staff never have to guess -->
+                    <span class="font-medium text-blue-500 dark:text-blue-400 text-xs uppercase tracking-wide mr-0.5">Acct. Id.</span>
                     {{ selectedStudent.account_id }}
                     &nbsp;·&nbsp;{{ selectedStudent.course }}
-                    &nbsp;·&nbsp;{{ selectedStudent.year_level }}
+                    &nbsp;·&nbsp;{{ computedYearLevel || selectedStudent.year_level }}
                     <span v-if="selectedStudent.is_irregular"
                       class="ml-2 inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
                       <AlertTriangle class="h-3 w-3" /> Irregular
@@ -552,7 +552,7 @@ function semLabel(s: string) {
                     </p>
                     <!-- FIX #2: Label also in search result rows -->
                     <p class="text-xs text-muted-foreground">
-                      <span class="font-medium">Acct. No.</span> {{ s.account_id }}
+                      <span class="font-medium">Acct. Id.</span> {{ s.account_id }}
                       &nbsp;·&nbsp;{{ s.course }}
                       &nbsp;·&nbsp;{{ s.year_level }}
                     </p>
