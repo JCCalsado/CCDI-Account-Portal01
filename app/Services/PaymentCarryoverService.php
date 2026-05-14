@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\StudentPaymentTerm;
 use App\Models\StudentAssessment;
+use App\Services\MoneyService;
 use Illuminate\Support\Facades\DB;
 
 class PaymentCarryoverService
@@ -14,17 +15,8 @@ class PaymentCarryoverService
      * Each term's balance = its own original amount PLUS any unpaid balance
      * carried forward from the previous term.
      *
-     * For a freshly created assessment (no payments yet) every term's balance
-     * will equal its amount and carryover will be zero between terms.
-     *
-     * Wrapped in a DB transaction — all terms update atomically.
-     *
-     * FIX (Bug #3): Previously `$carryoverBalance` was read from `$term->balance`
-     * immediately after `$term->update([...])`. Eloquent's update() persists to
-     * the DB but does NOT refresh the in-memory model, so `$term->balance` still
-     * held the OLD value. Every subsequent term's balance was computed from a
-     * stale base, causing cascading inflation. The fix is to use the locally
-     * computed `$totalBalance` variable instead of re-reading the model.
+     * All arithmetic is performed in integer cents via MoneyService.
+     * Zero float-arithmetic occurs in this method.
      */
     public function applyCarryoverToAssessment(StudentAssessment $assessment): void
     {
@@ -37,37 +29,37 @@ class PaymentCarryoverService
                 return;
             }
 
-            $carryoverBalance = 0.0;
+            // Integer cents — no float accumulation.
+            $carryoverCents = 0;
 
             foreach ($terms as $term) {
-                $previousTermUnpaid  = $carryoverBalance;
-                $currentTermAmount   = (float) $term->amount;
+                $previousUnpaidCents  = $carryoverCents;
+                $currentAmountCents   = MoneyService::toCents($term->amount);
 
-                // Total balance for this term = own amount + any unpaid from previous term
-                $totalBalance = round($previousTermUnpaid + $currentTermAmount, 2);
+                // Exact integer addition — no rounding drift.
+                $totalCents = $previousUnpaidCents + $currentAmountCents;
 
                 $remarks = null;
-                if ($previousTermUnpaid > 0) {
-                    $remarks = 'Balance of ₱' . number_format($previousTermUnpaid, 2) . ' carried from previous term(s)';
+                if ($previousUnpaidCents > 0) {
+                    $remarks = 'Balance of ' . MoneyService::formatFromCents($previousUnpaidCents) . ' carried from previous term(s)';
                 }
 
                 $term->update([
-                    'balance' => $totalBalance,
+                    'balance' => MoneyService::toPesos($totalCents),
                     'remarks' => $remarks,
-                    'status'  => $totalBalance > 0 ? StudentPaymentTerm::STATUS_PENDING : StudentPaymentTerm::STATUS_PAID,
+                    'status'  => $totalCents > 0 ? StudentPaymentTerm::STATUS_PENDING : StudentPaymentTerm::STATUS_PAID,
                 ]);
 
-                // FIX: use the locally computed $totalBalance — NOT $term->balance.
-                // $term->balance is stale (Eloquent does not refresh after update()).
-                $carryoverBalance = $totalBalance;
+                // Use the locally-computed $totalCents — NOT $term->balance (stale after update()).
+                $carryoverCents = $totalCents;
             }
 
-            // Annotate the last term so it is clear no further carryover occurs
+            // Annotate the last term so it is clear no further carryover occurs.
             $lastTerm = $terms->last();
-            if ($lastTerm && (float) $lastTerm->balance > 0) {
-                $existingRemarks = $lastTerm->remarks ?? '';
+            if ($lastTerm && MoneyService::toCents($lastTerm->balance) > 0) {
+                $existing = $lastTerm->remarks ?? '';
                 $lastTerm->update([
-                    'remarks' => ($existingRemarks ? $existingRemarks . '. ' : '') . 'Final term — no carryover beyond this',
+                    'remarks' => ($existing ? $existing . '. ' : '') . 'Final term — no carryover beyond this',
                 ]);
             }
         });
@@ -77,13 +69,17 @@ class PaymentCarryoverService
      * Apply a payment across terms using carryover priority.
      *
      * Payments are distributed to the earliest unpaid terms first (term_order ASC).
-     * Wrapped in a DB transaction — all term updates are atomic.
+     *
+     * FIXED: The previous implementation lacked round() on $remainingAmount -= $amountToApply,
+     * causing float residue to persist across iterations (e.g. 5000 - 4078.20 = 921.799999...).
+     * Now uses integer cents throughout — no rounding at any step.
      */
-    public function applyPayment(StudentAssessment $assessment, float $paymentAmount): array
+    public function applyPayment(StudentAssessment $assessment, float|int|string $paymentAmount): array
     {
         return DB::transaction(function () use ($assessment, $paymentAmount) {
-            $appliedPayments = [];
-            $remainingAmount = $paymentAmount;
+            $appliedPayments  = [];
+            $remainingCents   = MoneyService::roundToCents($paymentAmount);
+            $totalAmountCents = $remainingCents;
 
             $terms = $assessment->paymentTerms()
                 ->where('balance', '>', 0)
@@ -91,34 +87,42 @@ class PaymentCarryoverService
                 ->get();
 
             foreach ($terms as $term) {
-                if ($remainingAmount <= 0) {
+                if ($remainingCents <= 0) {
                     break;
                 }
 
-                $termBalance    = (float) $term->balance;
-                $amountToApply  = min($remainingAmount, $termBalance);
-                $newBalance     = round($termBalance - $amountToApply, 2);
-                $newStatus      = $newBalance <= 0 ? StudentPaymentTerm::STATUS_PAID : StudentPaymentTerm::STATUS_PARTIAL;
+                $termBalanceCents   = MoneyService::toCents($term->balance);
+                $amountToApplyCents = min($remainingCents, $termBalanceCents);
+                $newBalanceCents    = $termBalanceCents - $amountToApplyCents; // exact integer subtraction
+
+                $newStatus = $newBalanceCents === 0
+                    ? StudentPaymentTerm::STATUS_PAID
+                    : StudentPaymentTerm::STATUS_PARTIAL;
 
                 $term->update([
-                    'balance'   => max(0.0, $newBalance),
+                    'balance'   => MoneyService::toPesos($newBalanceCents),
                     'status'    => $newStatus,
                     'paid_date' => $newStatus === StudentPaymentTerm::STATUS_PAID ? now() : $term->paid_date,
                 ]);
 
                 $appliedPayments[] = [
                     'term'              => $term->term_name,
-                    'applied'           => $amountToApply,
-                    'remaining_balance' => max(0.0, $newBalance),
+                    'applied'           => MoneyService::toFloat($amountToApplyCents),
+                    'applied_decimal'   => MoneyService::toPesos($amountToApplyCents),
+                    'remaining_balance' => MoneyService::toFloat($newBalanceCents),
                 ];
 
-                $remainingAmount -= $amountToApply;
+                $remainingCents -= $amountToApplyCents; // exact integer subtraction
             }
 
+            $totalAppliedCents = $totalAmountCents - $remainingCents;
+
             return [
-                'applied_payments' => $appliedPayments,
-                'remaining_amount' => $remainingAmount,
-                'total_applied'    => $paymentAmount - $remainingAmount,
+                'applied_payments'       => $appliedPayments,
+                'remaining_amount'       => MoneyService::toFloat($remainingCents),
+                'remaining_amount_cents' => $remainingCents,
+                'total_applied'          => MoneyService::toFloat($totalAppliedCents),
+                'total_applied_cents'    => $totalAppliedCents,
             ];
         });
     }
@@ -128,7 +132,8 @@ class PaymentCarryoverService
      */
     public function getTotalRemainingBalance(StudentAssessment $assessment): float
     {
-        return (float) $assessment->paymentTerms()->sum('balance');
+        $cents = MoneyService::sumFromDb($assessment->paymentTerms()->sum('balance'));
+        return MoneyService::toFloat($cents);
     }
 
     /**
@@ -136,7 +141,7 @@ class PaymentCarryoverService
      */
     public function isFullyPaid(StudentAssessment $assessment): bool
     {
-        return $this->getTotalRemainingBalance($assessment) <= 0;
+        return MoneyService::sumFromDb($assessment->paymentTerms()->sum('balance')) === 0;
     }
 
     /**
@@ -163,8 +168,8 @@ class PaymentCarryoverService
                 'term_name'       => $term->term_name,
                 'term_order'      => $term->term_order,
                 'percentage'      => $term->percentage,
-                'original_amount' => (float) $term->amount,
-                'balance'         => (float) $term->balance,
+                'original_amount' => MoneyService::toFloat(MoneyService::toCents($term->amount)),
+                'balance'         => MoneyService::toFloat(MoneyService::toCents($term->balance)),
                 'status'          => $term->status,
                 'due_date'        => $term->due_date?->format('Y-m-d'),
                 'remarks'         => $term->remarks,
@@ -172,11 +177,15 @@ class PaymentCarryoverService
             ])
             ->toArray();
 
+        $totalRemainingCents  = MoneyService::sumFromDb($assessment->paymentTerms()->sum('balance'));
+        $totalAssessmentCents = MoneyService::toCents($assessment->total_assessment);
+        $totalPaidCents       = $totalAssessmentCents - $totalRemainingCents;
+
         return [
-            'total_assessment' => (float) $assessment->total_assessment,
-            'total_paid'       => (float) $assessment->total_assessment - $this->getTotalRemainingBalance($assessment),
-            'total_remaining'  => $this->getTotalRemainingBalance($assessment),
-            'is_fully_paid'    => $this->isFullyPaid($assessment),
+            'total_assessment' => MoneyService::toFloat($totalAssessmentCents),
+            'total_paid'       => MoneyService::toFloat($totalPaidCents),
+            'total_remaining'  => MoneyService::toFloat($totalRemainingCents),
+            'is_fully_paid'    => $totalRemainingCents === 0,
             'terms'            => $terms,
         ];
     }

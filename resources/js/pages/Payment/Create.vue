@@ -2,11 +2,13 @@
 import AppLayout from '@/layouts/AppLayout.vue';
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
+import { useMoney } from '@/composables/useMoney';
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
 import { computed, ref, watch } from 'vue';
 import { AlertCircle, CheckCircle, Clock, Info } from 'lucide-vue-next';
 
 const { formatCurrency, formatDate } = useDataFormatting();
+const { toCents, fromCents } = useMoney();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -123,13 +125,10 @@ const availableTerms = computed(() => {
 
 // ── Total outstanding balance ─────────────────────────────────────────────────
 
-const totalOutstandingBalance = computed(() =>
-    parseFloat(
-        props.paymentTerms
-            .reduce((sum, t) => sum + Number(t.balance), 0)
-            .toFixed(2)
-    )
-);
+const totalOutstandingBalance = computed(() => {
+    const cents = props.paymentTerms.reduce((sum, t) => sum + toCents(t.balance), 0);
+    return fromCents(cents);
+});
 
 const effectiveBalance = computed(() => {
     const totalPending = props.pendingApprovalPayments.reduce((s, p) => s + p.amount, 0);
@@ -179,29 +178,29 @@ type AllocationLine = {
 const allocationPreview = computed<AllocationLine[]>(() => {
     if (!selectedTerm.value || !form.amount || form.amount <= 0) return [];
 
-    const safeAmt = parseFloat(form.amount.toFixed(2));
-    if (safeAmt > effectiveBalance.value) return [];
+    const amountCents = toCents(form.amount);
+    if (fromCents(amountCents) > effectiveBalance.value) return [];
 
     const lines: AllocationLine[] = [];
-    let remaining = safeAmt;
+    let remainingCents = amountCents;
 
     const terms = props.paymentTerms
         .filter((t) => t.balance > 0 && t.term_order >= selectedTerm.value!.term_order)
         .sort((a, b) => a.term_order - b.term_order);
 
     for (const term of terms) {
-        if (remaining <= 0) break;
-        const balanceBefore = parseFloat(term.balance.toFixed(2));
-        const applied       = parseFloat(Math.min(remaining, balanceBefore).toFixed(2));
-        const balanceAfter  = parseFloat(Math.max(0, balanceBefore - applied).toFixed(2));
+        if (remainingCents <= 0) break;
+        const balanceBeforeCents = toCents(term.balance);
+        const appliedCents       = Math.min(remainingCents, balanceBeforeCents);
+        const balanceAfterCents  = Math.max(0, balanceBeforeCents - appliedCents);
         lines.push({
             term_name:      term.term_name,
-            balance_before: balanceBefore,
-            applied,
-            balance_after:  balanceAfter < 0.01 ? 0 : balanceAfter,
-            fully_paid:     balanceAfter < 0.01,
+            balance_before: fromCents(balanceBeforeCents),
+            applied:        fromCents(appliedCents),
+            balance_after:  fromCents(balanceAfterCents),
+            fully_paid:     balanceAfterCents === 0,
         });
-        remaining = parseFloat((remaining - applied).toFixed(2));
+        remainingCents -= appliedCents;
     }
 
     return lines;

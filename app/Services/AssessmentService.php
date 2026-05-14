@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\FeeSetting;
 use App\Models\Subject;
+use App\Services\MoneyService;
 
 /**
  * AssessmentService
@@ -249,50 +250,51 @@ class AssessmentService
         $labFeePerSubject = $rates['lab_fee_per_subject'];
         $entrepreneurFee  = $labSubjects > 0 ? $rates['entrepreneurship_fee'] : 0.0;
 
-        // Lab and misc are NEVER discounted
-        $labFee  = round($labSubjects * $labFeePerSubject, 2);
-        $miscFee = round($rates['misc_total'], 2);
+        // Lab and misc are NEVER discounted — all arithmetic in integer cents
+        $labFeeCents  = MoneyService::roundToCents($labSubjects * $labFeePerSubject);
+        $miscFeeCents = MoneyService::roundToCents($rates['misc_total']);
 
-        // Raw tuition values before discount
-        $rawBillableTuition = round($lecUnits * $tuitionPerUnit, 2);
-        $rawNstpTuition     = round($nstpLecUnits * $tuitionPerUnit, 2);
-        $rawTotalTuition    = round(($lecUnits + $nstpLecUnits) * $tuitionPerUnit, 2);
+        // Raw tuition values before discount — in integer cents
+        $rawBillableTuitionCents = MoneyService::roundToCents($lecUnits * $tuitionPerUnit);
+        $rawNstpTuitionCents     = MoneyService::roundToCents($nstpLecUnits * $tuitionPerUnit);
+        $rawTotalTuitionCents    = MoneyService::roundToCents(($lecUnits + $nstpLecUnits) * $tuitionPerUnit);
 
         // ── DISCOUNT COMPUTATION ─────────────────────────────────────────────
         if ($discountPercentage == 100.0) {
             // 100% discount: all billable lec units → ₱0
             // NSTP is excluded from the 100% discount — charged at full price
-            $finalTuition    = $rawNstpTuition;         // only NSTP survives
-            $discountSaving  = $rawBillableTuition;      // entire non-NSTP tuition waived
-            $discountApplied = 'full_100pct';
+            $finalTuitionCents   = $rawNstpTuitionCents;              // only NSTP survives
+            $discountSavingCents = $rawBillableTuitionCents;           // entire non-NSTP tuition waived
+            $discountApplied     = 'full_100pct';
 
         } elseif ($discountPercentage > 0 && $discountPercentage < 100) {
             // Partial discount: applies to ALL lec units including NSTP
-            $discountSaving  = round($rawTotalTuition * ($discountPercentage / 100), 2);
-            $finalTuition    = round($rawTotalTuition - $discountSaving, 2);
-            $discountApplied = "percentage_{$discountPercentage}pct";
+            $discountSavingCents = MoneyService::percent($rawTotalTuitionCents, $discountPercentage);
+            $finalTuitionCents   = $rawTotalTuitionCents - $discountSavingCents;
+            $discountApplied     = "percentage_{$discountPercentage}pct";
 
         } else {
             // No discount
-            $discountSaving  = 0.0;
-            $finalTuition    = $rawTotalTuition;
-            $discountApplied = 'none';
+            $discountSavingCents = 0;
+            $finalTuitionCents   = $rawTotalTuitionCents;
+            $discountApplied     = 'none';
         }
         // ─────────────────────────────────────────────────────────────────────
 
-        $total = round($finalTuition + $labFee + $entrepreneurFee + $miscFee, 2);
+        $entrepreneurFeeCents = MoneyService::roundToCents($entrepreneurFee);
+        $totalCents = $finalTuitionCents + $labFeeCents + $entrepreneurFeeCents + $miscFeeCents;
 
         return [
-            'tuition_fee'          => round($finalTuition, 2),
-            'billable_tuition'     => round($finalTuition, 2),   // same as tuition_fee under new rule
-            'nstp_tuition'         => $discountPercentage == 100.0 ? round($rawNstpTuition, 2) : 0.0,
-            'lab_fee'              => round($labFee, 2),
-            'entrepreneurship_fee' => round($entrepreneurFee, 2),
-            'misc_fee'             => round($miscFee, 2),
-            'total'                => $total,
-            'discount_saving'      => round($discountSaving, 2),
+            'tuition_fee'          => MoneyService::toFloat($finalTuitionCents),
+            'billable_tuition'     => MoneyService::toFloat($finalTuitionCents),   // same as tuition_fee under new rule
+            'nstp_tuition'         => $discountPercentage == 100.0 ? MoneyService::toFloat($rawNstpTuitionCents) : 0.0,
+            'lab_fee'              => MoneyService::toFloat($labFeeCents),
+            'entrepreneurship_fee' => MoneyService::toFloat($entrepreneurFeeCents),
+            'misc_fee'             => MoneyService::toFloat($miscFeeCents),
+            'total'                => MoneyService::toFloat($totalCents),
+            'discount_saving'      => MoneyService::toFloat($discountSavingCents),
             'discount_applied'     => $discountApplied,
-            'raw_billable_tuition' => $rawTotalTuition,          // total lec+nstp before discount
+            'raw_billable_tuition' => MoneyService::toFloat($rawTotalTuitionCents),          // total lec+nstp before discount
         ];
     }
 
@@ -348,8 +350,9 @@ class AssessmentService
         ?float $miscFee         = null,
         ?float $tuitionAndLabFee = null
     ): array {
-        $miscFee          ??= round($rates['misc_total'], 2);
-        $tuitionAndLabFee ??= round($total - $miscFee, 2);
+        // Convert inputs to integer cents for exact arithmetic
+        $miscFeeCents          = MoneyService::roundToCents($miscFee ?? round($rates['misc_total'], 2));
+        $tuitionAndLabFeeCents = MoneyService::roundToCents($tuitionAndLabFee ?? round($total - ($miscFee ?? 0), 2));
 
         $configuredTerms = $rates['payment_terms'] ?? [];
 
@@ -371,7 +374,7 @@ class AssessmentService
         }
 
         $terms        = [];
-        $runningTL    = 0.0;   // running total of tuition+lab terms (for rounding safety)
+        $runningTLCents = 0;   // running total of tuition+lab terms in cents (exact integer math)
         $tlTerms      = array_filter($termPcts, fn($t) => $t['base'] === 'tuition_lab');
         $lastTLIndex  = array_key_last(array_values(array_filter($termPcts, fn($t) => $t['base'] === 'tuition_lab')));
         $tlCounter    = 0;
@@ -379,14 +382,14 @@ class AssessmentService
         foreach ($termPcts as $config) {
             if ($config['base'] === 'misc') {
                 // Upon Registration = fixed misc fee
-                $amount = $miscFee;
+                $amountCents = $miscFeeCents;
             } else {
                 // Tuition+Lab terms — last one absorbs rounding remainder
                 if ($tlCounter === count(array_filter($termPcts, fn($t) => $t['base'] === 'tuition_lab')) - 1) {
-                    $amount = round($tuitionAndLabFee - $runningTL, 2);
+                    $amountCents = $tuitionAndLabFeeCents - $runningTLCents;
                 } else {
-                    $amount = round($tuitionAndLabFee * ($config['percentage'] / 100), 2);
-                    $runningTL += $amount;
+                    $amountCents = MoneyService::percent($tuitionAndLabFeeCents, $config['percentage']);
+                    $runningTLCents += $amountCents;
                 }
                 $tlCounter++;
             }
@@ -395,8 +398,8 @@ class AssessmentService
                 'term_name'  => $config['term_name'],
                 'term_order' => $config['term_order'],
                 'percentage' => $config['percentage'],
-                'amount'     => $amount,
-                'balance'    => $amount,
+                'amount'     => MoneyService::toFloat($amountCents),  // for backwards compat
+                'balance'    => MoneyService::toPesos($amountCents),  // stored as decimal string in DB
                 'status'     => 'pending',
                 'due_date'   => null,
                 'paid_date'  => null,

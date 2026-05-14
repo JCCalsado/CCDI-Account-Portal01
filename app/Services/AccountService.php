@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Account;
 use App\Models\StudentPaymentTerm;
 use App\Models\User;
+use App\Services\MoneyService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -48,14 +49,15 @@ class AccountService
         }
 
         // Sum outstanding term balances across all active assessments.
-        // kind='charge' Transaction rows are no longer created — balance comes
-        // directly from StudentPaymentTerm.balance which is decremented on payment.
-        $balance = (float) StudentPaymentTerm::whereHas(
+        // Uses MoneyService::sumFromDb() to safely convert MySQL decimal aggregate
+        // to integer cents, avoiding float-cast precision loss.
+        $dbSum = StudentPaymentTerm::whereHas(
             'assessment',
             fn ($q) => $q->where('user_id', $user->id)->where('status', 'active')
         )->sum('balance');
 
-        $balance = round($balance, 2);
+        $balanceCents = MoneyService::sumFromDb($dbSum);
+        $balanceDecimal = MoneyService::toPesos($balanceCents);
 
         // ── Single source of truth: accounts.balance ──────────────────────────
         // Guard against orphan account creation that bypasses generateAccountNumber().
@@ -76,7 +78,7 @@ class AccountService
             $account = $user->account()->first();
         }
 
-        $account->update(['balance' => $balance]);
+        $account->update(['balance' => $balanceDecimal]);
 
         // NOTE: students.total_balance has been REMOVED (migration 2026_03_17_000001).
         // There is no second write here. accounts.balance is the only balance column.

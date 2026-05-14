@@ -10,6 +10,7 @@ use App\Models\Notification;
 use App\Models\StudentAssessment;
 use App\Models\StudentPaymentTerm;
 use App\Services\AccountService;
+use App\Services\MoneyService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -25,10 +26,10 @@ class StudentPaymentService
      *      sequentially by term_order (ascending).
      *   3. Payment MUST NOT exceed total outstanding balance across all terms.
      *
-     * ⚠️ IMPORTANT: When $requiresApproval=true, the CALLER is responsible for
-     * starting the approval workflow.
+     * PRECISION: All arithmetic is performed in integer cents via MoneyService.
+     * No floating-point arithmetic occurs in this method or its callees.
      */
-    public function processPayment(User $user, float $amount, array $options, bool $requiresApproval = true): array
+    public function processPayment(User $user, float|int|string $amount, array $options, bool $requiresApproval = true): array
     {
         $termId = (int) ($options['selected_term_id'] ?? 0);
 
@@ -36,34 +37,34 @@ class StudentPaymentService
             throw new \Exception('A payment term must be selected.');
         }
 
-        $term   = StudentPaymentTerm::findOrFail($termId);
-        $amount = round($amount, 2);
+        $term = StudentPaymentTerm::findOrFail($termId);
 
-        if ($amount <= 0) {
+        // Convert to integer cents at the input boundary — all further arithmetic is exact.
+        $amountCents = MoneyService::roundToCents($amount);
+
+        if ($amountCents <= 0) {
             throw new \Exception('Payment amount must be greater than zero.');
         }
 
-        // ── TOTAL OUTSTANDING GUARD ────────────────────────────────────────────
-        // This is the one true ceiling. Payment may flow across terms but never
-        // exceed total remaining balance for the entire assessment.
-        $totalOutstanding = round(
+        // TOTAL OUTSTANDING GUARD — one true ceiling.
+        $outstandingCents = MoneyService::sumFromDb(
             StudentPaymentTerm::where('student_assessment_id', $term->student_assessment_id)
                 ->whereIn('status', PaymentStatus::unpaidValues())
-                ->sum('balance'),
-            2
+                ->sum('balance')
         );
 
-        if ($amount > $totalOutstanding) {
+        if ($amountCents > $outstandingCents) {
             throw new \Exception(sprintf(
-                'Payment amount (₱%s) exceeds total outstanding balance (₱%s).',
-                number_format($amount, 2),
-                number_format($totalOutstanding, 2)
+                'Payment amount (%s) exceeds total outstanding balance (%s).',
+                MoneyService::formatFromCents($amountCents),
+                MoneyService::formatFromCents($outstandingCents)
             ));
         }
 
-        return DB::transaction(function () use ($user, $amount, $options, $term, $requiresApproval, $totalOutstanding) {
+        return DB::transaction(function () use ($user, $amountCents, $options, $term, $requiresApproval) {
 
-            $reference = 'PAY-' . Str::upper(Str::random(8));
+            $reference     = 'PAY-' . Str::upper(Str::random(8));
+            $amountDecimal = MoneyService::toPesos($amountCents);
 
             $status = $requiresApproval
                 ? PaymentStatus::AWAITING_APPROVAL->value
@@ -89,7 +90,7 @@ class StudentPaymentService
                 'or_number'       => $options['or_number'] ?? null,
                 'kind'            => 'payment',
                 'type'            => $options['term_name'] ?? $term->term_name,
-                'amount'          => $amount,
+                'amount'          => $amountDecimal,
                 'status'          => $status,
                 'payment_channel' => $options['payment_method'] ?? null,
                 'paid_at'         => $options['paid_at'] ?? now(),
@@ -98,16 +99,15 @@ class StudentPaymentService
                 'meta'            => $meta,
             ]);
 
-            // Immediately apply if no approval needed (accounting staff payment)
             if (! $requiresApproval) {
-                $allocation = $this->allocatePaymentAcrossTerms($term, $amount);
+                $allocation = $this->allocatePaymentAcrossTerms($term, $amountCents);
 
                 foreach ($allocation as $alloc) {
                     if ($user->student) {
                         Payment::create([
                             'student_id'            => $user->student->id,
                             'student_assessment_id' => $term->student_assessment_id,
-                            'amount'                => $alloc['applied'],
+                            'amount'                => $alloc['applied_decimal'],
                             'or_number'             => $options['or_number'] ?? null,
                             'payment_method'        => $options['payment_method'] ?? null,
                             'description'           => 'Payment — ' . $alloc['term_name'],
@@ -121,9 +121,9 @@ class StudentPaymentService
                 AccountService::recalculate($user);
                 $this->checkAndNotifyProgressionReady($user, $term->student_assessment_id);
 
-                $message = 'Payment of ₱' . number_format($amount, 2) . ' recorded successfully.';
+                $message = 'Payment of ' . MoneyService::formatFromCents($amountCents) . ' recorded successfully.';
             } else {
-                $message = 'Payment of ₱' . number_format($amount, 2) . ' submitted and is awaiting accounting approval.';
+                $message = 'Payment of ' . MoneyService::formatFromCents($amountCents) . ' submitted and is awaiting accounting approval.';
             }
 
             return [
@@ -135,14 +135,10 @@ class StudentPaymentService
     }
 
     /**
-     * Finalize an approved payment by applying it across terms starting from the selected term.
-     *
-     * ALLOCATION RULES (same as processPayment):
-     *   1. Apply to selected term first.
-     *   2. Excess flows into subsequent terms by term_order (ascending).
-     *   3. Never exceed total outstanding balance.
+     * Finalize an approved payment by applying it across terms.
      *
      * Uses SELECT ... FOR UPDATE to prevent concurrent payment race conditions.
+     * All arithmetic is integer-cents via MoneyService.
      */
     public function finalizeApprovedPayment(Transaction $transaction): void
     {
@@ -157,12 +153,12 @@ class StudentPaymentService
             return;
         }
 
-        $amount = round((float) $transaction->amount, 2);
+        $amountCents = MoneyService::roundToCents($transaction->amount);
 
-        if ($amount <= 0) {
+        if ($amountCents <= 0) {
             Log::error('finalizeApprovedPayment: zero amount — aborting', [
                 'transaction_id' => $transaction->id,
-                'amount'         => $amount,
+                'amount'         => $transaction->amount,
             ]);
             throw new \Exception(
                 "Cannot finalize transaction #{$transaction->id}: amount is ₱0.00. " .
@@ -170,10 +166,9 @@ class StudentPaymentService
             );
         }
 
-        DB::transaction(function () use ($transaction, $amount) {
+        DB::transaction(function () use ($transaction, $amountCents) {
             $user = $transaction->user;
 
-            // ── Resolve the starting term ──────────────────────────────────────
             $termId = isset($transaction->meta['selected_term_id'])
                 ? (int) $transaction->meta['selected_term_id']
                 : null;
@@ -184,7 +179,6 @@ class StudentPaymentService
                 $term = StudentPaymentTerm::lockForUpdate()->find($termId);
             }
 
-            // Fallback: match by term name if ID not in meta
             if (! $term) {
                 $termName = $transaction->meta['term_name'] ?? $transaction->type;
 
@@ -211,43 +205,35 @@ class StudentPaymentService
                 );
             }
 
-            // ── TOTAL OUTSTANDING GUARD (final safety net) ─────────────────────
-            $totalOutstanding = round(
+            $outstandingCents = MoneyService::sumFromDb(
                 StudentPaymentTerm::where('student_assessment_id', $term->student_assessment_id)
                     ->whereIn('status', PaymentStatus::unpaidValues())
                     ->lockForUpdate()
-                    ->sum('balance'),
-                2
+                    ->sum('balance')
             );
 
-            if ($amount > $totalOutstanding + 0.01) {
-                // Clamp and log — accounting already approved, do not throw.
-                // Manual reconciliation required for the excess.
-                Log::error('finalizeApprovedPayment: amount exceeds total outstanding — clamping to prevent overpayment', [
-                    'transaction_id'   => $transaction->id,
-                    'amount'           => $amount,
-                    'total_outstanding'=> $totalOutstanding,
-                    'excess'           => round($amount - $totalOutstanding, 2),
+            // One-cent tolerance for legitimate DB-level rounding.
+            if ($amountCents > $outstandingCents + 1) {
+                Log::error('finalizeApprovedPayment: amount exceeds total outstanding — clamping', [
+                    'transaction_id'    => $transaction->id,
+                    'amount_cents'      => $amountCents,
+                    'outstanding_cents' => $outstandingCents,
+                    'excess_cents'      => $amountCents - $outstandingCents,
                 ]);
-                $amount = $totalOutstanding;
+                $amountCents = $outstandingCents;
             }
 
-            // ── Allocate payment across terms sequentially ─────────────────────
-            $allocation = $this->allocatePaymentAcrossTerms($term, $amount);
+            $allocation = $this->allocatePaymentAcrossTerms($term, $amountCents);
 
-            // ── Create Payment audit records per term ──────────────────────────
             foreach ($allocation as $alloc) {
                 if ($user->student) {
-                    // For bank transfers the reference lives in meta->reference_number
-                    // (or_number on the Transaction is null). Copy it into Payment.or_number
-                    // so the payments table has the correct identifier going forward.
                     $paymentOrNumber = $transaction->or_number
                         ?? ($transaction->meta['reference_number'] ?? null);
 
                     Payment::create([
                         'student_id'            => $user->student->id,
                         'student_assessment_id' => $term->student_assessment_id,
-                        'amount'                => $alloc['applied'],
+                        'amount'                => $alloc['applied_decimal'],
                         'or_number'             => $paymentOrNumber,
                         'payment_method'        => $transaction->payment_channel,
                         'description'           => 'Payment — ' . $alloc['term_name'],
@@ -258,16 +244,14 @@ class StudentPaymentService
                 }
             }
 
-            $totalApplied  = round(array_sum(array_column($allocation, 'applied')), 2);
-            $termsLabel    = collect($allocation)->pluck('term_name')->implode(' + ');
-            $termsCount    = count($allocation);
+            $totalAppliedCents = MoneyService::sum(array_column($allocation, 'applied_cents'));
+            $termsLabel        = collect($allocation)->pluck('term_name')->implode(' + ');
+            $termsCount        = count($allocation);
 
             $description = $termsCount > 1
-                ? "₱{$totalApplied} allocated across: {$termsLabel}"
+                ? MoneyService::formatFromCents($totalAppliedCents) . " allocated across: {$termsLabel}"
                 : 'Payment — ' . ($allocation[0]['term_name'] ?? $term->term_name);
 
-            // Backfill year/semester from the assessment if the transaction was
-            // created without them (bank transfer flow pre-fix).
             $assessmentForYear = $term->assessment;
             $backfillYear      = $transaction->year
                 ?? ($assessmentForYear ? explode('-', $assessmentForYear->school_year)[0] : (string) now()->year);
@@ -281,7 +265,7 @@ class StudentPaymentService
                 'meta'     => array_merge($transaction->meta ?? [], [
                     'allocation'     => $allocation,
                     'terms_covered'  => $termsCount,
-                    'total_applied'  => $totalApplied,
+                    'total_applied'  => MoneyService::toPesos($totalAppliedCents),
                     'finalized_at'   => now()->toIso8601String(),
                     'description'    => $description,
                 ]),
@@ -291,12 +275,12 @@ class StudentPaymentService
             $this->checkAndNotifyProgressionReady($user, $term->student_assessment_id);
 
             Log::info('Payment finalized with allocation', [
-                'transaction_id'  => $transaction->id,
-                'starting_term'   => $term->term_name,
-                'amount'          => $amount,
-                'terms_covered'   => $termsCount,
-                'total_applied'   => $totalApplied,
-                'allocation'      => $allocation,
+                'transaction_id'   => $transaction->id,
+                'starting_term'    => $term->term_name,
+                'amount_cents'     => $amountCents,
+                'terms_covered'    => $termsCount,
+                'total_applied'    => MoneyService::toPesos($totalAppliedCents),
+                'allocation_count' => count($allocation),
             ]);
         });
     }
@@ -322,15 +306,19 @@ class StudentPaymentService
     }
 
     /**
-     * Get the total outstanding balance for a user, derived from their payment terms.
+     * Get the total outstanding balance for a user in pesos (float).
      */
     public function getTotalOutstandingBalance(User $user): float
     {
-        return round((float) StudentPaymentTerm::whereHas('assessment', function ($q) use ($user) {
-            $q->where('user_id', $user->id);
-        })
+        $cents = MoneyService::sumFromDb(
+            StudentPaymentTerm::whereHas('assessment', function ($q) use ($user) {
+                $q->where('user_id', $user->id);
+            })
             ->whereIn('status', PaymentStatus::unpaidValues())
-            ->sum('balance'), 2);
+            ->sum('balance')
+        );
+
+        return MoneyService::toFloat($cents);
     }
 
     /**
@@ -342,29 +330,24 @@ class StudentPaymentService
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PRIVATE: Sequential allocation engine
+    // PRIVATE: Integer-Cents Sequential Allocation Engine
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * Allocate a payment amount starting at $startTerm, then flowing into
      * subsequent terms ordered by term_order ASC.
      *
-     * Each term gets min(remaining, term.balance).
-     * The loop stops when remaining hits zero.
+     * ALL ARITHMETIC IS INTEGER-CENTS. Zero float error possible.
      *
-     * Returns an allocation ledger array, one entry per affected term:
-     *   [term_id, term_name, term_order, applied, balance_before, balance_after, status_after]
-     *
-     * SIDE EFFECT: updates StudentPaymentTerm records in the database.
-     * Must be called inside a DB::transaction().
+     * @param  StudentPaymentTerm  $startTerm    First term to apply payment to.
+     * @param  int                 $amountCents  Payment amount in integer cents.
+     * @return array               Allocation ledger, one entry per affected term.
      */
-    private function allocatePaymentAcrossTerms(StudentPaymentTerm $startTerm, float $amount): array
+    private function allocatePaymentAcrossTerms(StudentPaymentTerm $startTerm, int $amountCents): array
     {
-        $allocation = [];
-        $remaining  = round($amount, 2);
+        $allocation     = [];
+        $remainingCents = $amountCents;
 
-        // Load starting term + all subsequent unpaid terms ordered by term_order.
-        // Lock rows for update to prevent concurrent modifications.
         $terms = StudentPaymentTerm::where('student_assessment_id', $startTerm->student_assessment_id)
             ->whereIn('status', PaymentStatus::unpaidValues())
             ->where(function ($q) use ($startTerm) {
@@ -376,49 +359,50 @@ class StudentPaymentService
             ->get();
 
         foreach ($terms as $term) {
-            if ($remaining <= 0) {
+            if ($remainingCents <= 0) {
                 break;
             }
 
-            $balanceBefore = round((float) $term->balance, 2);
-            $applied       = round(min($remaining, $balanceBefore), 2);
-            $balanceAfter  = round($balanceBefore - $applied, 2);
+            // Integer cents — no float arithmetic anywhere in this block.
+            $balanceBeforeCents = MoneyService::toCents($term->balance);
+            $appliedCents       = min($remainingCents, $balanceBeforeCents);
+            $balanceAfterCents  = $balanceBeforeCents - $appliedCents; // exact integer subtraction
 
-            // Snap to zero to eliminate sub-cent float residue (e.g. 0.000001)
-            if ($balanceAfter < 0.01) {
-                $balanceAfter = 0.0;
-            }
-
-            $newStatus = $balanceAfter <= 0
+            $newStatus = $balanceAfterCents === 0
                 ? PaymentStatus::PAID->value
                 : PaymentStatus::PARTIAL->value;
 
             $term->update([
-                'balance'   => $balanceAfter,
+                'balance'   => MoneyService::toPesos($balanceAfterCents),
                 'status'    => $newStatus,
                 'paid_date' => $newStatus === PaymentStatus::PAID->value ? now() : $term->paid_date,
             ]);
 
             $allocation[] = [
-                'term_id'        => $term->id,
-                'term_name'      => $term->term_name,
-                'term_order'     => $term->term_order,
-                'applied'        => $applied,
-                'balance_before' => $balanceBefore,
-                'balance_after'  => $balanceAfter,
-                'status_after'   => $newStatus,
+                'term_id'              => $term->id,
+                'term_name'            => $term->term_name,
+                'term_order'           => $term->term_order,
+                'applied_cents'        => $appliedCents,
+                'applied_decimal'      => MoneyService::toPesos($appliedCents),
+                'balance_before_cents' => $balanceBeforeCents,
+                'balance_after_cents'  => $balanceAfterCents,
+                'balance_before'       => MoneyService::toPesos($balanceBeforeCents),
+                'balance_after'        => MoneyService::toPesos($balanceAfterCents),
+                // Legacy float aliases for any callers that still use them.
+                'applied'              => MoneyService::toFloat($appliedCents),
+                'balance_before_float' => MoneyService::toFloat($balanceBeforeCents),
+                'balance_after_float'  => MoneyService::toFloat($balanceAfterCents),
+                'status_after'         => $newStatus,
             ];
 
-            $remaining = round($remaining - $applied, 2);
+            $remainingCents -= $appliedCents; // exact integer subtraction
         }
 
-        if ($remaining > 0.01) {
-            // This should never happen — caller checked total outstanding first.
+        if ($remainingCents > 1) {
             Log::error('allocatePaymentAcrossTerms: unallocated remainder after exhausting all terms', [
-                'start_term_id' => $startTerm->id,
-                'amount'        => $amount,
-                'remaining'     => $remaining,
-                'allocation'    => $allocation,
+                'start_term_id'   => $startTerm->id,
+                'amount_cents'    => $amountCents,
+                'remaining_cents' => $remainingCents,
             ]);
         }
 
