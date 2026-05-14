@@ -620,11 +620,22 @@ class PaymentController extends Controller
         }
 
         $validated = $request->validate([
-            'proof_of_payment' => 'required|file|mimes:pdf,jpg,jpeg,png,webp|max:5120',
+            'proof_of_payment' => 'required|file|mimes:pdf,jpg,jpeg,jfif,png,webp|max:5120',
         ]);
 
-        $file     = $validated['proof_of_payment'];
-        $filename = 'proof_' . $transaction->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $file = $validated['proof_of_payment'];
+
+        // Normalize the file extension so the web server can serve it correctly.
+        // .jfif is technically valid JPEG but Apache/Nginx on shared hosting
+        // (e.g. Hostinger) often lack the MIME mapping, causing 404 when served.
+        // Map it and any other JPEG variant to the universally-recognized .jpg.
+        $rawExtension = strtolower($file->getClientOriginalExtension());
+        $extension    = match ($rawExtension) {
+            'jfif', 'jpe', 'jif', 'jfi' => 'jpg',
+            default                       => $rawExtension,
+        };
+
+        $filename = 'proof_' . $transaction->id . '_' . time() . '.' . $extension;
         $filepath = $file->storeAs('payment_proofs', $filename, 'public');
 
         $transaction->update([

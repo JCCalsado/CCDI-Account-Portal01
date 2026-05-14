@@ -434,9 +434,19 @@ const paymentTermBreakdown = computed(() => {
 
 // ─── Submit ───────────────────────────────────────────────────────────────────
 
+// Local guard set synchronously on first click — prevents double-submit in the
+// narrow window before form.processing becomes true and Vue re-renders the
+// disabled button state. Cleared in onFinish so the form is usable again if
+// the server returns a validation error and the user corrects and resubmits.
+const submitting = ref(false)
+
 function submit() {
   if (!selectedStudent.value) return
   if (hasRemainingBalance.value) return
+  if (submitting.value) return         // ← synchronous double-click guard
+
+  submitting.value = true
+
   form.user_id          = selectedStudent.value.id
   form.year_level       = computedYearLevel.value || selectedStudent.value.year_level
   form.nstp_lec_units   = nstpLecUnits.value
@@ -445,7 +455,10 @@ function submit() {
   form.post(route('student-fees.store'), {
     onError:  (errors) => console.error('[submit] validation errors:', errors),
     onSuccess: ()      => console.log('[submit] success'),
-    onFinish: ()       => console.log('[submit] finished'),
+    onFinish: ()      => {
+      console.log('[submit] finished')
+      submitting.value = false         // ← reset so re-submission is possible after errors
+    },
   })
 }
 

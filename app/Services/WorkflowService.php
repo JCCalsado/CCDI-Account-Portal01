@@ -9,7 +9,7 @@ use App\Models\Workflow;
 use App\Models\WorkflowApproval;
 use App\Models\WorkflowInstance;
 use App\Events\WorkflowStepAdvanced;
-use App\Services\StudentPaymentService; // ✅ FIX: was MISSING — caused 500 on approve
+use App\Services\StudentPaymentService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -158,25 +158,52 @@ class WorkflowService
 
     public function approveStep(WorkflowApproval $approval, int $userId, ?string $comments = null): void
     {
-        // Step 1: approve the record and advance the workflow inside a transaction.
+        // ─── STEP 1: Approve + advance INSIDE a transaction ──────────────────
+        //
+        // CONCURRENCY FIX (Double Notification Bug):
+        // The approval model is fetched BEFORE this method is called, so two
+        // near-simultaneous HTTP requests (e.g. accounting user double-clicking
+        // "Approve") can both pass the controller-level status check with the
+        // same stale in-memory model. Both then enter this method with
+        // $approval->status === 'pending' in PHP memory even though one request
+        // may be mid-commit on the DB.
+        //
+        // Fix: re-fetch the row with an exclusive lock (SELECT ... FOR UPDATE)
+        // INSIDE the transaction. The second request will block at lockForUpdate()
+        // until the first commits, then see status='approved' and throw, aborting
+        // cleanly before onWorkflowCompleted() can fire a second time.
+        //
         // onWorkflowCompleted() is intentionally called OUTSIDE this transaction
         // so that a finalization failure does NOT roll back the approval record.
         $instance = DB::transaction(function () use ($approval, $userId, $comments) {
-            $approval->approve($comments);
 
-            $pendingApprovals = WorkflowApproval::where('workflow_instance_id', $approval->workflow_instance_id)
-                ->where('step_name', $approval->step_name)
+            // ← Re-fetch with exclusive row lock — blocks concurrent duplicates
+            $locked = WorkflowApproval::lockForUpdate()->findOrFail($approval->id);
+
+            if ($locked->status !== 'pending') {
+                // LogicException is caught specifically by the controller so it
+                // returns a clean flash.info instead of a 500 / report() call.
+                throw new \LogicException(
+                    "Approval #{$approval->id} has already been processed (status: '{$locked->status}'). " .
+                    'This is most likely a duplicate request from a double-click.'
+                );
+            }
+
+            $locked->approve($comments);
+
+            $pendingApprovals = WorkflowApproval::where('workflow_instance_id', $locked->workflow_instance_id)
+                ->where('step_name', $locked->step_name)
                 ->where('status', 'pending')
                 ->count();
 
             if ($pendingApprovals === 0) {
-                $this->advanceWorkflow($approval->workflowInstance, $userId);
+                $this->advanceWorkflow($locked->workflowInstance, $userId);
             }
 
-            return $approval->workflowInstance->fresh();
+            return $locked->workflowInstance->fresh();
         });
 
-        // Step 2: finalize payment OUTSIDE the approval transaction.
+        // ─── STEP 2: Finalize payment OUTSIDE the approval transaction ────────
         // If finalization fails, the approval stays committed so accounting
         // does not have to re-approve.
         if ($instance->isCompleted()) {
@@ -186,28 +213,34 @@ class WorkflowService
 
     public function rejectStep(WorkflowApproval $approval, int $userId, string $comments): void
     {
-        // ✅ FIX: onWorkflowRejected() was previously called INSIDE DB::transaction(),
-        // meaning any notification failure would roll back the entire rejection record.
-        // Now mirrors the approveStep() pattern — DB work inside, side-effects outside.
+        // onWorkflowRejected() is called OUTSIDE the transaction — mirrors approveStep() pattern.
         $instance = DB::transaction(function () use ($approval, $userId, $comments) {
-            $approval->reject($comments);
 
-            $instance = $approval->workflowInstance;
+            // ← Same concurrency guard as approveStep()
+            $locked = WorkflowApproval::lockForUpdate()->findOrFail($approval->id);
+
+            if ($locked->status !== 'pending') {
+                throw new \LogicException(
+                    "Approval #{$approval->id} has already been processed (status: '{$locked->status}')."
+                );
+            }
+
+            $locked->reject($comments);
+
+            $instance = $locked->workflowInstance;
             $instance->update([
                 'status' => 'rejected',
             ]);
 
-            $instance->addStepToHistory($approval->step_name, [
+            $instance->addStepToHistory($locked->step_name, [
                 'action'   => 'rejected',
                 'user_id'  => $userId,
                 'comments' => $comments,
             ]);
 
-            return $instance->fresh(); // ✅ return, don't call onWorkflowRejected here
+            return $instance->fresh();
         });
 
-        // ✅ Called OUTSIDE the transaction — notification/cancellation failures
-        // will NOT undo the rejection record already committed to the database.
         $this->onWorkflowRejected($instance, $comments);
     }
 
@@ -330,9 +363,6 @@ class WorkflowService
                     'current_status' => $transaction->status,
                 ]);
 
-                // ✅ StudentPaymentService is now properly imported at the top of this file.
-                // Previously app(StudentPaymentService::class) resolved without namespace,
-                // causing a fatal "Class not found" 500 error on every approve click.
                 app(StudentPaymentService::class)->finalizeApprovedPayment($transaction);
 
                 $transaction->refresh();

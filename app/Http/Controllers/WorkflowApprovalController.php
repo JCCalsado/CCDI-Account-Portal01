@@ -115,12 +115,17 @@ class WorkflowApprovalController extends Controller
         try {
             $this->workflowService->approveStep(
                 $approval,
-                auth()->id(),                    // ← int, not User object
+                auth()->id(),
                 $validated['comments'] ?? null,
             );
 
             return redirect()->route('approvals.index')
                 ->with('flash.success', 'Payment approved successfully.');
+        } catch (\LogicException $e) {
+            // Thrown by WorkflowService when a concurrent request already approved
+            // this record (double-click race condition). Not a system error — return
+            // a clean informational message without report()-ing to Sentry/logs.
+            return back()->with('flash.info', 'This approval was already processed. No duplicate action taken.');
         } catch (\Throwable $e) {
             report($e);
 
@@ -143,12 +148,14 @@ class WorkflowApprovalController extends Controller
         try {
             $this->workflowService->rejectStep(
                 $approval,
-                auth()->id(),                    // ← int, not User object
+                auth()->id(),
                 $validated['comments'],
             );
 
             return redirect()->route('approvals.index')
                 ->with('flash.success', 'Payment declined.');
+        } catch (\LogicException $e) {
+            return back()->with('flash.info', 'This approval was already processed. No duplicate action taken.');
         } catch (\Throwable $e) {
             report($e);
 
