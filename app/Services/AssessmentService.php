@@ -347,12 +347,26 @@ class AssessmentService
     public static function buildPaymentTerms(
         float  $total,
         array  $rates,
-        ?float $miscFee         = null,
+        ?float $miscFee          = null,
         ?float $tuitionAndLabFee = null
     ): array {
-        // Convert inputs to integer cents for exact arithmetic
-        $miscFeeCents          = MoneyService::roundToCents($miscFee ?? round($rates['misc_total'], 2));
-        $tuitionAndLabFeeCents = MoneyService::roundToCents($tuitionAndLabFee ?? round($total - ($miscFee ?? 0), 2));
+        // Resolve $miscFee once so the same value is used in both calculations.
+        //
+        // BUG FIXED: the original code used ($miscFee ?? 0) when computing
+        // $tuitionAndLabFeeCents, but $miscFee is already null at that point
+        // (no 3rd arg is passed at either call site). This caused:
+        //   $tuitionAndLabFeeCents = total - 0 = total    ← WRONG
+        // instead of:
+        //   $tuitionAndLabFeeCents = total - miscFee       ← CORRECT
+        //
+        // With $tuitionAndLabFee = total, the four TL terms collectively sum to
+        // $total (not $total - $misc), so the grand total becomes:
+        //   Upon Registration (misc) + TL terms (total) = total + misc > total
+        // The StudentPaymentTermObserver catches this and throws a ValidationException
+        // partway through the foreach insert loop, aborting the transaction.
+        $resolvedMiscFee       = $miscFee ?? round($rates['misc_total'], 2);
+        $miscFeeCents          = MoneyService::roundToCents($resolvedMiscFee);
+        $tuitionAndLabFeeCents = MoneyService::roundToCents($tuitionAndLabFee ?? round($total - $resolvedMiscFee, 2));
 
         $configuredTerms = $rates['payment_terms'] ?? [];
 

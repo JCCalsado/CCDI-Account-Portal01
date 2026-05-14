@@ -339,7 +339,12 @@ class StudentFeeController extends Controller
                     'status'              => 'active',
                 ]);
 
-                foreach (AssessmentService::buildPaymentTerms($fees['total'], $rates) as $term) {
+                // Pass $fees['misc_fee'] and the tuition+lab base explicitly so
+                // buildPaymentTerms() never falls through to its default calculation.
+                // This is belt-and-suspenders: the service method is also fixed,
+                // but explicit arguments are safer and easier to audit.
+                $tuitionAndLabBase = $fees['total'] - $fees['misc_fee'];
+                foreach (AssessmentService::buildPaymentTerms($fees['total'], $rates, $fees['misc_fee'], $tuitionAndLabBase) as $term) {
                     $assessment->paymentTerms()->create($term);
                 }
 
@@ -770,7 +775,10 @@ class StudentFeeController extends Controller
             ]);
 
             $assessment->paymentTerms()->delete();
-            foreach (AssessmentService::buildPaymentTerms($fees['total'], $rates) as $term) {
+            // Pass $fees['misc_fee'] and the tuition+lab base explicitly.
+            // See store() for the reasoning — same fix applied here.
+            $tuitionAndLabBase = $fees['total'] - $fees['misc_fee'];
+            foreach (AssessmentService::buildPaymentTerms($fees['total'], $rates, $fees['misc_fee'], $tuitionAndLabBase) as $term) {
                 $assessment->paymentTerms()->create($term);
             }
 
