@@ -994,7 +994,7 @@ function semLabel(s: string) {
             <Button variant="outline" @click="router.visit(route('student-fees.index'))">Cancel</Button>
             <button
               type="button"
-              :disabled="form.processing || !selectedStudent || totalAssessment === 0 || hasRemainingBalance || isSemesterPaid(form.semester)"
+              :disabled="form.processing || !selectedStudent || totalAssessment === 0 || hasRemainingBalance || isSemesterPaid(form.semester) || tlPercentageTotal !== 100"
               class="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs transition-all hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
               @click.prevent="submit"
             >

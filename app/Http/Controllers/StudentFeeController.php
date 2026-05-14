@@ -250,6 +250,17 @@ class StudentFeeController extends Controller
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
 
+        // Validate that term percentages add up to 100% (excluding "Upon Registration")
+        if (!empty($validated['term_percentages'])) {
+            $percentageTotal = array_sum($validated['term_percentages']);
+            if (abs($percentageTotal - 100.0) > 0.01) {
+                return back()->withErrors([
+                    'term_percentages' => 'Payment term percentages must add up to 100%. Currently: ' .
+                        number_format($percentageTotal, 2) . '%',
+                ]);
+            }
+        }
+
         $studentAccount   = Account::where('user_id', $validated['user_id'])->first();
         $remainingBalance = max(0, (float) ($studentAccount?->balance ?? 0));
 
