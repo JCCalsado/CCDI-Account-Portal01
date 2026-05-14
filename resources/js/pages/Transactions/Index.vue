@@ -224,13 +224,46 @@ const subjectPanelsByTerm = computed(() => {
 });
 
 // ─── Filtering ────────────────────────────────────────────────────────────────
+
+/**
+ * Determine the "latest" term key by sorting all available keys
+ * chronologically and taking the last one.
+ *
+ * Key format from the backend: "YYYY-YYYY Semester"  e.g. "2026-2027 2nd"
+ * We sort by the start year (first 4 chars), then by semester order.
+ * This is intentionally independent of props.currentTerm so the toggle
+ * works even when currentTerm doesn't exactly match any key.
+ */
+const semesterSortOrder: Record<string, number> = {
+    '1st': 1,
+    '2nd': 2,
+    'Summer': 3,
+};
+
+const latestTermKey = computed((): string | null => {
+    const keys = Object.keys(props.transactionsByTerm ?? {});
+    if (keys.length === 0) return null;
+
+    return keys.slice().sort((a, b) => {
+        const [syA, semA = ''] = a.split(' ');
+        const [syB, semB = ''] = b.split(' ');
+        const yearA = parseInt(syA?.split('-')[0] ?? '0', 10);
+        const yearB = parseInt(syB?.split('-')[0] ?? '0', 10);
+        if (yearA !== yearB) return yearA - yearB;
+        return (semesterSortOrder[semA] ?? 0) - (semesterSortOrder[semB] ?? 0);
+    }).at(-1) ?? null;
+});
+
 const filteredTransactionsByTerm = computed(() => {
     if (!props.transactionsByTerm) return {};
 
     let terms = props.transactionsByTerm;
 
-    if (!showPastSemesters.value && props.currentTerm && terms[props.currentTerm]) {
-        terms = { [props.currentTerm]: terms[props.currentTerm] };
+    // When hiding past semesters, show only the single latest term.
+    // We do NOT rely on props.currentTerm matching a key exactly —
+    // that match can silently fail and show everything.
+    if (!showPastSemesters.value && latestTermKey.value && terms[latestTermKey.value]) {
+        terms = { [latestTermKey.value]: terms[latestTermKey.value] };
     }
 
     if (!search.value) return terms;

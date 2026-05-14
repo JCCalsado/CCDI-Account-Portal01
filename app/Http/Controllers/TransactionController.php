@@ -308,13 +308,35 @@ class TransactionController extends Controller
             ->orderBy('created_at', 'desc');
 
         $termKey = $request->input('term');
-        if ($termKey && $termKey !== 'All Terms') {
-            $parts   = explode(' ', $termKey, 2);
-            $termYear = $parts[0] ?? null;
-            $termSem  = $parts[1] ?? null;
 
-            if ($termYear && $termSem) {
-                $query->where('year', $termYear)
+        // ── Parse termKey ─────────────────────────────────────────────────────
+        // termKey format sent by the Vue frontend is built by getTransactionGroupKey():
+        //   formatSchoolYear(txn->year) + ' ' + txn->semester
+        //   e.g. '2026-2027 2nd Sem'  or  '2026-2027 2nd'  (legacy data)
+        //
+        // IMPORTANT: transactions.year stores ONLY the start year ('2026'),
+        // NOT the full school_year format ('2026-2027').  We must extract
+        // just the start year to query the transactions table correctly.
+        // The student_assessments table stores school_year as '2026-2027' — correct.
+        $termStartYear = null; // e.g. '2026'   → for transactions.year
+        $termSchoolYear = null; // e.g. '2026-2027' → for student_assessments.school_year
+        $termSem = null;        // e.g. '2nd Sem' or '2nd' → verbatim from the key
+
+        if ($termKey && $termKey !== 'All Terms') {
+            $parts = explode(' ', $termKey, 2);
+            $rawYear = $parts[0] ?? null;    // e.g. '2026-2027'
+            $termSem = $parts[1] ?? null;    // e.g. '2nd Sem' or '2nd'
+
+            if ($rawYear) {
+                // The year segment is always school_year format (e.g. '2026-2027').
+                // Extract only the start year for the transactions.year column.
+                $yearParts      = explode('-', $rawYear, 2);
+                $termStartYear  = $yearParts[0];                         // '2026'
+                $termSchoolYear = $rawYear;                              // '2026-2027'
+            }
+
+            if ($termStartYear && $termSem) {
+                $query->where('year', $termStartYear)
                       ->where('semester', $termSem);
             }
         }
@@ -333,15 +355,12 @@ class TransactionController extends Controller
         $assessmentQuery = StudentAssessment::where('user_id', $targetUser->id)
             ->where('status', 'active');
 
-        if ($termKey && $termKey !== 'All Terms') {
-            $parts    = explode(' ', $termKey, 2);
-            $termYear = $parts[0] ?? null;
-            $termSem  = $parts[1] ?? null;
-            if ($termYear && $termSem) {
-                $syEnd = (int) $termYear + 1;
-                $assessmentQuery->where('school_year', "{$termYear}-{$syEnd}")
-                                ->where('semester', $termSem);
-            }
+        if ($termKey && $termKey !== 'All Terms' && $termSchoolYear && $termSem) {
+            // student_assessments.school_year stores '2026-2027' — use directly.
+            // student_assessments.semester stores the same format as transactions.semester
+            // (e.g. '2nd Sem' or '2nd') so $termSem is correct for both tables.
+            $assessmentQuery->where('school_year', $termSchoolYear)
+                            ->where('semester', $termSem);
         }
 
         $totalCharges = (float) $assessmentQuery->sum('total_assessment');

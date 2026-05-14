@@ -1326,17 +1326,23 @@ const formatPaymentMethod = (m: string): string => {
                                 <p class="truncate font-semibold text-foreground">
                                     {{ term.term_name }}
                                 </p>
+                                <!-- Original assessed amount — never changes after assessment creation -->
+                                <p class="mt-1 font-bold tabular-nums text-foreground">
+                                    {{ formatCurrency(parseFloat(String(term.amount))) }}
+                                </p>
+                                <!-- Remaining balance for this term — shown only when not fully paid -->
                                 <p
-                                    class="mt-1 font-bold tabular-nums"
+                                    v-if="term.status !== 'paid'"
+                                    class="mt-0.5 tabular-nums"
                                     :class="
-                                        term.status === 'paid'
-                                            ? 'text-emerald-600'
-                                            : term.status === 'overdue'
-                                              ? 'text-red-600'
-                                              : 'text-foreground'
+                                        term.status === 'overdue'
+                                            ? 'text-red-500'
+                                            : term.status === 'partial'
+                                              ? 'text-amber-600'
+                                              : 'text-gray-500'
                                     "
                                 >
-                                    {{ formatCurrency(parseFloat(String(term.balance))) }}
+                                    Balance: {{ formatCurrency(parseFloat(String(term.balance))) }}
                                 </p>
                                 <span
                                     :class="[
