@@ -167,13 +167,24 @@ const getBalanceTimingStatus = (student: Student): 'red' | 'green' | 'zero' | nu
     const balance = getRemainingBalance(student);
     if (balance === 0) return 'zero';
 
-    const sorted    = [...terms].sort((a, b) => a.term_order - b.term_order);
-    const firstTerm = sorted[0];
+    const sorted = [...terms].sort((a, b) => a.term_order - b.term_order);
+    const today  = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    if (firstTerm.status === 'pending' || parseFloat(String(firstTerm.balance)) >= parseFloat(String(firstTerm.amount))) {
-        return 'red';
-    }
+    // A student is only "Behind Schedule" when at least one unpaid term has a
+    // configured due_date that has already passed.
+    // No due_date = no deadline = no urgency state.
+    const hasPastDue = sorted.some((term) => {
+        if (!term.due_date) return false;                         // no due date — never behind
+        if (parseFloat(String(term.balance)) <= 0) return false; // fully paid — skip
+        const due = new Date(term.due_date);
+        due.setHours(0, 0, 0, 0);
+        return due < today;
+    });
 
+    if (hasPastDue) return 'red';
+
+    // Outstanding balance exists but no past-due dates → on track
     return 'green';
 };
 
@@ -423,7 +434,7 @@ const submitDrop = () => {
                 <!-- Legend + Pagination -->
                 <div class="flex flex-col gap-3 border-t border-border bg-muted/20 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
                     <div class="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-red-500"></span>Behind — 1st term unpaid</span>
+                        <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-red-500"></span>Behind — past due date</span>
                         <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-emerald-500"></span>On Track</span>
                         <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-blue-500"></span>Fully Paid</span>
                     </div>

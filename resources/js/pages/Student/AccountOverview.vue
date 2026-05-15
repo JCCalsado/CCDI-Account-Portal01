@@ -273,8 +273,9 @@ const nextPaymentDue = computed(() => {
     return unpaid[0];
 });
 
-const isOverdue = (dueDate: string): boolean => {
-    const due = new Date(dueDate);
+const isOverdue = (dueDate: string | null | undefined): boolean => {
+    if (!dueDate) return false; // No due date = never overdue
+    const due   = new Date(dueDate);
     const today = new Date();
     due.setHours(0, 0, 0, 0);
     today.setHours(0, 0, 0, 0);

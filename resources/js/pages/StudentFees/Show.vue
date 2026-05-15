@@ -143,20 +143,36 @@ const totalAssessment = computed(() =>
 
 const totalPaid = computed(() => Math.max(0, totalAssessment.value - remainingBalance.value));
 
-const paymentTimingStatus = computed((): 'behind' | 'on_track' | 'paid' => {
+const paymentTimingStatus = computed((): 'behind' | 'on_track' | 'paid' | 'no_due_date' => {
     const terms: PaymentTerm[] =
         (selectedAssessment.value as any)?.paymentTerms ??
         props.assessment?.paymentTerms ??
         [];
-    if (terms.length === 0) return 'behind';
+
     if (remainingBalance.value === 0) return 'paid';
+
+    // No terms at all — brand-new assessment, no due dates configured yet.
+    if (terms.length === 0) return 'no_due_date';
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const sorted = [...terms].sort((a, b) => a.term_order - b.term_order);
-    const first = sorted[0];
-    if (
-        first.status === 'pending' &&
-        parseFloat(String(first.balance)) >= parseFloat(String(first.amount)) * 0.99
-    )
-        return 'behind';
+
+    // "Behind" only when a configured due_date has passed with an unpaid balance.
+    const hasPastDue = sorted.some((term) => {
+        if (!term.due_date) return false;
+        if (parseFloat(String(term.balance)) <= 0) return false;
+        const due = new Date(term.due_date);
+        due.setHours(0, 0, 0, 0);
+        return due < today;
+    });
+
+    if (hasPastDue) return 'behind';
+
+    // Outstanding balance, but no due dates configured at all.
+    const hasAnyDueDate = sorted.some((t) => !!t.due_date);
+    if (!hasAnyDueDate) return 'no_due_date';
+
     return 'on_track';
 });
 
@@ -176,7 +192,14 @@ const balanceCardConfig = computed(() => {
                 amountColor: 'text-blue-700',
                 badge: { label: 'On Track', cls: 'bg-blue-500 text-white' },
             };
-        default:
+        case 'no_due_date':
+            return {
+                bg: 'bg-gradient-to-r from-gray-50 to-slate-50 border-gray-200',
+                labelColor: 'text-gray-600',
+                amountColor: 'text-gray-800',
+                badge: { label: 'Awaiting Due Date', cls: 'bg-gray-400 text-white' },
+            };
+        default: // 'behind'
             return {
                 bg: 'bg-gradient-to-r from-red-50 to-rose-50 border-red-200',
                 labelColor: 'text-red-700',
@@ -1271,7 +1294,9 @@ const paymentMethodBadgeClass = (method: string): string => {
                                         ? 'bg-red-500'
                                         : paymentTimingStatus === 'on_track'
                                           ? 'bg-blue-500'
-                                          : 'bg-green-500'
+                                          : paymentTimingStatus === 'no_due_date'
+                                            ? 'bg-gray-400'
+                                            : 'bg-green-500'
                                 "
                                 :style="{
                                     width:

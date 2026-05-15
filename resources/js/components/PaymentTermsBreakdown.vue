@@ -130,7 +130,7 @@ interface PaymentTerm {
     amount: number;
     balance: number;
     status: string;
-    due_date: string;
+    due_date: string | null;
     remarks?: string | null;
     paid_date?: string | null;
 }
@@ -149,8 +149,11 @@ const formatCurrency = (amount: number): string => {
     }).format(amount);
 };
 
-const formatDate = (date: string): string => {
-    return new Date(date).toLocaleDateString('en-US', {
+const formatDate = (date: string | null | undefined): string => {
+    if (!date) return '—';
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -177,8 +180,13 @@ const statusClasses = (status: string): string => {
     return classes[status] || 'bg-gray-100 text-gray-800';
 };
 
-const isOverdue = (dueDate: string): boolean => {
-    return new Date(dueDate) < new Date() && true;
+const isOverdue = (dueDate: string | null | undefined): boolean => {
+    if (!dueDate) return false; // No due date = never overdue
+    const due   = new Date(dueDate);
+    const today = new Date();
+    due.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    return due < today;
 };
 
 const totalOriginal = computed(() => {

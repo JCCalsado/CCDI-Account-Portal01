@@ -3,7 +3,7 @@ import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, Link, useForm, usePage } from '@inertiajs/vue3';
-import { AlertCircle, Bell, CalendarClock, CheckCircle, Clock } from 'lucide-vue-next';
+import { AlertCircle, Bell, Calendar, CalendarClock, CheckCircle, Clock } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 
 const { formatCurrency, formatDate, getTransactionStatusConfig, formatTransactionType } = useDataFormatting();
@@ -45,7 +45,7 @@ type PaymentTerm = {
     percentage: number;
     amount: number;
     balance: number;
-    due_date: string;
+    due_date: string | null;
     status: string;
     remarks: string | null;
     paid_date: string | null;
@@ -144,11 +144,12 @@ const unpaidTerms = computed(() =>
     (props.paymentTerms ?? []).filter((t) => t.balance > 0).sort((a, b) => a.term_order - b.term_order),
 );
 
-const getDueDateColor = (dueDate: string | null | undefined): 'red' | 'amber' | 'green' => {
-    if (!dueDate) return 'amber';
+const getDueDateColor = (dueDate: string | null | undefined): 'red' | 'amber' | 'green' | 'neutral' => {
+    if (!dueDate) return 'neutral'; // No due date = no deadline = no urgency
     const diffDays = Math.ceil((new Date(dueDate).getTime() - Date.now()) / 86_400_000);
-    if (diffDays <= 7) return 'red';
-    if (diffDays <= 14) return 'amber';
+    if (diffDays <= 0)  return 'red';    // Past due
+    if (diffDays <= 7)  return 'red';    // Due within 1 week
+    if (diffDays <= 14) return 'amber';  // Due within 2 weeks
     return 'green';
 };
 
@@ -245,7 +246,7 @@ const nextPaymentDue = computed(
 
 // ── Notification due-date helpers ─────────────────────────────────────────────
 
-const getNotifDueDateColor = (dueDateStr: string | null): 'red' | 'amber' | 'green' =>
+const getNotifDueDateColor = (dueDateStr: string | null): 'red' | 'amber' | 'green' | 'neutral' =>
     getDueDateColor(dueDateStr);
 
 const dueDateLabel = (dueDateStr: string | null): string => {
@@ -610,7 +611,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                         ? 'border-red-200 bg-red-50'
                                         : nextPaymentDue.dueColor === 'amber'
                                           ? 'border-amber-200 bg-amber-50'
-                                          : 'border-emerald-200 bg-emerald-50'
+                                          : nextPaymentDue.dueColor === 'neutral'
+                                            ? 'border-gray-200 bg-gray-50'
+                                            : 'border-emerald-200 bg-emerald-50'
                                 "
                             >
                                 <div class="flex items-start justify-between gap-2">
@@ -622,7 +625,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                                     ? 'text-red-700'
                                                     : nextPaymentDue.dueColor === 'amber'
                                                       ? 'text-amber-700'
-                                                      : 'text-emerald-700'
+                                                      : nextPaymentDue.dueColor === 'neutral'
+                                                        ? 'text-gray-600'
+                                                        : 'text-emerald-700'
                                             "
                                         >
                                             {{ nextPaymentDue.term_name }}
@@ -634,7 +639,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                                     ? 'text-red-700'
                                                     : nextPaymentDue.dueColor === 'amber'
                                                       ? 'text-amber-700'
-                                                      : 'text-emerald-700'
+                                                      : nextPaymentDue.dueColor === 'neutral'
+                                                        ? 'text-gray-800'
+                                                        : 'text-emerald-700'
                                             "
                                         >
                                             {{ formatCurrency(nextPaymentDue.balance) }}
@@ -647,7 +654,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                                 ? 'bg-red-200'
                                                 : nextPaymentDue.dueColor === 'amber'
                                                   ? 'bg-amber-200'
-                                                  : 'bg-emerald-200'
+                                                  : nextPaymentDue.dueColor === 'neutral'
+                                                    ? 'bg-gray-200'
+                                                    : 'bg-emerald-200'
                                         "
                                     >
                                         <AlertCircle
@@ -659,6 +668,11 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                             v-else-if="nextPaymentDue.dueColor === 'amber'"
                                             :size="18"
                                             class="text-amber-700"
+                                        />
+                                        <Calendar
+                                            v-else-if="nextPaymentDue.dueColor === 'neutral'"
+                                            :size="18"
+                                            class="text-gray-500"
                                         />
                                         <CheckCircle v-else :size="18" class="text-emerald-700" />
                                     </div>
@@ -673,7 +687,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                             ? 'text-red-700/80'
                                             : nextPaymentDue.dueColor === 'amber'
                                               ? 'text-amber-700/80'
-                                              : 'text-emerald-700/80'
+                                              : nextPaymentDue.dueColor === 'neutral'
+                                                ? 'text-gray-600/80'
+                                                : 'text-emerald-700/80'
                                     "
                                 >
                                     {{ nextPaymentDue.notifMessage }}
@@ -686,7 +702,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                             ? 'border-red-200'
                                             : nextPaymentDue.dueColor === 'amber'
                                               ? 'border-amber-200'
-                                              : 'border-emerald-200'
+                                              : nextPaymentDue.dueColor === 'neutral'
+                                                ? 'border-gray-200'
+                                                : 'border-emerald-200'
                                     "
                                 >
                                     <div>
@@ -701,7 +719,7 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                                       : 'text-foreground'
                                             "
                                         >
-                                            {{ nextPaymentDue.formattedDueDate }}
+                                            {{ nextPaymentDue.due_date ? nextPaymentDue.formattedDueDate : 'Not yet set' }}
                                         </p>
                                     </div>
                                     <span
@@ -712,7 +730,9 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                                 ? 'bg-red-200 text-red-800'
                                                 : nextPaymentDue.dueColor === 'amber'
                                                   ? 'bg-amber-200 text-amber-800'
-                                                  : 'bg-emerald-200 text-emerald-800'
+                                                  : nextPaymentDue.dueColor === 'neutral'
+                                                    ? 'bg-gray-200 text-gray-800'
+                                                    : 'bg-emerald-200 text-emerald-800'
                                         "
                                     >
                                         {{ nextPaymentDue.daysUntilDue }} day{{ nextPaymentDue.daysUntilDue !== 1 ? 's' : '' }} left
