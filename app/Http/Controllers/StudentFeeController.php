@@ -319,6 +319,20 @@ class StudentFeeController extends Controller
                 // Fall back to the student's DB year level if not provided.
                 $yearLevelForAssessment = $validated['year_level'] ?? $student->year_level;
 
+                // ─── SYNC users.year_level ────────────────────────────────
+                // The frontend computes the correct year level from paid
+                // semester history (advanceYearLevel). That derived value is
+                // stored on the assessment, but users.year_level was never
+                // updated — so the Index list and search kept showing the
+                // stale (one-level-behind) value.
+                // Fix: persist the advanced year level back to the user row
+                // whenever it differs from the stored value.
+                if ($yearLevelForAssessment && $yearLevelForAssessment !== $student->year_level) {
+                    $student->year_level = $yearLevelForAssessment;
+                    $student->save();
+                }
+                // ─────────────────────────────────────────────────────────
+
                 $assessment = StudentAssessment::create([
                     'assessment_number'   => $assessmentNumber,
                     'user_id'             => $validated['user_id'],
