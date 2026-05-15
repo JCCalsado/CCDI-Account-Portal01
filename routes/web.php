@@ -26,7 +26,7 @@ use Inertia\Inertia;
 // PUBLIC ROUTES
 // ============================================
 Route::get('/', function () {
-    return Inertia::render('Welcome');
+    return redirect()->route('login');
 })->name('home');
 
 Route::post('/webhook/paymongo', [PaymongoWebhookController::class, 'handle']);
