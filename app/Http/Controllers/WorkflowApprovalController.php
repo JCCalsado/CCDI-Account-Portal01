@@ -21,21 +21,26 @@ class WorkflowApprovalController extends Controller
         $user     = auth()->user();
         $userRole = $user->role->value ?? null;
 
-        $query = WorkflowApproval::query()
+        $baseQuery = WorkflowApproval::query()
             ->with([
                 'workflowInstance.workflow',
                 'workflowInstance.workflowable.user',
             ]);
 
         if ($userRole === 'accounting') {
-            $query->whereHas('workflowInstance.workflow', function ($wq) {
+            $baseQuery->whereHas('workflowInstance.workflow', function ($wq) {
                 $wq->where('type', 'payment_approval');
             });
         } else {
-            $query->where('approver_id', $user->id);
+            $baseQuery->where('approver_id', $user->id);
         }
 
-        $approvals = $query
+        // Aggregate counts across ALL records (not just current page)
+        $totalPending  = (clone $baseQuery)->where('status', 'pending')->count();
+        $totalApproved = (clone $baseQuery)->where('status', 'approved')->count();
+        $totalRejected = (clone $baseQuery)->where('status', 'rejected')->count();
+
+        $approvals = $baseQuery
             ->when($request->status, fn ($q, $status) => $q->where('status', $status))
             ->latest()
             ->paginate(15)
@@ -44,6 +49,11 @@ class WorkflowApprovalController extends Controller
         return Inertia::render('Approvals/Index', [
             'approvals' => $approvals,
             'filters'   => $request->only(['status', 'year', 'semester']),
+            'counts'    => [
+                'pending'  => $totalPending,
+                'approved' => $totalApproved,
+                'rejected' => $totalRejected,
+            ],
         ]);
     }
 

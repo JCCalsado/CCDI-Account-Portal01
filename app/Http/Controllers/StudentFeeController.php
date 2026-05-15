@@ -585,6 +585,8 @@ class StudentFeeController extends Controller
             ],
             'status'               => $assessment->status,
             'tuition_per_unit'     => $tuitionPerUnit,
+            'discount_type'        => $assessment->discount_type ?? 'none',
+            'discount_percentage'  => (float) ($assessment->discount_percentage ?? 0),
             'paymentTerms'         => $assessment->paymentTerms->sortBy('term_order')->map(fn ($t) => [
                 'id'         => $t->id,
                 'term_name'  => $t->term_name,

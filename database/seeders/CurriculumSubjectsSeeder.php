@@ -5,6 +5,17 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * @deprecated
+ *
+ * This seeder predates EnhancedSubjectSeeder and uses inconsistent course name strings
+ * that do NOT match the canonical names defined in EnhancedSubjectSeeder.
+ *
+ * DO NOT include this in DatabaseSeeder::run(). Running it alongside EnhancedSubjectSeeder
+ * will create duplicate and conflicting subject records.
+ *
+ * To add curriculum data, update EnhancedSubjectSeeder instead.
+ */
 class CurriculumSubjectsSeeder extends Seeder
 {
     private const TUITION_PER_UNIT = 364.00;

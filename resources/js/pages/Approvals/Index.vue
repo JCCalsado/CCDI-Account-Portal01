@@ -39,6 +39,7 @@ interface Approval {
 const props = defineProps<{
     approvals: { data: Approval[]; links: any[] };
     filters: { status?: string; year?: string; semester?: string };
+    counts: { pending: number; approved: number; rejected: number };
 }>();
 
 const breadcrumbs = [
@@ -55,7 +56,6 @@ const filters = ref({
 });
 
 const searchQuery = ref('');
-const filterStatus = ref<string>('all');
 const showRejectDialog = ref(false);
 const selectedApprovalId = ref<number | null>(null);
 
@@ -84,20 +84,24 @@ const formatDate = (d: string) =>
 
 const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1);
 
-// Counts
-const pendingCount = computed(() => props.approvals.data.filter((a) => a.status === 'pending').length);
-const approvedCount = computed(() => props.approvals.data.filter((a) => a.status === 'approved').length);
-const rejectedCount = computed(() => props.approvals.data.filter((a) => a.status === 'rejected').length);
+// Counts — sourced from server aggregates, not current page data
+const pendingCount  = computed(() => props.counts.pending);
+const approvedCount = computed(() => props.counts.approved);
+const rejectedCount = computed(() => props.counts.rejected);
 
-// Filtered list — client-side on top of server status filter
+// Active status pill derived from URL filter (server-driven), not a local ref
+const activeStatusFilter = computed(() => props.filters.status ?? 'all');
+
+const applyStatusFilter = (status: string) => {
+    const params: Record<string, string> = {};
+    if (status !== 'all') params.status = status;
+    if (filters.value.year) params.year = filters.value.year;
+    router.get(route('approvals.index'), params, { preserveState: true, replace: true });
+};
+
+// Filtered list — search only (status filter is handled server-side via URL params)
 const filteredApprovals = computed(() => {
     let list = props.approvals.data;
-
-    if (filterStatus.value !== 'all') {
-        const map: Record<string, string> = { pending: 'pending', approved: 'approved', rejected: 'rejected' };
-        const target = map[filterStatus.value];
-        if (target) list = list.filter((a) => a.status === target);
-    }
 
     if (filters.value.year) {
         list = list.filter((a) => String(a.workflow_instance?.metadata?.year) === filters.value.year);
@@ -128,7 +132,7 @@ const uniqueYears = computed(() => {
 
 const applyServerFilter = () => {
     const params: Record<string, string> = {};
-    if (filters.value.status) params.status = filters.value.status;
+    if (props.filters.status) params.status = props.filters.status;
     if (filters.value.year) params.year = filters.value.year;
     router.get(route('approvals.index'), params, { preserveState: true, replace: true });
 };
@@ -182,14 +186,12 @@ const submitRejection = () => {
                     <div>
                         <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Approved</p>
                         <p class="text-xl font-bold text-emerald-600">{{ approvedCount }}</p>
-                        <p class="text-xs text-muted-foreground">This page</p>
                     </div>
                 </div>
                 <div class="ccdi-stat-card">
                     <div>
                         <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Rejected</p>
                         <p class="text-xl font-bold text-red-600">{{ rejectedCount }}</p>
-                        <p class="text-xs text-muted-foreground">This page</p>
                     </div>
                 </div>
             </div>
@@ -201,9 +203,9 @@ const submitRejection = () => {
                     <button
                         v-for="f in ['all', 'pending', 'approved', 'rejected']"
                         :key="f"
-                        @click="filterStatus = f"
+                        @click="applyStatusFilter(f)"
                         class="rounded-lg px-4 py-1.5 text-sm font-medium capitalize transition-all"
-                        :class="filterStatus === f ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                        :class="activeStatusFilter === f ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
                     >
                         {{ f }}
                         <span v-if="f === 'pending' && pendingCount > 0" class="ml-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-xs font-bold text-white">{{ pendingCount }}</span>
@@ -304,8 +306,8 @@ const submitRejection = () => {
                     <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
                         <svg class="h-6 w-6 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                     </div>
-                    <p class="text-base font-semibold text-foreground">No {{ filterStatus === 'all' ? '' : filterStatus }} approvals</p>
-                    <p class="mt-1 text-sm text-muted-foreground">{{ filterStatus === 'pending' ? 'All payments have been reviewed.' : 'Nothing to show here.' }}</p>
+                    <p class="text-base font-semibold text-foreground">No {{ activeStatusFilter === 'all' ? '' : activeStatusFilter }} approvals</p>
+                    <p class="mt-1 text-sm text-muted-foreground">{{ activeStatusFilter === 'pending' ? 'All payments have been reviewed.' : 'Nothing to show here.' }}</p>
                 </div>
             </div>
 

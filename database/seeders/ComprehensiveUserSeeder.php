@@ -79,16 +79,12 @@ class ComprehensiveUserSeeder extends Seeder
     ];
 
     private array $courses = [
-        'BET Electronics Engineering Technology',
-        'BET Electrical Engineering Technology',
+        'BS Engineering Technology - Electronics',
+        'BS Engineering Technology - Electrical',
+        'Associate in Computer Technology - Networking',
+        'BS Computer Science',
         'BS Information Technology',
         'BS Information Systems',
-        'BS Computer Science',
-        'Associate in Computer Technology - Networking',
-        'Associate in Computer Technology - Programming',
-        'Associate in Computer Technology - Multimedia/Animation',
-        'Diploma in Software Development and Programming',
-        'Diploma in Electronics and Computer Technology',
     ];
 
     // =========================================================================

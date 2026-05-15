@@ -399,6 +399,20 @@ const feeCalculationSummary = computed(() => {
     return parts.length > 0 ? parts.join(' + ') : '—';
 });
 
+const discountLabel = computed(() => {
+    const assess = selectedAssessment.value as any;
+    const type = assess?.discount_type ?? 'none';
+    const pct  = parseFloat(String(assess?.discount_percentage ?? 0));
+    if (type === 'none' || !pct) return null;
+    const labels: Record<string, string> = {
+        scholarship: 'Scholarship',
+        sibling:     'Sibling Discount',
+        percentage:  'Discount',
+        employee:    'Employee Discount',
+    };
+    return `${labels[type] ?? 'Discount'} (${pct}% off)`;
+});
+
 // ─── Transaction history ─────────────────────────────────────────────────────
 
 interface TxGroup {
@@ -622,7 +636,7 @@ const txSubjectPanels = computed(
 
 const breadcrumbs = [
     { title: 'Dashboard', href: route('admin.dashboard') },
-    { title: 'Archives', href: route('students.archive') },
+    { title: 'Student Fee Management', href: route('student-fees.index') },
     { title: props.student.name },
 ];
 
@@ -1180,6 +1194,13 @@ const paymentMethodBadgeClass = (method: string): string => {
                                     class="inline-block w-fit rounded bg-indigo-50 px-2 py-1 font-mono text-xs text-indigo-600"
                                 >
                                     {{ feeCalculationSummary }}
+                                </span>
+                                <span
+                                    v-if="discountLabel"
+                                    class="inline-flex w-fit items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                                    {{ discountLabel }}
                                 </span>
                             </CardDescription>
                         </div>

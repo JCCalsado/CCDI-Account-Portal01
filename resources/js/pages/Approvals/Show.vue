@@ -22,6 +22,7 @@ interface Approval {
     comments: string | null;
     created_at: string;
     updated_at: string;
+    approved_at: string | null;
     workflow_instance?: {
         workflowable: {
             amount?: number;
@@ -240,8 +241,8 @@ const paymentMethodLabel: Record<string, string> = {
                 <!-- Approver & Dates -->
                 <div class="grid grid-cols-2 gap-4 border-b pb-4">
                     <div>
-                        <p class="text-sm text-gray-500">Assigned to</p>
-                        <p class="font-semibold">{{ approval.approver_name ?? 'Unassigned' }}</p>
+                        <p class="text-sm text-gray-500">Payment Approved</p>
+                        <p class="font-semibold">{{ approval.approved_at ? formatDate(approval.approved_at) : '—' }}</p>
                     </div>
                     <div>
                         <p class="text-sm text-gray-500">Submitted</p>
