@@ -22,7 +22,7 @@ class RegisteredUserController extends Controller
      * Courses that have full subject/assessment data in EnhancedSubjectSeeder.
      *
      * These strings MUST match exactly what EnhancedSubjectSeeder stores in
-     * the `course` column — one character difference = zero subjects found
+     * the course column — one character difference = zero subjects found
      * during assessment generation.
      *
      * Removed permanently (no seeder data exists):
@@ -78,6 +78,7 @@ class RegisteredUserController extends Controller
             'address_municipality_city'=> 'required|string|max:255',
             'address_province'         => 'required|string|max:255',
             'phone'                    => 'required|string|max:20',
+            'is_irregular'             => 'nullable|boolean',
         ]);
 
         // Assemble address server-side
@@ -105,6 +106,7 @@ class RegisteredUserController extends Controller
                 'address'        => $address,
                 'phone'          => $request->phone,
                 'account_id'     => $accountId,
+                'is_irregular'   => (bool) ($request->is_irregular ?? false),
                 'status'         => User::STATUS_ACTIVE,
                 'role'           => 'student',
             ]);

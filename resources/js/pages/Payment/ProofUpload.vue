@@ -3,7 +3,7 @@ import AppLayout from '@/layouts/AppLayout.vue';
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import { Head, useForm } from '@inertiajs/vue3';
-import { UploadCloud, File, CheckCircle, AlertCircle } from 'lucide-vue-next';
+import { UploadCloud, File, CheckCircle, AlertCircle, ShieldCheck, ShieldX, Loader2 } from 'lucide-vue-next';
 import { ref, computed } from 'vue';
 
 const { formatCurrency, formatDate } = useDataFormatting();
@@ -32,7 +32,135 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref<string | null>(null);
 const fileSize = ref<number | null>(null);
 
-const handleFileSelect = (e: Event) => {
+// ─── AI Validation State ───────────────────────────────────────────────────
+const aiValidating = ref(false);
+const aiResult = ref<'valid' | 'invalid' | 'uncertain' | null>(null);
+const aiMessage = ref<string | null>(null);
+
+/**
+ * Convert a File to base64 string (strips the data URI prefix).
+ */
+const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+
+/**
+ * Send the selected image/PDF to Claude via the Anthropic API and check
+ * whether it looks like a legitimate payment receipt or proof of payment.
+ *
+ * PDFs are validated by file type heuristic only (Claude vision cannot read
+ * PDF binary), so we give them a pass with a soft warning.
+ */
+const validateWithAI = async (file: File): Promise<void> => {
+    aiValidating.value = true;
+    aiResult.value = null;
+    aiMessage.value = null;
+
+    // PDFs: Claude vision can't read binary PDF — allow but warn
+    if (file.type === 'application/pdf') {
+        await new Promise((r) => setTimeout(r, 400)); // brief pause for UX
+        aiResult.value = 'uncertain';
+        aiMessage.value =
+            'PDF detected. Please make sure this is a valid payment receipt or bank slip. Our team will verify it manually.';
+        aiValidating.value = false;
+        return;
+    }
+
+    try {
+        const base64 = await fileToBase64(file);
+        const mediaType = file.type as 'image/jpeg' | 'image/png' | 'image/webp';
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 1000,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                type: 'image',
+                                source: { type: 'base64', media_type: mediaType, data: base64 },
+                            },
+                            {
+                                type: 'text',
+                                text: `You are a payment verification assistant for a school payment system.
+
+Analyze this image and determine if it is a legitimate proof of payment or payment receipt.
+
+A valid proof of payment typically shows one or more of:
+- Bank transfer confirmation or transaction receipt
+- GCash / Maya / e-wallet transfer confirmation
+- Official OR (Official Receipt) from a school or business
+- Payment slip with amount, date, and reference number
+- Bank deposit slip
+- Credit/debit card transaction receipt
+
+An INVALID submission would be:
+- Anime or cartoon characters
+- Memes, screenshots of social media, or unrelated photos
+- Selfies, food photos, or any non-payment image
+- Blank images or test images
+
+Respond ONLY in this JSON format with no extra text:
+{"result": "valid" | "invalid" | "uncertain", "reason": "brief one-sentence explanation"}
+
+- "valid" = clearly a payment receipt/proof
+- "invalid" = clearly NOT a payment receipt (e.g. anime, meme, random photo)  
+- "uncertain" = could be a receipt but hard to tell (blurry, partial, etc.)`,
+                            },
+                        ],
+                    },
+                ],
+            }),
+        });
+
+        const data = await response.json();
+        const raw = data.content?.find((b: any) => b.type === 'text')?.text ?? '';
+
+        let parsed: { result: string; reason: string } | null = null;
+        try {
+            // Strip possible markdown fences
+            const clean = raw.replace(/```json|```/g, '').trim();
+            parsed = JSON.parse(clean);
+        } catch {
+            // If JSON parse fails, treat as uncertain
+        }
+
+        if (parsed?.result === 'valid') {
+            aiResult.value = 'valid';
+            aiMessage.value = parsed.reason ?? 'Image looks like a valid payment receipt.';
+        } else if (parsed?.result === 'invalid') {
+            aiResult.value = 'invalid';
+            aiMessage.value =
+                parsed.reason ??
+                'This image does not appear to be a payment receipt. Please upload the correct file.';
+            // Clear the file so the user must re-select
+            form.errors.proof_of_payment = aiMessage.value as any;
+        } else {
+            aiResult.value = 'uncertain';
+            aiMessage.value =
+                parsed?.reason ?? 'Could not fully verify this image. Make sure it clearly shows payment details.';
+        }
+    } catch {
+        // Network error or API unavailable — allow submission but note it
+        aiResult.value = 'uncertain';
+        aiMessage.value = 'Automatic verification unavailable. Our team will review your submission manually.';
+    } finally {
+        aiValidating.value = false;
+    }
+};
+
+const handleFileSelect = async (e: Event) => {
     const target = e.target as HTMLInputElement;
     const file = target.files?.[0];
 
@@ -41,10 +169,15 @@ const handleFileSelect = (e: Event) => {
         fileName.value = file.name;
         fileSize.value = file.size;
         form.errors.proof_of_payment = '';
+        // Reset previous AI result
+        aiResult.value = null;
+        aiMessage.value = null;
+        // Run AI validation immediately after selection
+        await validateWithAI(file);
     }
 };
 
-const handleDrop = (e: DragEvent) => {
+const handleDrop = async (e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
@@ -55,7 +188,7 @@ const handleDrop = (e: DragEvent) => {
             const dataTransfer = new DataTransfer();
             dataTransfer.items.add(file);
             input.files = dataTransfer.files;
-            handleFileSelect({ target: input } as any);
+            await handleFileSelect({ target: input } as any);
         }
     }
 };
@@ -63,6 +196,10 @@ const handleDrop = (e: DragEvent) => {
 const submit = () => {
     if (!form.proof_of_payment) {
         form.errors.proof_of_payment = ['Please select a file to upload.'];
+        return;
+    }
+    if (aiResult.value === 'invalid') {
+        form.errors.proof_of_payment = 'Please upload a valid proof of payment, not a random image.';
         return;
     }
 
@@ -80,7 +217,10 @@ const isValidFile = computed(() => {
 });
 
 const canSubmit = computed(() =>
-    isValidFile.value && !form.processing
+    isValidFile.value &&
+    !form.processing &&
+    !aiValidating.value &&
+    aiResult.value !== 'invalid',
 );
 </script>
 
@@ -202,6 +342,38 @@ const canSubmit = computed(() =>
                             </button>
                         </div>
 
+                        <!-- AI Validation: Loading -->
+                        <div v-if="aiValidating" class="flex items-center gap-3 p-4 bg-indigo-50 rounded-lg border border-indigo-200">
+                            <Loader2 :size="18" class="text-indigo-600 flex-shrink-0 animate-spin" />
+                            <p class="text-sm text-indigo-700 font-medium">Verifying your file, please wait…</p>
+                        </div>
+
+                        <!-- AI Validation: Valid -->
+                        <div v-else-if="aiResult === 'valid'" class="flex items-start gap-3 p-4 bg-green-50 rounded-lg border border-green-200">
+                            <ShieldCheck :size="18" class="text-green-600 flex-shrink-0 mt-0.5" />
+                            <p class="text-sm text-green-800">
+                                <strong>Verification passed.</strong> {{ aiMessage }}
+                            </p>
+                        </div>
+
+                        <!-- AI Validation: Invalid -->
+                        <div v-else-if="aiResult === 'invalid'" class="flex items-start gap-3 p-4 bg-red-50 rounded-lg border border-red-200">
+                            <ShieldX :size="18" class="text-red-600 flex-shrink-0 mt-0.5" />
+                            <div class="text-sm text-red-800">
+                                <p class="font-semibold">Invalid file detected.</p>
+                                <p class="mt-1">{{ aiMessage }}</p>
+                                <p class="mt-2 font-medium">Please upload your actual payment receipt or bank transfer confirmation.</p>
+                            </div>
+                        </div>
+
+                        <!-- AI Validation: Uncertain -->
+                        <div v-else-if="aiResult === 'uncertain'" class="flex items-start gap-3 p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                            <AlertCircle :size="18" class="text-yellow-600 flex-shrink-0 mt-0.5" />
+                            <p class="text-sm text-yellow-800">
+                                <strong>Note:</strong> {{ aiMessage }}
+                            </p>
+                        </div>
+
                         <!-- Validation Error -->
                         <div v-if="form.errors.proof_of_payment" class="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
                             {{ form.errors.proof_of_payment }}
@@ -231,6 +403,8 @@ const canSubmit = computed(() =>
                             class="w-full rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white shadow transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <span v-if="form.processing">Uploading…</span>
+                            <span v-else-if="aiValidating">Checking file…</span>
+                            <span v-else-if="aiResult === 'invalid'">Invalid File — Please Re-upload</span>
                             <span v-else>Submit for Verification</span>
                         </button>
                     </div>

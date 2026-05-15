@@ -815,6 +815,13 @@ const formatPaymentMethod = (m: string): string => {
     return labels[m?.toLowerCase()] ?? m ?? '—';
 };
 
+
+const paymentMethodBadgeClass = (method: string): string => {
+    const m = method?.toLowerCase();
+    if (m === 'cash') return 'rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 capitalize';
+    return 'rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 capitalize';
+};
+
 </script>
 
 <template>
@@ -1444,7 +1451,7 @@ const formatPaymentMethod = (m: string): string => {
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
                                         <span
-                                            class="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 capitalize"
+                                            :class="paymentMethodBadgeClass(payment.payment_method)"
                                             >{{ formatPaymentMethod(payment.payment_method) }}</span
                                         >
                                     </td>
@@ -1592,7 +1599,7 @@ const formatPaymentMethod = (m: string): string => {
                                             </p>
                                         </td>
                                         <td class="px-4 py-3 whitespace-nowrap">
-                                            <span class="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 capitalize">
+                                            <span :class="paymentMethodBadgeClass(t.payment_channel ?? '')">
                                                 {{ formatPaymentMethod(t.payment_channel ?? '') }}
                                             </span>
                                         </td>
