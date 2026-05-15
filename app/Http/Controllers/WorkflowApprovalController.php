@@ -79,12 +79,14 @@ class WorkflowApprovalController extends Controller
                 ->orderBy('due_date', 'asc')
                 ->get();
 
-            // Use url('/storage/...') instead of Storage::disk('public')->url()
-            // to guarantee the http:// scheme regardless of APP_URL formatting.
             $proofPath = $transaction->meta['proof_of_payment'] ?? null;
 
             if ($proofPath && Storage::disk('public')->exists($proofPath)) {
-                $proofUrl  = url('/storage/' . $proofPath);
+                // Route-based serving — no storage symlink required.
+                // Required for Hostinger shared hosting where storage:link
+                // either was not created or Apache blocks symlink traversal.
+                // PHP reads directly from storage/app/public/.
+                $proofUrl  = route('payment.proof.serve', $transaction->id);
                 $extension = strtolower(pathinfo($proofPath, PATHINFO_EXTENSION));
                 $proofType = $extension === 'pdf' ? 'pdf' : 'image';
             }

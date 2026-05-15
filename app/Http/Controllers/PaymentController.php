@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -660,6 +661,56 @@ class PaymentController extends Controller
 
         return redirect()->route('student.account', ['tab' => 'history'])
             ->with('flash.warning', 'Proof uploaded, but the accounting office could not be notified automatically. Please contact accounting and provide your reference: ' . $transaction->reference);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SERVE PROOF OF PAYMENT
+    //  Route-based file serving — no storage symlink required.
+    //  Shared hosting (Hostinger) either lacks a symlink or Apache blocks it.
+    //  This reads directly from storage/app/public via PHP.
+    //  ?dl=1  → forces browser download dialog
+    //  default → inline (for <img> src and PDF <iframe>)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function serveProof(Request $request, Transaction $transaction): \Symfony\Component\HttpFoundation\Response
+    {
+        $user = $request->user();
+
+        if (! in_array($user->role->value, ['accounting', 'admin'], true)) {
+            abort(403, 'Unauthorized.');
+        }
+
+        $proofPath = $transaction->meta['proof_of_payment'] ?? null;
+
+        if (! $proofPath) {
+            abort(404, 'No proof of payment on record for this transaction.');
+        }
+
+        if (! Storage::disk('public')->exists($proofPath)) {
+            abort(404, 'Proof file not found in storage.');
+        }
+
+        $filename  = basename($proofPath);
+        $extension = strtolower(pathinfo($proofPath, PATHINFO_EXTENSION));
+        $mimeType  = match ($extension) {
+            'pdf'         => 'application/pdf',
+            'png'         => 'image/png',
+            'webp'        => 'image/webp',
+            'jpg', 'jpeg' => 'image/jpeg',
+            default       => 'application/octet-stream',
+        };
+
+        $disposition = $request->query('dl') ? 'attachment' : 'inline';
+
+        return response(
+            Storage::disk('public')->get($proofPath),
+            200,
+            [
+                'Content-Type'        => $mimeType,
+                'Content-Disposition' => "{$disposition}; filename=\"{$filename}\"",
+                'Cache-Control'       => 'private, max-age=3600',
+            ]
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -217,6 +217,17 @@ Route::middleware(['auth', 'verified', 'role:accounting'])->group(function () {
     Route::post('/approvals/{approval}/reject', [WorkflowApprovalController::class, 'reject'])->name('approvals.reject');
 });
 
+// ============================================
+// PROOF OF PAYMENT — ROUTE-BASED FILE SERVING
+// No storage symlink required.
+// Hostinger shared hosting cannot reliably use /storage/ symlinks.
+// PHP serves the file directly from storage/app/public/.
+// ?dl=1 → browser download; default → inline (for <img> and <iframe>).
+// ============================================
+Route::middleware(['auth', 'verified', 'role:accounting,admin'])->group(function () {
+    Route::get('/payment/{transaction}/proof/serve', [PaymentController::class, 'serveProof'])->name('payment.proof.serve');
+});
+
 if (app()->environment(['local', 'staging'])) {
     Route::get('/test-resend', function () {
         \Illuminate\Support\Facades\Notification::route('mail', 'ryuzakikamisama@gmail.com')
