@@ -47,9 +47,11 @@ class StudentPaymentService
         }
 
         // TOTAL OUTSTANDING GUARD — one true ceiling.
+        // Filter by balance > 0 (not by status) because status can be stale.
+        // balance is always the authoritative remaining amount per term.
         $outstandingCents = MoneyService::sumFromDb(
             StudentPaymentTerm::where('student_assessment_id', $term->student_assessment_id)
-                ->whereIn('status', PaymentStatus::unpaidValues())
+                ->where('balance', '>', 0)
                 ->sum('balance')
         );
 
@@ -207,7 +209,7 @@ class StudentPaymentService
 
             $outstandingCents = MoneyService::sumFromDb(
                 StudentPaymentTerm::where('student_assessment_id', $term->student_assessment_id)
-                    ->whereIn('status', PaymentStatus::unpaidValues())
+                    ->where('balance', '>', 0)  // authoritative — status can be stale
                     ->lockForUpdate()
                     ->sum('balance')
             );
@@ -310,11 +312,13 @@ class StudentPaymentService
      */
     public function getTotalOutstandingBalance(User $user): float
     {
+        // Filter by balance > 0 (not by status) — balance is authoritative.
+        // status can be stale (e.g. paid status with remaining balance from old bugs).
         $cents = MoneyService::sumFromDb(
             StudentPaymentTerm::whereHas('assessment', function ($q) use ($user) {
                 $q->where('user_id', $user->id);
             })
-            ->whereIn('status', PaymentStatus::unpaidValues())
+            ->where('balance', '>', 0)
             ->sum('balance')
         );
 
@@ -349,7 +353,7 @@ class StudentPaymentService
         $remainingCents = $amountCents;
 
         $terms = StudentPaymentTerm::where('student_assessment_id', $startTerm->student_assessment_id)
-            ->whereIn('status', PaymentStatus::unpaidValues())
+            ->where('balance', '>', 0)  // authoritative filter — status can be stale
             ->where(function ($q) use ($startTerm) {
                 $q->where('id', $startTerm->id)
                   ->orWhere('term_order', '>', $startTerm->term_order);
@@ -422,9 +426,10 @@ class StudentPaymentService
                 return;
             }
 
+            // Trust balance, not status. status can be stale; balance is authoritative.
             $allPaid = $assessment->paymentTerms->isNotEmpty()
                 && $assessment->paymentTerms->every(
-                    fn ($t) => $t->status === PaymentStatus::PAID->value
+                    fn ($t) => (float) $t->balance === 0.0
                 );
 
             if (! $allPaid) {
@@ -491,15 +496,17 @@ class StudentPaymentService
 
     private function resolveNextSemesterLabel(string $yearLevel, string $semester): string
     {
+        // Keys use the short form stored in student_assessments.semester: '1st', '2nd'
+        // NOT the legacy '1st Sem', '2nd Sem' format.
         $progression = [
-            '1st Year|1st Sem' => '1st Year 2nd Sem',
-            '1st Year|2nd Sem' => '2nd Year 1st Sem',
-            '2nd Year|1st Sem' => '2nd Year 2nd Sem',
-            '2nd Year|2nd Sem' => '3rd Year 1st Sem',
-            '3rd Year|1st Sem' => '3rd Year 2nd Sem',
-            '3rd Year|2nd Sem' => '4th Year 1st Sem',
-            '4th Year|1st Sem' => '4th Year 2nd Sem',
-            '4th Year|2nd Sem' => 'graduation (program completed)',
+            '1st Year|1st' => '1st Year 2nd Semester',
+            '1st Year|2nd' => '2nd Year 1st Semester',
+            '2nd Year|1st' => '2nd Year 2nd Semester',
+            '2nd Year|2nd' => '3rd Year 1st Semester',
+            '3rd Year|1st' => '3rd Year 2nd Semester',
+            '3rd Year|2nd' => '4th Year 1st Semester',
+            '4th Year|1st' => '4th Year 2nd Semester',
+            '4th Year|2nd' => 'graduation (program completed)',
         ];
 
         return $progression["{$yearLevel}|{$semester}"] ?? 'next semester';

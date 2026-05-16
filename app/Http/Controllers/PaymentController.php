@@ -798,7 +798,10 @@ class PaymentController extends Controller
 
     private function getCurrentSemesterLabel(): string
     {
+        // Returns the short-form semester that matches student_assessments.semester
+        // and all FinancialReportsController queries: '1st' | '2nd'
+        // CCDI academic year starts June. Jun–Oct = 1st sem, Nov–May = 2nd sem.
         $month = now()->month;
-        return ($month >= 6 && $month <= 10) ? '1st Sem' : '2nd Sem';
+        return ($month >= 6 && $month <= 10) ? '1st' : '2nd';
     }
 }
