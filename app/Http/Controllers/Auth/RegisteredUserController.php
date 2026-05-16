@@ -81,34 +81,33 @@ class RegisteredUserController extends Controller
             'is_irregular'             => 'nullable|boolean',
         ]);
 
-        // Assemble address server-side
-        $address = collect([
-            $request->address_house_lot_unit,
-            $request->address_street_name,
-            $request->address_barangay,
-            $request->address_municipality_city,
-            $request->address_province,
-        ])->filter()->implode(', ');
-
         DB::beginTransaction();
         try {
             $accountId = $this->generateUniqueAccountId();
 
             $user = User::create([
-                'last_name'      => $request->last_name,
-                'first_name'     => $request->first_name,
-                'middle_initial' => $request->middle_initial,
-                'email'          => $request->email,
-                'password'       => Hash::make($request->password),
-                'birthday'       => $request->birthday,
-                'year_level'     => $request->year_level,
-                'course'         => $request->course,
-                'address'        => $address,
-                'phone'          => $request->phone,
-                'account_id'     => $accountId,
-                'is_irregular'   => (bool) ($request->is_irregular ?? false),
-                'status'         => User::STATUS_ACTIVE,
-                'role'           => 'student',
+                'last_name'                 => $request->last_name,
+                'first_name'                => $request->first_name,
+                'middle_initial'            => $request->middle_initial,
+                'email'                     => $request->email,
+                'password'                  => Hash::make($request->password),
+                'birthday'                  => $request->birthday,
+                'year_level'                => $request->year_level,
+                'course'                    => $request->course,
+                // Store each address component in its own column so the
+                // Settings page can read them back individually.
+                // The old single `address` column was dropped in migration
+                // 2026_05_11_000129_normalise_address_columns_on_users_table.
+                'address_house_lot_unit'    => $request->address_house_lot_unit,
+                'address_street_name'       => $request->address_street_name,
+                'address_barangay'          => $request->address_barangay,
+                'address_municipality_city' => $request->address_municipality_city,
+                'address_province'          => $request->address_province,
+                'phone'                     => $request->phone,
+                'account_id'                => $accountId,
+                'is_irregular'              => (bool) ($request->is_irregular ?? false),
+                'status'                    => User::STATUS_ACTIVE,
+                'role'                      => 'student',
             ]);
 
             Student::create([

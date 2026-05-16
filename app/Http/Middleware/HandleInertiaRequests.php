@@ -108,7 +108,6 @@ class HandleInertiaRequests extends Middleware
             'is_irregular'    => $user->is_irregular,
             'birthday'        => $user->birthday?->format('Y-m-d'),
             'phone'           => $user->phone,
-            'address'                   => $user->address,
             'address_house_lot_unit'    => $user->address_house_lot_unit,
             'address_street_name'       => $user->address_street_name,
             'address_barangay'          => $user->address_barangay,
