@@ -41,10 +41,6 @@ class StudentAccountController extends Controller
 
                 // Entrepreneurship fee has no dedicated column.
                 // Recover it: total − tuition − lab − misc.
-                // AssessmentService::compute() always stores:
-                //   total = tuition + lab_subjects_fee + entrep_fee + misc
-                //   lab_fee column = lab_subjects × ₱1,656 (NO entrep)
-                // So: entrep = total - tuition - lab - misc
                 $entrepFee = max(0.0, round(
                     (float) $a->total_assessment - $tuitionFee - $labFee - $miscFee,
                     2
@@ -53,26 +49,23 @@ class StudentAccountController extends Controller
                 $labAndEntrepFee = round($labFee + $entrepFee, 2);
 
                 return [
-                    'id'                => $a->id,
-                    'assessment_number' => $a->assessment_number,
-                    'year_level'        => $a->year_level,
-                    'semester'          => $a->semester,
-                    'school_year'       => $a->school_year,
-                    'course'            => $a->course ?? null,
-                    'total_assessment'  => (float) $a->total_assessment,
-                    'tuition_fee'       => $tuitionFee,
-                    'lab_fee'           => $labAndEntrepFee,   // lab + entrep combined
-                    'misc_fee'          => $miscFee,
-                    'other_fees'        => round($labAndEntrepFee + $miscFee, 2),
-                    'lec_units'         => (float) $a->lec_units,
-                    'nstp_lec_units'    => (float) ($a->nstp_lec_units ?? 0),
-                    'lab_units'         => (int) $a->lab_units,
-                    'lab_subjects'      => (int) $a->lab_subjects,
+                    'id'                   => $a->id,
+                    'assessment_number'    => $a->assessment_number,
+                    'year_level'           => $a->year_level,
+                    'semester'             => $a->semester,
+                    'school_year'          => $a->school_year,
+                    'course'               => $a->course ?? null,
+                    'total_assessment'     => (float) $a->total_assessment,
+                    'tuition_fee'          => $tuitionFee,
+                    'lab_fee'              => $labAndEntrepFee,
+                    'misc_fee'             => $miscFee,
+                    'other_fees'           => round($labAndEntrepFee + $miscFee, 2),
+                    'lec_units'            => (float) $a->lec_units,
+                    'nstp_lec_units'       => (float) ($a->nstp_lec_units ?? 0),
+                    'lab_units'            => (int) $a->lab_units,
+                    'lab_subjects'         => (int) $a->lab_subjects,
                     'entrepreneurship_fee' => $entrepFee,
 
-                    // ── Fee Breakdown ─────────────────────────────────────────────
-                    // All values are read from STORED assessment columns.
-                    // This guarantees historical accuracy when fee_settings change.
                     'fee_breakdown' => [
                         [
                             'category' => 'Tuition',
@@ -86,7 +79,7 @@ class StudentAccountController extends Controller
                             'name'     => 'Laboratory Fee',
                             'code'     => 'LAB',
                             'units'    => (int) ($a->lab_subjects ?? $a->lab_units),
-                            'amount'   => $labAndEntrepFee,  // lab subjects + ₱600 entrep
+                            'amount'   => $labAndEntrepFee,
                         ],
                         [
                             'category' => 'Miscellaneous',
@@ -96,8 +89,8 @@ class StudentAccountController extends Controller
                             'amount'   => $miscFee,
                         ],
                     ],
-                    'status'     => $a->status,
-                    'created_at' => $a->created_at,
+                    'status'       => $a->status,
+                    'created_at'   => $a->created_at,
                     'paymentTerms' => $a->paymentTerms->map(fn ($t) => [
                         'id'         => $t->id,
                         'term_name'  => $t->term_name,
@@ -141,18 +134,21 @@ class StudentAccountController extends Controller
             ])
             ->values();
 
-        $notifications = Notification::where('is_active', true)
-            ->whereNull('dismissed_at')
-            ->where(function ($q) use ($user) {
-                $q->where('user_id', $user->id)
-                  ->orWhere(function ($q2) {
-                      $q2->whereNull('user_id')
-                         ->whereNull('user_ids')
-                         ->where('target_role', 'student');
-                  })
-                  ->orWhereRaw('JSON_CONTAINS(user_ids, JSON_ARRAY(?))', [$user->id]);
-            })
-            ->get();
+        // ── BUG FIX #2: Apply all required notification scopes consistently ──
+        // Previously this used a raw manual query that skipped:
+        //   - withinDateRange() → students saw expired notifications
+        //   - forDueDateTrigger() → students saw premature trigger-based notifications
+        //   - forBalance() → balance_filter was not respected
+        // Now we use the same scope chain as StudentDashboardController.
+        $notifications = Notification::active()
+            ->forUser($user->id)
+            ->withinDateRange()
+            ->forDueDateTrigger($user)
+            ->forBalance($user)
+            ->orderByDesc('created_at')
+            ->take(10)
+            ->get()
+            ->values();
 
         $assessmentTermIndex = $allAssessments->keyBy(
             fn ($a) => $a['school_year'] . '||' . $a['semester']
@@ -165,9 +161,11 @@ class StudentAccountController extends Controller
         $enrolledSubjectsByAssessment = [];
         foreach ($enrollmentRows as $row) {
             $termKey = $row->school_year . '||' . $row->semester;
-            if (!isset($assessmentTermIndex[$termKey])) continue;
+            if (! isset($assessmentTermIndex[$termKey])) {
+                continue;
+            }
             $assessmentId = $assessmentTermIndex[$termKey]['id'];
-            if (!isset($enrolledSubjectsByAssessment[$assessmentId])) {
+            if (! isset($enrolledSubjectsByAssessment[$assessmentId])) {
                 $enrolledSubjectsByAssessment[$assessmentId] = [];
             }
             $enrolledSubjectsByAssessment[$assessmentId][] = (int) $row->subject_id;
@@ -188,7 +186,7 @@ class StudentAccountController extends Controller
             ) : null,
             'allAssessments'               => $allAssessments,
             'paymentTerms'                 => $paymentTerms->values(),
-            'notifications'                => $notifications->values(),
+            'notifications'                => $notifications,
             'pendingApprovalPayments'      => $pendingApprovalPayments,
             'enrolledSubjectsByAssessment' => $enrolledSubjectsByAssessment,
         ]);
