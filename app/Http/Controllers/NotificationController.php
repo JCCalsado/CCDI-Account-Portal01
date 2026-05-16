@@ -19,10 +19,6 @@ use Inertia\Inertia;
 
 class NotificationController extends Controller
 {
-    /**
-     * List of valid course names in the system.
-     * Duplicated here for validation; consider moving to config/constants.php.
-     */
     private const COURSES = [
         'BS Information Technology',
         'BS Computer Science',
@@ -45,7 +41,6 @@ class NotificationController extends Controller
         $user = $request->user();
 
         if ($user->isAdmin() || $user->isAccounting()) {
-            // Paginated — returns {data, links, meta} to the frontend.
             $paginated = Notification::orderByDesc('created_at')
                 ->paginate(20)
                 ->through(fn ($n) => $this->mapNotificationForAdmin($n));
@@ -67,10 +62,13 @@ class NotificationController extends Controller
     {
         $user = $request->user();
 
+        // FIX #2: forCourseYearLevel() scope applied so course_filter and
+        // year_level_filter columns actually restrict student visibility.
         $active = Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
             ->forDueDateTrigger($user)
+            ->forCourseYearLevel($user)
             ->forBalance($user)
             ->orderByDesc('created_at')
             ->get()
@@ -91,10 +89,13 @@ class NotificationController extends Controller
             ->get()
             ->map(fn ($n) => $this->mapNotification($n));
 
+        // FIX #2: forCourseYearLevel() applied here too — mark-as-read must
+        // only touch records this student is actually allowed to see.
         Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
             ->forDueDateTrigger($user)
+            ->forCourseYearLevel($user)
             ->whereNull('read_at')
             ->update(['read_at' => now()]);
 
@@ -110,10 +111,12 @@ class NotificationController extends Controller
     {
         $user = $request->user();
 
+        // FIX #2: forCourseYearLevel() applied here as well.
         Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
             ->forDueDateTrigger($user)
+            ->forCourseYearLevel($user)
             ->whereNull('read_at')
             ->update(['read_at' => now()]);
 
@@ -146,7 +149,6 @@ class NotificationController extends Controller
             Notification::create($validated);
         });
 
-        // Only dispatch emails when the notification is being published (active).
         if ($validated['notification_status'] === 'active') {
             $this->syncDueDateToPaymentTerms($validated);
             $this->dispatchNotificationEmails($validated);
@@ -255,7 +257,7 @@ class NotificationController extends Controller
             $actionLabel = null;
             $type        = $data['type'] ?? 'general';
 
-            if (in_array($type, ['payment_due', 'payment_due_notice', 'deadline'], true)) {
+            if (in_array($type, Notification::DUE_DATE_TYPES, true)) {
                 $actionUrl   = route('student.account', ['tab' => 'payment']);
                 $actionLabel = 'View Payment Details';
             }
@@ -306,7 +308,7 @@ class NotificationController extends Controller
     }
 
     /**
-     * Resolve email recipients with audience filter support.
+     * Resolve email recipients.
      *
      * Priority chain:
      *   1. user_ids (explicit multi-student)
@@ -315,14 +317,12 @@ class NotificationController extends Controller
      */
     private function resolveEmailRecipients(array $data): \Illuminate\Database\Eloquent\Collection
     {
-        // 1. Explicit multi-student list — no further filtering needed.
         if (! empty($data['user_ids']) && is_array($data['user_ids'])) {
             return User::whereIn('id', $data['user_ids'])
                 ->whereNotNull('email')
                 ->get();
         }
 
-        // 2. Single user.
         if (! empty($data['user_id'])) {
             return User::where('id', $data['user_id'])
                 ->whereNotNull('email')
@@ -331,19 +331,16 @@ class NotificationController extends Controller
 
         $role = $data['target_role'] ?? null;
 
-        // 3a. All users.
         if ($role === 'all') {
             $query = User::whereNotNull('email')->where('is_active', true);
             return $this->applyAudienceFilters($query, $data)->get();
         }
 
-        // 3b. Role-specific.
         if (in_array($role, ['student', 'accounting', 'admin'], true)) {
             $query = User::where('role', $role)
                 ->whereNotNull('email')
                 ->where('is_active', true);
 
-            // Audience filters only make sense for students.
             if ($role === 'student') {
                 $query = $this->applyAudienceFilters($query, $data);
             }
@@ -354,16 +351,12 @@ class NotificationController extends Controller
         return collect();
     }
 
-    /**
-     * Apply course, year-level, and balance filters to a User query builder.
-     * Joins through student_assessments for course/year_level matching.
-     */
     private function applyAudienceFilters(Builder $query, array $data): Builder
     {
-        $courseFilter    = array_filter((array) ($data['course_filter']    ?? []));
-        $yearFilter      = array_filter((array) ($data['year_level_filter'] ?? []));
-        $balanceFilter   = $data['balance_filter'] ?? 'any';
-        $today           = now()->toDateString();
+        $courseFilter  = array_filter((array) ($data['course_filter']    ?? []));
+        $yearFilter    = array_filter((array) ($data['year_level_filter'] ?? []));
+        $balanceFilter = $data['balance_filter'] ?? 'any';
+        $today         = now()->toDateString();
 
         $needsAssessmentJoin = ! empty($courseFilter) || ! empty($yearFilter)
                             || in_array($balanceFilter, ['with_balance', 'overdue'], true);
@@ -372,7 +365,6 @@ class NotificationController extends Controller
             return $query;
         }
 
-        // Join student_assessments to apply course/year_level filters.
         $query->whereExists(function ($sub) use ($courseFilter, $yearFilter, $balanceFilter, $today) {
             $sub->from('student_assessments')
                 ->whereColumn('student_assessments.user_id', 'users.id')
@@ -410,21 +402,9 @@ class NotificationController extends Controller
     // Due Date Sync
     // =========================================================================
 
-    /**
-     * Sync due_date to student_payment_terms when a notification of a
-     * due-date type is saved.
-     *
-     * Fires for: payment_due, payment_due_notice, deadline.
-     * Priority: term_ids > payment_term_id > target_term_name scoped to audience.
-     *
-     * RISK: broad updates are possible with course/year_level filters.
-     * Guard: at least one scoping constraint must be set for course/year broadcasts.
-     */
     private function syncDueDateToPaymentTerms(array $data): void
     {
-        $dueDateTypes = ['payment_due', 'payment_due_notice', 'deadline'];
-
-        if (! in_array($data['type'] ?? '', $dueDateTypes, true)) {
+        if (! in_array($data['type'] ?? '', Notification::DUE_DATE_TYPES, true)) {
             return;
         }
 
@@ -434,21 +414,18 @@ class NotificationController extends Controller
         }
 
         try {
-            // 1. Explicit term ID list — highest priority.
             if (! empty($data['term_ids'])) {
                 StudentPaymentTerm::whereIn('id', $data['term_ids'])
                     ->update(['due_date' => $dueDate]);
                 return;
             }
 
-            // 2. Single payment term.
             if (! empty($data['payment_term_id'])) {
                 StudentPaymentTerm::where('id', $data['payment_term_id'])
                     ->update(['due_date' => $dueDate]);
                 return;
             }
 
-            // 3. Term name scoped to audience.
             if (! empty($data['target_term_name'])) {
                 $this->syncByTermName($dueDate, $data);
             }
@@ -462,11 +439,11 @@ class NotificationController extends Controller
 
     private function syncByTermName(string $dueDate, array $data): void
     {
-        $courseFilter  = array_filter((array) ($data['course_filter']    ?? []));
-        $yearFilter    = array_filter((array) ($data['year_level_filter'] ?? []));
-        $termName      = $data['target_term_name'];
+        $courseFilter = array_filter((array) ($data['course_filter']    ?? []));
+        $yearFilter   = array_filter((array) ($data['year_level_filter'] ?? []));
+        $termName     = $data['target_term_name'];
 
-        // If course/year filters are set, scope through student_assessments.
+        // Course/year-level scoped update — safe because audience is bounded.
         if (! empty($courseFilter) || ! empty($yearFilter)) {
             $assessmentIds = StudentAssessment::query()
                 ->when(! empty($courseFilter), fn ($q) => $q->whereIn('course', $courseFilter))
@@ -484,16 +461,29 @@ class NotificationController extends Controller
             return;
         }
 
-        // Scope to specific users if provided.
+        // Single user or multi-user scope — safe because audience is bounded.
         $query = StudentPaymentTerm::where('term_name', $termName);
 
         if (! empty($data['user_id'])) {
             $query->whereHas('studentAssessment', fn ($q) => $q->where('user_id', $data['user_id']));
-        } elseif (! empty($data['user_ids'])) {
-            $query->whereHas('studentAssessment', fn ($q) => $q->whereIn('user_id', $data['user_ids']));
+            $query->update(['due_date' => $dueDate]);
+            return;
         }
 
-        $query->update(['due_date' => $dueDate]);
+        if (! empty($data['user_ids'])) {
+            $query->whereHas('studentAssessment', fn ($q) => $q->whereIn('user_id', $data['user_ids']));
+            $query->update(['due_date' => $dueDate]);
+            return;
+        }
+
+        // FIX #6: No user or audience scope provided — a fully unbounded UPDATE
+        // on term_name alone would overwrite due_date for every student in the
+        // system. Refuse and log instead of silently mass-mutating data.
+        Log::warning('NotificationController: syncByTermName aborted — no user or audience scope set. ' .
+                     'Provide user_id, user_ids, course_filter, or year_level_filter to enable due_date sync.', [
+            'term_name' => $termName,
+            'due_date'  => $dueDate,
+        ]);
     }
 
     // =========================================================================
@@ -502,12 +492,13 @@ class NotificationController extends Controller
 
     /**
      * Prepare validated data before persistence:
-     *   - Derive is_active / is_complete from notification_status
+     *   - Derive is_active / is_complete from notification_status (FIX #1)
      *   - Normalise nulls for empty arrays/strings
      *   - Resolve user targeting priority
      */
     private function prepareValidatedData(array $data): array
     {
+        // FIX #1: deriveActiveFlagsFromStatus() now exists on the model.
         // Derive boolean flags from notification_status so they stay in sync.
         $data = array_merge($data, Notification::deriveActiveFlagsFromStatus(
             $data['notification_status'] ?? 'draft'
@@ -604,10 +595,24 @@ class NotificationController extends Controller
             ]);
     }
 
-    private function resolvePaymentTermsList(): \Illuminate\Database\Eloquent\Collection
+    /**
+     * FIX #5: Return truly distinct term names, not one row per student's term.
+     *
+     * The original query used distinct() with id selected — since id is always
+     * unique, DISTINCT had no effect and returned every payment term row in the
+     * system (potentially hundreds). This returns a short, unique list of term
+     * names that Accounting can select in the dropdown.
+     */
+    private function resolvePaymentTermsList(): \Illuminate\Support\Collection
     {
-        return StudentPaymentTerm::distinct()
+        return StudentPaymentTerm::select('term_name', 'term_order')
+            ->distinct()
             ->orderBy('term_order')
-            ->get(['id', 'term_name', 'term_order']);
+            ->get()
+            ->map(fn ($t) => [
+                'id'         => null,
+                'term_name'  => $t->term_name,
+                'term_order' => $t->term_order,
+            ]);
     }
 }

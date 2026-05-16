@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\DB;
  *   expired    → is_active = false, is_complete = true
  *
  * The legacy `is_active` and `is_complete` booleans are kept in sync by
- * NotificationController::deriveStatusFields() whenever a notification is
+ * Notification::deriveActiveFlagsFromStatus() whenever a notification is
  * saved. They remain the authoritative signal for all student-facing scopes
  * (scopeActive, scopeForUser, etc.) so existing listeners and commands are
  * not broken.
@@ -245,8 +245,6 @@ class Notification extends Model
      *
      * NULL or empty JSON arrays mean "no restriction" — the notification
      * is visible to students regardless of their course or year level.
-     *
-     * Uses JSON_CONTAINS (MySQL) or json_each (SQLite) for array membership.
      */
     public function scopeForCourseYearLevel($query, User $user)
     {
@@ -258,7 +256,6 @@ class Notification extends Model
             $q->where(function ($qc) use ($user, $driver, $table) {
                 $qc->whereNull("{$table}.course_filter")
                    ->orWhere(function ($qcEmpty) use ($table) {
-                       // Treat empty JSON array as "no restriction"
                        $qcEmpty->whereRaw("JSON_LENGTH({$table}.course_filter) = 0");
                    })
                    ->orWhereExists(function ($sub) use ($user, $driver, $table) {
@@ -316,12 +313,10 @@ class Notification extends Model
         $today = now()->toDateString();
 
         return $query->where(function ($q) use ($user, $table, $today) {
-            // NULL or 'any' → no restriction
             $q->where(function ($anyGroup) use ($table) {
                   $anyGroup->whereNull("{$table}.balance_filter")
                            ->orWhere("{$table}.balance_filter", 'any');
               })
-              // with_balance
               ->orWhere(function ($withBal) use ($user, $table) {
                   $withBal->where("{$table}.balance_filter", 'with_balance')
                           ->whereExists(function ($sub) use ($user) {
@@ -331,7 +326,6 @@ class Notification extends Model
                                   ->where('student_payment_terms.balance', '>', 0);
                           });
               })
-              // overdue: balance > 0 AND due_date is in the past
               ->orWhere(function ($overdue) use ($user, $table, $today) {
                   $overdue->where("{$table}.balance_filter", 'overdue')
                           ->whereExists(function ($sub) use ($user, $today) {
@@ -347,6 +341,28 @@ class Notification extends Model
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Derive is_active and is_complete boolean flags from a notification_status string.
+     *
+     * This is the single source of truth for the status → boolean mapping.
+     * Call whenever notification_status is written to the database so the
+     * legacy boolean columns stay in sync with the new status field.
+     *
+     * Mapping:
+     *   draft     → is_active: false, is_complete: false
+     *   scheduled → is_active: false, is_complete: false  (Kernel activates on start_date)
+     *   active    → is_active: true,  is_complete: false
+     *   expired   → is_active: false, is_complete: true
+     */
+    public static function deriveActiveFlagsFromStatus(string $status): array
+    {
+        return match ($status) {
+            'active'  => ['is_active' => true,  'is_complete' => false],
+            'expired' => ['is_active' => false, 'is_complete' => true],
+            default   => ['is_active' => false, 'is_complete' => false], // draft, scheduled
+        };
+    }
 
     public function isCurrentlyActive(): bool
     {

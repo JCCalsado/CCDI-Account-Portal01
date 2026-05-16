@@ -7,7 +7,18 @@ import {
 } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 
-type NotificationType = 'general' | 'payment_due' | 'payment_approved' | 'payment_rejected' | null;
+// FIX #3: Expanded type list to include all types the backend can produce.
+type NotificationType =
+    | 'general'
+    | 'reminder'
+    | 'warning'
+    | 'announcement'
+    | 'deadline'
+    | 'payment_due'
+    | 'payment_due_notice'
+    | 'payment_approved'
+    | 'payment_rejected'
+    | null;
 
 type Notification = {
     id: number;
@@ -31,8 +42,6 @@ const props = defineProps<{
 }>();
 
 // ── Optimistic dismiss ────────────────────────────────────────────────────
-// Track locally dismissed IDs so the card disappears instantly without
-// waiting for the Inertia round-trip.
 const locallyDismissed = ref<Set<number>>(new Set());
 const dismissForm       = useForm({});
 
@@ -41,7 +50,6 @@ function dismiss(id: number) {
     dismissForm.post(route('notifications.dismiss', id), {
         preserveScroll: true,
         onError: () => {
-            // Roll back optimistic update on failure
             const s = new Set(locallyDismissed.value);
             s.delete(id);
             locallyDismissed.value = s;
@@ -49,7 +57,6 @@ function dismiss(id: number) {
     });
 }
 
-// Mark all read via Inertia POST
 function markAllRead() {
     router.post(route('student.notifications.mark-all-read'), {}, { preserveScroll: true });
 }
@@ -110,6 +117,11 @@ const dueDaysClass = (dueDateStr: string | null): string => {
 };
 
 // ── Type config ───────────────────────────────────────────────────────────
+// FIX #3: All notification types the backend can produce now have an entry.
+// Previously only 4 of 9 types were defined; payment_due_notice, deadline,
+// warning, reminder, and announcement all fell through to the generic blue
+// "Announcement" card, losing their visual urgency and hiding the due-date
+// banner and Pay Now button.
 const typeConfig: Record<string, {
     label: string;
     icon: any;
@@ -123,6 +135,41 @@ const typeConfig: Record<string, {
         cardClass: 'border-amber-200 bg-amber-50',
         badgeClass:'bg-amber-100 text-amber-800',
         iconClass: 'text-amber-600',
+    },
+    payment_due_notice: {
+        label:     'Payment Notice',
+        icon:      CalendarClock,
+        cardClass: 'border-amber-200 bg-amber-50',
+        badgeClass:'bg-amber-100 text-amber-800',
+        iconClass: 'text-amber-600',
+    },
+    deadline: {
+        label:     'Deadline',
+        icon:      AlertCircle,
+        cardClass: 'border-red-200 bg-red-50',
+        badgeClass:'bg-red-100 text-red-800',
+        iconClass: 'text-red-600',
+    },
+    warning: {
+        label:     'Warning',
+        icon:      AlertCircle,
+        cardClass: 'border-orange-200 bg-orange-50',
+        badgeClass:'bg-orange-100 text-orange-800',
+        iconClass: 'text-orange-600',
+    },
+    reminder: {
+        label:     'Reminder',
+        icon:      Bell,
+        cardClass: 'border-blue-200 bg-blue-50',
+        badgeClass:'bg-blue-100 text-blue-800',
+        iconClass: 'text-blue-600',
+    },
+    announcement: {
+        label:     'Announcement',
+        icon:      Megaphone,
+        cardClass: 'border-blue-200 bg-blue-50',
+        badgeClass:'bg-blue-100 text-blue-800',
+        iconClass: 'text-blue-600',
     },
     payment_approved: {
         label:     'Payment Approved',
@@ -151,6 +198,16 @@ function cfg(type: NotificationType) {
     return typeConfig[type ?? 'general'] ?? typeConfig.general;
 }
 
+// FIX #3: All types that carry a due date — used for the urgency banner and
+// "Pay Now" button guards in the template. Previously both guards were hard-
+// coded to check `=== 'payment_due'` only, hiding the countdown and button
+// for payment_due_notice and deadline notifications.
+const DUE_DATE_TYPES: NotificationType[] = ['payment_due', 'payment_due_notice', 'deadline'];
+
+function hasDueDate(type: NotificationType): boolean {
+    return DUE_DATE_TYPES.includes(type);
+}
+
 const totalCount = computed(() => props.active.length + props.history.length);
 const hasUnread  = computed(() => visibleActive.value.length > 0);
 </script>
@@ -174,7 +231,6 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
                     </div>
                 </div>
 
-                <!-- Mark all read (only shown when there are active notifications) -->
                 <button
                     v-if="hasUnread"
                     @click="markAllRead"
@@ -186,7 +242,6 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
 
             <!-- ── ACTIVE ─────────────────────────────────────────────────── -->
             <section class="mb-8">
-                <!-- Transition group for smooth dismiss animation -->
                 <TransitionGroup
                     name="notification"
                     tag="div"
@@ -226,8 +281,9 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
                         </p>
 
                         <!-- Due date urgency banner -->
+                        <!-- FIX #3: was n.type === 'payment_due' — now covers all due-date types -->
                         <div
-                            v-if="n.due_date && n.type === 'payment_due'"
+                            v-if="n.due_date && hasDueDate(n.type)"
                             class="mb-4 pl-8"
                         >
                             <span :class="['text-sm flex items-center gap-1.5', dueDaysClass(n.due_date)]">
@@ -249,8 +305,9 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
                             </div>
 
                             <div class="flex items-center gap-2">
+                                <!-- FIX #3: was n.type === 'payment_due' — now covers all due-date types -->
                                 <a
-                                    v-if="n.type === 'payment_due' && n.payment_term_id"
+                                    v-if="hasDueDate(n.type) && n.payment_term_id"
                                     :href="route('student.account')"
                                     class="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
                                 >
@@ -317,9 +374,7 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
                             />
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-center gap-2 flex-wrap mb-0.5">
-                                    <span
-                                        class="inline-block rounded-md bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-600"
-                                    >
+                                    <span class="inline-block rounded-md bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-600">
                                         {{ cfg(n.type).label }}
                                     </span>
                                     <span v-if="n.dismissed_at" class="text-xs text-gray-400">dismissed</span>
@@ -376,7 +431,6 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
 </template>
 
 <style scoped>
-/* Smooth slide + fade for dismiss */
 .notification-enter-active,
 .notification-leave-active {
     transition: all 0.3s ease;
