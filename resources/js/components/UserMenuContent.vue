@@ -2,7 +2,7 @@
 import UserInfo from '@/components/UserInfo.vue';
 import { DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import type { StudentUser, User } from '@/types';
-import { Link, useForm } from '@inertiajs/vue3';
+import { Link, useForm, router } from '@inertiajs/vue3';
 import { LogOut, Settings } from 'lucide-vue-next';
 
 interface Props {
@@ -14,7 +14,13 @@ defineProps<Props>();
 const logoutForm = useForm({});
 
 const handleLogout = () => {
-    logoutForm.post(route('logout'));
+    logoutForm.post(route('logout'), {
+        onError: () => {
+            // 419 CSRF token mismatch — session has expired.
+            // Redirect to login so the user gets a fresh session + new CSRF token.
+            window.location.href = '/login';
+        },
+    });
 };
 </script>
 

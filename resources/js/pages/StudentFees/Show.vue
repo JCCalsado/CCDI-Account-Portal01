@@ -1490,9 +1490,13 @@ const paymentMethodBadgeClass = (method: string): string => {
                                         {{ formatDateShort(payment.paid_at) }}
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
-                                        <span class="font-mono text-xs text-gray-700">{{ payment.or_number ?? '—' }}</span>
+                                        <span class="font-mono text-xs text-gray-700">
+                                            {{ payment.payment_method?.toLowerCase() === 'cash'
+                                                ? (payment.or_number ?? '—')
+                                                : (payment.system_reference ?? '—') }}
+                                        </span>
                                         <p class="mt-0.5 text-xs text-gray-400">
-                                            {{ payment.payment_method?.toLowerCase() === 'bank_transfer' ? 'Ref No.' : 'OR No.' }}
+                                            {{ payment.payment_method?.toLowerCase() === 'cash' ? 'OR No.' : 'Ref No.' }}
                                         </p>
                                     </td>
                                     <td class="px-6 py-3 whitespace-nowrap">
@@ -1639,9 +1643,11 @@ const paymentMethodBadgeClass = (method: string): string => {
                                             {{ formatDateShort(t.created_at) }}
                                         </td>
                                         <td class="px-4 py-3 font-mono text-xs text-gray-700 whitespace-nowrap">
-                                            {{ t.or_number ?? t.meta?.reference_number ?? '—' }}
+                                            {{ (t.payment_channel ?? '').toLowerCase() === 'cash'
+                                                ? (t.or_number ?? '—')
+                                                : (t.reference ?? '—') }}
                                             <p class="mt-0.5 font-sans text-xs text-gray-400">
-                                                {{ (t.payment_channel ?? '').toLowerCase() === 'bank_transfer' ? 'Ref No.' : 'OR No.' }}
+                                                {{ (t.payment_channel ?? '').toLowerCase() === 'cash' ? 'OR No.' : 'Ref No.' }}
                                             </p>
                                         </td>
                                         <td class="px-4 py-3 whitespace-nowrap">

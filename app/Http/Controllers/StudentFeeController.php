@@ -501,11 +501,16 @@ class StudentFeeController extends Controller
                 ->orderByDesc('created_at')
                 ->get()
                 ->map(function ($p) use ($btTransactionsByAssessment) {
-                    $orNumber = $p->or_number;
-                    if (! $orNumber && $p->payment_method === 'bank_transfer') {
-                        $key      = (string) $p->student_assessment_id;
-                        $orNumber = ($btTransactionsByAssessment[$key] ?? collect())
-                            ->map(fn ($t) => $t->meta['reference_number'] ?? null)
+                    // system_reference: the system-generated reference (e.g. BT-XXXX) from the
+                    // matching Transaction record. This is what should appear in the OR/Ref No.
+                    // column for non-cash payments. It is DIFFERENT from meta['reference_number']
+                    // which is the student's own bank slip number — that is proof of payment, not
+                    // a system identifier.
+                    $systemReference = null;
+                    if ($p->payment_method !== 'cash') {
+                        $key             = (string) $p->student_assessment_id;
+                        $systemReference = ($btTransactionsByAssessment[$key] ?? collect())
+                            ->map(fn ($t) => $t->reference ?? null)
                             ->filter()
                             ->first();
                     }
@@ -515,7 +520,10 @@ class StudentFeeController extends Controller
                         'assessment_id'    => $p->student_assessment_id,
                         'amount'           => (float) $p->amount,
                         'payment_method'   => $p->payment_method,
-                        'or_number'        => $orNumber,
+                        // or_number: only meaningful for cash payments
+                        'or_number'        => $p->payment_method === 'cash' ? $p->or_number : null,
+                        // system_reference: system-generated reference for bank/online payments
+                        'system_reference' => $systemReference,
                         'description'      => $p->description ?? 'Payment',
                         'status'           => $p->status,
                         'paid_at'          => $p->created_at?->toDateString(),

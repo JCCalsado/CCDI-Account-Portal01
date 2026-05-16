@@ -345,6 +345,28 @@ const formatPaymentMethod = (m: string): string => {
     };
     return labels[m?.toLowerCase()] ?? m ?? '—';
 };
+
+/**
+ * Returns the correct identifier to display in the OR / Ref No. column.
+ *
+ * Rule:
+ *   - Cash payments  → OR number (issued by accounting office)
+ *   - All other methods (bank_transfer, gcash, online) → system-generated reference (e.g. BT-XXXX)
+ *     The meta.reference_number is the student's own bank slip number — NOT a system identifier.
+ */
+const displayRefNumber = (t: Transaction): string => {
+    const channel = (t.payment_channel ?? '').toLowerCase();
+    if (channel === 'cash') {
+        return t.or_number ?? '—';
+    }
+    // For bank_transfer, gcash, online payments — show the system reference
+    return t.reference ?? '—';
+};
+
+const displayRefLabel = (t: Transaction): string => {
+    const channel = (t.payment_channel ?? '').toLowerCase();
+    return channel === 'cash' ? 'OR No.' : 'Ref No.';
+};
 </script>
 
 <template>
@@ -481,10 +503,10 @@ const formatPaymentMethod = (m: string): string => {
                                 <tr v-for="t in transactions" :key="t.id" class="border-b transition-colors hover:bg-gray-50">
                                     <td class="p-3 font-mono text-xs">
                                         <p class="font-medium text-gray-800">
-                                            {{ t.or_number ?? t.meta?.reference_number ?? '—' }}
+                                            {{ displayRefNumber(t) }}
                                         </p>
                                         <p class="mt-0.5 font-sans text-xs text-gray-400">
-                                            {{ (t.payment_channel ?? '').toLowerCase() === 'bank_transfer' ? 'Ref No.' : 'OR No.' }}
+                                            {{ displayRefLabel(t) }}
                                         </p>
                                     </td>
                                     <td v-if="isStaff" class="p-3 text-sm">
@@ -730,8 +752,8 @@ const formatPaymentMethod = (m: string): string => {
                             <h3 class="mb-3 border-b pb-2 text-base font-semibold">Basic Information</h3>
                             <div class="grid grid-cols-2 gap-3">
                                 <div v-if="selectedTransaction.kind === 'payment'">
-                                    <p class="text-xs text-gray-500">OR Number</p>
-                                    <p class="font-mono text-sm font-medium">{{ selectedTransaction.or_number ?? '—' }}</p>
+                                    <p class="text-xs text-gray-500">{{ displayRefLabel(selectedTransaction) }}</p>
+                                    <p class="font-mono text-sm font-medium">{{ displayRefNumber(selectedTransaction) }}</p>
                                 </div>
                                 <div>
                                     <p class="text-xs text-gray-500">Date</p>
