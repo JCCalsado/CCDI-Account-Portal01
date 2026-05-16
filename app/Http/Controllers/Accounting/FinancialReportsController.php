@@ -16,10 +16,38 @@ class FinancialReportsController extends Controller
     // Statuses that represent money still owed
     private const UNPAID_STATUSES = ['unpaid', 'pending', 'partial', 'overdue'];
 
+    // ─── Academic year helper ─────────────────────────────────────────────────
+    //
+    // DB shows 2026-2027 is the active year as of May 2026.
+    // CCDI academic year starts June (month 6).
+    // Before June → prior academic year. June onwards → current academic year.
+    //
+    private function currentAcademicYear(): string
+    {
+        $now   = now();
+        $year  = (int) $now->format('Y');
+        $month = (int) $now->format('n');
+
+        // Before June → still in the previous academic year start
+        $startYear = $month < 6 ? $year - 1 : $year;
+
+        return $startYear . '-' . ($startYear + 1);
+    }
+
+    // ─── Semester values as stored in DB ─────────────────────────────────────
+    //
+    // DB stores '1st', '2nd', 'Summer' — NOT '1st Sem', '2nd Sem'.
+    // All semester values passed to queries must use these short forms.
+    //
+    private function semesterOptions(): array
+    {
+        return ['1st', '2nd', 'Summer'];
+    }
+
     public function index(Request $request)
     {
-        $schoolYear = $request->get('school_year', now()->year . '-' . (now()->year + 1));
-        $semester   = $request->get('semester', '1st Sem');
+        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
+        $semester   = $request->get('semester', '1st');
         $year       = (int) explode('-', $schoolYear)[0];
 
         // ── Summary stats ────────────────────────────────────────────────────
@@ -78,27 +106,18 @@ class FinancialReportsController extends Controller
             ->orderByDesc('total')
             ->get();
 
-        // ── Outstanding balances table ───────────────────────────────────────
-        // BUG FIX 1: Use whereIn() to filter unpaid terms at the DB level,
-        //            not in PHP after loading all terms.
-        // BUG FIX 2: Removed ->take(20) hard cap. Now returns ALL students
-        //            with outstanding balances, sorted by balance descending.
-        //            Total count is passed so the UI can show "Showing X students".
+        // ── Outstanding balances table ────────────────────────────────────────
 
         $outstandingStudents = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
             ->with([
                 'user',
-                // Only eager-load the unpaid terms — avoids loading fully-paid
-                // students' term history into memory needlessly
                 'paymentTerms' => fn ($q) => $q->whereIn('status', self::UNPAID_STATUSES),
             ])
             ->get()
             ->map(function ($assessment) use ($year, $semester) {
-                // Sum balances of unpaid terms only (already filtered above)
                 $pendingBalance = $assessment->paymentTerms->sum('balance');
 
-                // Get the latest paid PAY- reference for this student + term
                 $latestRef = $assessment->user?->transactions()
                     ->where('kind', 'payment')
                     ->where('status', 'paid')
@@ -121,9 +140,6 @@ class FinancialReportsController extends Controller
             ->sortByDesc('balance')
             ->values();
 
-        $schoolYears = $this->getSchoolYears();
-        $semesters   = ['1st Sem', '2nd Sem', 'Summer'];
-
         return Inertia::render('Accounting/FinancialReports', [
             'summary' => [
                 'totalAssessments'      => $totalAssessments,
@@ -141,15 +157,15 @@ class FinancialReportsController extends Controller
                 'schoolYear' => $schoolYear,
                 'semester'   => $semester,
             ],
-            'schoolYears' => $schoolYears,
-            'semesters'   => $semesters,
+            'schoolYears' => $this->getSchoolYears(),
+            'semesters'   => $this->semesterOptions(),
         ]);
     }
 
     public function export(Request $request)
     {
-        $schoolYear = $request->get('school_year', now()->year . '-' . (now()->year + 1));
-        $semester   = $request->get('semester', '1st Sem');
+        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
+        $semester   = $request->get('semester', '1st');
         $year       = (int) explode('-', $schoolYear)[0];
 
         $totalPaid = Transaction::where('kind', 'payment')
@@ -231,9 +247,14 @@ class FinancialReportsController extends Controller
     private function getSchoolYears(): array
     {
         $years       = [];
-        $currentYear = now()->year;
+        $now         = now();
+        $year        = (int) $now->format('Y');
+        $month       = (int) $now->format('n');
 
-        for ($i = $currentYear - 3; $i <= $currentYear + 2; $i++) {
+        // Anchor on actual current academic year start
+        $academicStart = $month < 6 ? $year - 1 : $year;
+
+        for ($i = $academicStart - 3; $i <= $academicStart + 2; $i++) {
             $years[] = "{$i}-" . ($i + 1);
         }
 
@@ -244,8 +265,8 @@ class FinancialReportsController extends Controller
 
     public function exportAssessments(Request $request)
     {
-        $schoolYear = $request->query('school_year', '');
-        $semester   = $request->query('semester', '');
+        $schoolYear = $request->query('school_year', $this->currentAcademicYear());
+        $semester   = $request->query('semester', '1st');
 
         $assessments = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
@@ -278,8 +299,8 @@ class FinancialReportsController extends Controller
 
     public function exportReceipts(Request $request)
     {
-        $schoolYear = $request->query('school_year', '');
-        $semester   = $request->query('semester', '');
+        $schoolYear = $request->query('school_year', $this->currentAcademicYear());
+        $semester   = $request->query('semester', '1st');
         $year       = (int) explode('-', $schoolYear)[0];
 
         $transactions = \App\Models\Transaction::with(['user.account', 'user.student'])
@@ -302,5 +323,4 @@ class FinancialReportsController extends Controller
 
         return $pdf->download($filename);
     }
-
 }
