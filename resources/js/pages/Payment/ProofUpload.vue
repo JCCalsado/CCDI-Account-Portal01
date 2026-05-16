@@ -2,8 +2,8 @@
 import AppLayout from '@/layouts/AppLayout.vue';
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
-import { Head, useForm } from '@inertiajs/vue3';
-import { UploadCloud, File, CheckCircle, AlertCircle, ShieldCheck, ShieldX, Loader2 } from 'lucide-vue-next';
+import { Head, router, useForm, usePage } from '@inertiajs/vue3';
+import { UploadCloud, File, CheckCircle, AlertCircle, ShieldCheck, ShieldX, Loader2, XCircle } from 'lucide-vue-next';
 import { ref, computed } from 'vue';
 
 const { formatCurrency, formatDate } = useDataFormatting();
@@ -37,6 +37,49 @@ const aiValidating = ref(false);
 const aiResult = ref<'valid' | 'invalid' | 'uncertain' | null>(null);
 const aiMessage = ref<string | null>(null);
 
+// ─── Cancel State ──────────────────────────────────────────────────────────
+const showCancelConfirm = ref(false);
+const cancelling = ref(false);
+const cancelError = ref<string | null>(null);
+
+const cancelPayment = async () => {
+    cancelling.value = true;
+    cancelError.value = null;
+
+    try {
+        const page      = usePage();
+        const csrfToken = (page.props.csrf_token as string) ?? '';
+
+        const response = await fetch(route('payment.proof.cancel', props.transaction.id), {
+            method:      'DELETE',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type':     'application/json',
+                'Accept':           'application/json',
+                'X-CSRF-TOKEN':     csrfToken,
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || `Server error: ${response.status}`);
+        }
+
+        // Redirect back to the payment form so the student can resubmit.
+        router.get(route('payment.create'));
+
+    } catch (err) {
+        cancelError.value = err instanceof Error
+            ? err.message
+            : 'Failed to cancel. Please try again.';
+        showCancelConfirm.value = false;
+    } finally {
+        cancelling.value = false;
+    }
+};
+
 /**
  * Convert a File to base64 string (strips the data URI prefix).
  */
@@ -54,18 +97,14 @@ const fileToBase64 = (file: File): Promise<string> =>
 /**
  * Send the selected image/PDF to Claude via the Anthropic API and check
  * whether it looks like a legitimate payment receipt or proof of payment.
- *
- * PDFs are validated by file type heuristic only (Claude vision cannot read
- * PDF binary), so we give them a pass with a soft warning.
  */
 const validateWithAI = async (file: File): Promise<void> => {
     aiValidating.value = true;
     aiResult.value = null;
     aiMessage.value = null;
 
-    // PDFs: Claude vision can't read binary PDF — allow but warn
     if (file.type === 'application/pdf') {
-        await new Promise((r) => setTimeout(r, 400)); // brief pause for UX
+        await new Promise((r) => setTimeout(r, 400));
         aiResult.value = 'uncertain';
         aiMessage.value =
             'PDF detected. Please make sure this is a valid payment receipt or bank slip. Our team will verify it manually.';
@@ -129,7 +168,6 @@ Respond ONLY in this JSON format with no extra text:
 
         let parsed: { result: string; reason: string } | null = null;
         try {
-            // Strip possible markdown fences
             const clean = raw.replace(/```json|```/g, '').trim();
             parsed = JSON.parse(clean);
         } catch {
@@ -144,7 +182,6 @@ Respond ONLY in this JSON format with no extra text:
             aiMessage.value =
                 parsed.reason ??
                 'This image does not appear to be a payment receipt. Please upload the correct file.';
-            // Clear the file so the user must re-select
             form.errors.proof_of_payment = aiMessage.value as any;
         } else {
             aiResult.value = 'uncertain';
@@ -152,7 +189,6 @@ Respond ONLY in this JSON format with no extra text:
                 parsed?.reason ?? 'Could not fully verify this image. Make sure it clearly shows payment details.';
         }
     } catch {
-        // Network error or API unavailable — allow submission but note it
         aiResult.value = 'uncertain';
         aiMessage.value = 'Automatic verification unavailable. Our team will review your submission manually.';
     } finally {
@@ -169,10 +205,8 @@ const handleFileSelect = async (e: Event) => {
         fileName.value = file.name;
         fileSize.value = file.size;
         form.errors.proof_of_payment = '';
-        // Reset previous AI result
         aiResult.value = null;
         aiMessage.value = null;
-        // Run AI validation immediately after selection
         await validateWithAI(file);
     }
 };
@@ -407,6 +441,65 @@ const canSubmit = computed(() =>
                             <span v-else-if="aiResult === 'invalid'">Invalid File — Please Re-upload</span>
                             <span v-else>Submit for Verification</span>
                         </button>
+
+                        <!-- ── Cancel payment section ────────────────────────────
+                             Only shown when proof has NOT been uploaded yet.
+                             Once proof is uploaded (status = awaiting_approval) this
+                             page is not reachable, so the button is always safe here.
+                        -->
+                        <div class="border-t pt-4">
+                            <p class="text-xs text-center text-gray-400 mb-3">
+                                Changed your mind? You can cancel this payment and start over.
+                            </p>
+
+                            <!-- Confirm step — shown after first click -->
+                            <div v-if="showCancelConfirm" class="rounded-lg border border-red-200 bg-red-50 p-4 space-y-3">
+                                <div class="flex items-start gap-2">
+                                    <XCircle :size="18" class="text-red-500 flex-shrink-0 mt-0.5" />
+                                    <div class="text-sm text-red-800">
+                                        <p class="font-semibold">Cancel this payment?</p>
+                                        <p class="mt-1">
+                                            This will void the submission (Ref: <span class="font-mono">{{ transaction.term_name }}</span>)
+                                            and allow you to submit a new payment for this term.
+                                            This action cannot be undone.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <p v-if="cancelError" class="text-xs text-red-700 font-medium">
+                                    {{ cancelError }}
+                                </p>
+
+                                <div class="flex gap-2">
+                                    <button
+                                        type="button"
+                                        @click="cancelPayment"
+                                        :disabled="cancelling"
+                                        class="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                        {{ cancelling ? 'Cancelling…' : 'Yes, cancel this payment' }}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        @click="showCancelConfirm = false"
+                                        :disabled="cancelling"
+                                        class="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                                    >
+                                        Keep this payment
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Initial cancel button -->
+                            <button
+                                v-else
+                                type="button"
+                                @click="showCancelConfirm = true"
+                                class="w-full rounded-xl border border-red-200 bg-white px-5 py-2.5 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                            >
+                                Cancel this payment
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -465,6 +558,18 @@ const canSubmit = computed(() =>
                             <li>✓ Include the full receipt/proof</li>
                             <li>✓ File must be under 5 MB</li>
                         </ul>
+                    </div>
+
+                    <!-- Cancel notice card -->
+                    <div class="ccdi-card p-5 border border-red-100">
+                        <h3 class="text-xs font-semibold uppercase tracking-widest text-red-400 mb-2">
+                            Need to Start Over?
+                        </h3>
+                        <p class="text-xs text-gray-500">
+                            If you transferred the wrong amount or used the wrong reference number,
+                            use the <strong>Cancel this payment</strong> button to void this submission
+                            and submit a corrected one.
+                        </p>
                     </div>
                 </div>
             </div>

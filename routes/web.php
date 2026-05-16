@@ -56,6 +56,7 @@ Route::middleware(['auth', 'verified', 'role:student'])->prefix('student')->grou
     Route::post('/account/pay-now', [TransactionController::class, 'payNow'])->name('account.pay-now');
     Route::get('/payment/{transaction}/proof', [PaymentController::class, 'showProofForm'])->name('payment.proof.show');
     Route::post('/payment/{transaction}/proof', [PaymentController::class, 'uploadProof'])->name('payment.proof.upload');
+Route::delete('/payment/{transaction}/proof/cancel', [PaymentController::class, 'cancelAbandonedProof'])->name('payment.proof.cancel');
     Route::get('/notifications', [NotificationController::class, 'studentIndex'])->name('student.notifications');
     Route::post('/notifications/mark-all-read', [NotificationController::class, 'markAllRead'])->name('student.notifications.mark-all-read');
     Route::post('/notifications/{notification}/dismiss', [NotificationController::class, 'dismiss'])->name('notifications.dismiss');

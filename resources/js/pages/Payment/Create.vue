@@ -5,7 +5,7 @@ import { useDataFormatting } from '@/composables/useDataFormatting';
 import { useMoney } from '@/composables/useMoney';
 import { Head, router, useForm, usePage } from '@inertiajs/vue3';
 import { computed, ref, watch } from 'vue';
-import { AlertCircle, CheckCircle, Clock, Info } from 'lucide-vue-next';
+import { AlertCircle, AlertTriangle, CheckCircle, Clock, Info, UploadCloud, XCircle } from 'lucide-vue-next';
 
 const { formatCurrency, formatDate } = useDataFormatting();
 const { toCents, fromCents } = useMoney();
@@ -38,6 +38,7 @@ type PendingPayment = {
     id: number;
     reference: string;
     amount: number;
+    status: string;           // ← 'awaiting_proof' | 'awaiting_approval'
     selected_term_id: number | null;
     term_name: string;
     created_at: string;
@@ -88,10 +89,78 @@ const availablePaymentMethods = computed(() =>
     allPaymentMethods.filter((m) => props.availablePaymentMethods.includes(m.value)),
 );
 
-// When there is only one available method, lock it in — no dropdown needed.
 const singleMethod = computed(() =>
     availablePaymentMethods.value.length === 1 ? availablePaymentMethods.value[0] : null,
 );
+
+// ── Split pending payments into two distinct groups ───────────────────────────
+//
+//  awaiting_proof    → transaction created, proof NOT uploaded yet.
+//                      These are incomplete. Student must either resume or cancel.
+//                      Accounting CANNOT see these — no WorkflowApproval exists yet.
+//
+//  awaiting_approval → proof was uploaded, accounting is reviewing.
+//                      Student must wait. Nothing left for them to do.
+//
+// Treating both the same in the UI is the source of the original confusion.
+
+const awaitingProofPayments = computed(() =>
+    props.pendingApprovalPayments.filter((p) => p.status === 'awaiting_proof'),
+);
+
+const awaitingApprovalPayments = computed(() =>
+    props.pendingApprovalPayments.filter((p) => p.status === 'awaiting_approval'),
+);
+
+// ── Cancel an abandoned awaiting_proof payment ────────────────────────────────
+
+const cancellingId = ref<number | null>(null);
+const cancelError  = ref<string | null>(null);
+
+const cancelAbandonedPayment = async (payment: PendingPayment) => {
+    if (!confirm(
+        `Cancel this payment?\n\n` +
+        `Reference: ${payment.reference}\n` +
+        `Amount: ₱${payment.amount.toFixed(2)}\n\n` +
+        `This will allow you to submit a new payment for ${payment.term_name}.`
+    )) return;
+
+    cancellingId.value = payment.id;
+    cancelError.value  = null;
+
+    try {
+        const page      = usePage();
+        const csrfToken = (page.props.csrf_token as string) ?? '';
+
+        const response = await fetch(route('payment.proof.cancel', payment.id), {
+            method:      'DELETE',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type':    'application/json',
+                'Accept':          'application/json',
+                'X-CSRF-TOKEN':    csrfToken,
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || `Server error: ${response.status}`);
+        }
+
+        // Reload the page so the cancelled payment disappears from the banner
+        // and the duplicate guard is lifted.
+        router.reload({ only: ['pendingApprovalPayments'] });
+
+    } catch (err) {
+        cancelError.value = err instanceof Error
+            ? err.message
+            : 'Failed to cancel payment. Please try again.';
+    } finally {
+        cancellingId.value = null;
+    }
+};
 
 // ── Pending payments indexed by term ─────────────────────────────────────────
 
@@ -139,7 +208,6 @@ const effectiveBalance = computed(() => {
 
 const form = useForm({
     amount:           0 as number,
-    // Default to first available method — with bank_transfer only, this is always 'bank_transfer'
     payment_method:   availablePaymentMethods.value[0]?.value ?? 'bank_transfer',
     paid_at:          new Date().toISOString().split('T')[0],
     selected_term_id: props.preselectedTermId ?? (null as number | null),
@@ -229,7 +297,7 @@ watch(isBankTransfer, async (val) => {
     } finally {
         bankDetailsLoading.value = false;
     }
-}, { immediate: true }); // ← immediate: true so details load on page open, not on dropdown change
+}, { immediate: true });
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
@@ -449,20 +517,97 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                         </div>
                     </div>
 
-                    <!-- Pending approvals warning -->
+                    <!-- ── ACTION REQUIRED: Proof Not Uploaded Yet ───────── -->
+                    <!--
+                        These transactions exist in the DB but have NO WorkflowApproval record.
+                        Accounting literally cannot see them. The student must either:
+                          (a) Resume → go to the proof upload page, OR
+                          (b) Cancel → free the term so they can resubmit.
+                    -->
                     <div
-                        v-if="pendingApprovalPayments.length > 0"
+                        v-if="awaitingProofPayments.length > 0"
+                        class="rounded-xl border border-orange-400 bg-orange-50 p-4"
+                    >
+                        <div class="flex items-start gap-3">
+                            <AlertTriangle :size="20" class="mt-0.5 flex-shrink-0 text-orange-500" />
+                            <div class="flex-1 space-y-3">
+                                <div>
+                                    <p class="font-semibold text-orange-900">
+                                        ⚠️ Action Required — Proof Not Uploaded
+                                    </p>
+                                    <p class="text-sm text-orange-700 mt-0.5">
+                                        You started a payment but never uploaded your receipt.
+                                        Accounting <strong>cannot see this payment</strong> until you upload proof.
+                                        Please complete or cancel each submission below.
+                                    </p>
+                                </div>
+
+                                <div class="space-y-2">
+                                    <div
+                                        v-for="payment in awaitingProofPayments"
+                                        :key="payment.id"
+                                        class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-orange-100 px-3 py-2 text-sm"
+                                    >
+                                        <div>
+                                            <span class="font-semibold text-orange-900">
+                                                {{ payment.term_name }}
+                                            </span>
+                                            <span class="ml-2 font-mono text-xs text-orange-600">
+                                                {{ payment.reference }}
+                                            </span>
+                                            <span class="ml-2 font-semibold text-orange-800">
+                                                ₱{{ payment.amount.toFixed(2) }}
+                                            </span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <!-- Resume: go to proof upload -->
+                                            <a
+                                                :href="route('payment.proof.show', payment.id)"
+                                                class="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700 transition-colors"
+                                            >
+                                                <UploadCloud :size="13" />
+                                                Upload Proof
+                                            </a>
+                                            <!-- Cancel: free the term -->
+                                            <button
+                                                type="button"
+                                                @click="cancelAbandonedPayment(payment)"
+                                                :disabled="cancellingId === payment.id"
+                                                class="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                                            >
+                                                <XCircle :size="13" />
+                                                {{ cancellingId === payment.id ? 'Cancelling…' : 'Cancel' }}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Cancel error -->
+                                <p v-if="cancelError" class="text-xs text-red-600 font-medium">
+                                    {{ cancelError }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── AWAITING ACCOUNTING REVIEW ─────────────────────── -->
+                    <!--
+                        Proof was already uploaded. WorkflowApproval exists.
+                        Accounting CAN see these. Student just has to wait.
+                    -->
+                    <div
+                        v-if="awaitingApprovalPayments.length > 0"
                         class="rounded-xl border border-amber-300 bg-amber-50 p-4"
                     >
                         <div class="flex items-start gap-3">
                             <AlertCircle :size="20" class="mt-0.5 flex-shrink-0 text-amber-600" />
                             <div class="flex-1">
                                 <p class="mb-2 font-semibold text-amber-900">
-                                    ⏳ Pending Payment(s) Awaiting Approval
+                                    ⏳ Pending Payment(s) Awaiting Accounting Review
                                 </p>
                                 <div class="space-y-1 text-sm text-amber-800">
                                     <div
-                                        v-for="payment in pendingApprovalPayments"
+                                        v-for="payment in awaitingApprovalPayments"
                                         :key="payment.id"
                                         class="flex justify-between"
                                     >
@@ -471,7 +616,7 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                                     </div>
                                 </div>
                                 <p class="mt-2 text-xs italic text-amber-700">
-                                    Wait for accounting to verify your pending payment(s) before
+                                    Proof has been submitted. Wait for accounting to verify before
                                     submitting another payment for the same term.
                                 </p>
                             </div>

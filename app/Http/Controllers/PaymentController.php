@@ -64,18 +64,22 @@ class PaymentController extends Controller
                     ])
                 : collect();
 
+            // ── CHANGED: include `status` so the Vue can split awaiting_proof
+            //            (incomplete — student action needed) from awaiting_approval
+            //            (submitted — waiting on accounting). They are NOT the same.
             $pendingApprovalPayments = $assessment
                 ? Transaction::where('user_id', $user->id)
                     ->where('kind', 'payment')
                     ->whereIn('status', [
                         PaymentStatus::AWAITING_APPROVAL->value,
-                        PaymentStatus::AWAITING_PROOF->value,   // ← include both
+                        PaymentStatus::AWAITING_PROOF->value,
                     ])
                     ->get()
                     ->map(fn ($txn) => [
                         'id'               => $txn->id,
                         'reference'        => $txn->reference ?? 'N/A',
                         'amount'           => (float) ($txn->amount ?? 0),
+                        'status'           => $txn->status,                         // ← NEW
                         'selected_term_id' => data_get($txn->meta, 'selected_term_id'),
                         'term_name'        => data_get($txn->meta, 'term_name') ?? $txn->type ?? 'Payment',
                         'created_at'       => $txn->created_at?->toDateTimeString(),
@@ -470,32 +474,26 @@ class PaymentController extends Controller
                 }
             }
 
-            // Derive year and semester from the term's assessment so transactions
-            // are grouped correctly in Transaction History regardless of server date.
             $assessment      = $termInfo?->assessment;
             $transactionYear = $assessment
                 ? explode('-', $assessment->school_year)[0]
                 : (string) now()->year;
             $transactionSem  = $assessment?->semester ?? $this->getCurrentSemesterLabel();
 
-            // ── FIX: $termId must be captured in the use() clause ─────────────
             $transaction = DB::transaction(function () use (
                 $user, $requestAmount, $termInfo, $validated,
-                $transactionYear, $transactionSem, $termId   // ← $termId added
+                $transactionYear, $transactionSem, $termId
             ) {
-                // Block duplicate in-flight submissions for the same term
                 $alreadyPending = Transaction::where('user_id', $user->id)
                     ->where('kind', 'payment')
                     ->whereIn('status', [
                         \App\Enums\PaymentStatus::AWAITING_PROOF->value,
                         \App\Enums\PaymentStatus::AWAITING_APPROVAL->value,
                     ])
-                    ->whereJsonContains('meta->selected_term_id', $termId)  // ← now defined
+                    ->whereJsonContains('meta->selected_term_id', $termId)
                     ->exists();
 
                 if ($alreadyPending) {
-                    // Throw so DB::transaction rolls back and the catch block
-                    // returns the JSON error response.
                     throw new \RuntimeException(
                         'A payment for this term is already awaiting proof upload or approval. ' .
                         'Please complete or cancel the existing submission first.'
@@ -532,7 +530,6 @@ class PaymentController extends Controller
             ]);
 
         } catch (\RuntimeException $e) {
-            // Duplicate-guard rejection — user-facing 422
             return response()->json(['error' => $e->getMessage()], 422);
         } catch (\Exception $e) {
             Log::error('Bank transfer error', [
@@ -569,7 +566,7 @@ class PaymentController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  PROOF OF PAYMENT UPLOAD
+    //  PROOF OF PAYMENT — SHOW / UPLOAD / CANCEL ABANDONED
     // ─────────────────────────────────────────────────────────────────────────
 
     public function showProofForm(Request $request, Transaction $transaction): Response|\Illuminate\Http\RedirectResponse
@@ -626,10 +623,6 @@ class PaymentController extends Controller
 
         $file = $validated['proof_of_payment'];
 
-        // Normalize the file extension so the web server can serve it correctly.
-        // .jfif is technically valid JPEG but Apache/Nginx on shared hosting
-        // (e.g. Hostinger) often lack the MIME mapping, causing 404 when served.
-        // Map it and any other JPEG variant to the universally-recognized .jpg.
         $rawExtension = strtolower($file->getClientOriginalExtension());
         $extension    = match ($rawExtension) {
             'jfif', 'jpe', 'jif', 'jfi' => 'jpg',
@@ -661,6 +654,54 @@ class PaymentController extends Controller
 
         return redirect()->route('student.account', ['tab' => 'history'])
             ->with('flash.warning', 'Proof uploaded, but the accounting office could not be notified automatically. Please contact accounting and provide your reference: ' . $transaction->reference);
+    }
+
+    /**
+     * Cancel a bank transfer transaction that is stuck in `awaiting_proof`.
+     *
+     * This is the student self-rescue path. If a student submitted their bank
+     * transfer details but then navigated away before uploading the receipt,
+     * the transaction sits in `awaiting_proof` forever — no WorkflowApproval
+     * record is created, so Accounting cannot see it, and the duplicate guard
+     * in submitBankTransfer() prevents re-submission. This endpoint breaks
+     * that deadlock by letting the student cancel the orphaned transaction.
+     *
+     * Only `awaiting_proof` transactions may be cancelled this way. If the
+     * proof was already uploaded (status = `awaiting_approval`), the student
+     * must wait for accounting — a cancellation at that point would discard
+     * a document that an accountant may already be reviewing.
+     */
+    public function cancelAbandonedProof(Request $request, Transaction $transaction): \Illuminate\Http\JsonResponse
+    {
+        $user = $request->user();
+
+        if ($transaction->user_id !== $user->id) {
+            abort(403, 'Unauthorized access to this transaction.');
+        }
+
+        if ($transaction->status !== PaymentStatus::AWAITING_PROOF->value) {
+            return response()->json([
+                'error' => 'This payment cannot be cancelled. It has already been submitted for accounting review.',
+            ], 422);
+        }
+
+        $transaction->update([
+            'status' => PaymentStatus::CANCELLED->value,
+            'meta'   => array_merge($transaction->meta ?? [], [
+                'cancelled_at'     => now()->toIso8601String(),
+                'cancelled_reason' => 'Cancelled by student before proof was uploaded.',
+            ]),
+        ]);
+
+        Log::info('Student cancelled awaiting_proof transaction', [
+            'transaction_id' => $transaction->id,
+            'user_id'        => $user->id,
+            'reference'      => $transaction->reference,
+        ]);
+
+        return response()->json([
+            'message' => 'Payment cancelled. You can now submit a new payment for this term.',
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
