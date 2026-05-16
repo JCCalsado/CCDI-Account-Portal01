@@ -366,25 +366,18 @@
 
             @php
                 /*
-                 * Parse fee_breakdown into display buckets.
-                 *
-                 * The real CCDI form shows four lines:
-                 *   Registration Fee  → category = 'Miscellaneous', name contains 'Registration'
-                 *   Tuition Fee       → category = 'Tuition'
-                 *   Lab. Fee          → category = 'Laboratory'
-                 *   Misc. Fee         → everything else in Miscellaneous / Other
-                 *
-                 * We sum each bucket from fee_breakdown so the numbers always
-                 * match what was stored at assessment creation time.
-                 */
-                $breakdown = collect($assessment->fee_breakdown ?? []);
-
-                $tuitionFee      = (float) ($assessment->tuition_fee ?? 0);
-                $labFee          = (float) ($assessment->lab_fee ?? 0);
-                $miscFee         = (float) ($assessment->misc_fee ?? 0);
-                $otherFees       = (float) ($assessment->other_fees ?? 0);
-                $registrationFee = 0; // Not stored separately
-                $totalAssessment = (float) $assessment->total_assessment;
+                * Three fee lines only:
+                *   1. Tuition Fee  — stored on assessment (includes NSTP tuition)
+                *   2. Lab Fee      — lab_subjects × ₱1,656 + ₱600 entrep (combined)
+                *   3. Misc Fee     — fixed ₱4,700
+                *
+                * $labFeeCombined is passed explicitly by exportPdf() so it is
+                * always correct regardless of how the assessment was stored.
+                */
+                $tuitionFee      = (float) ($assessment->tuition_fee   ?? 0);
+                $labFee          = (float) ($labFeeCombined             ?? 0);
+                $miscFee         = (float) ($assessment->misc_fee       ?? 0);
+                $totalAssessment = (float)  $assessment->total_assessment;
 
                 $fmt = fn(float $v) => $v > 0
                     ? number_format($v, 2)
@@ -395,12 +388,6 @@
             <div class="fees-header">FEES</div>
 
             <table class="fee-row-table">
-                <tr>
-                    <td class="fee-label-col">Registration Fee:</td>
-                    <td class="fee-amount-col {{ $registrationFee == 0 ? 'no-underline' : '' }}">
-                        {!! $fmt($registrationFee) !!}
-                    </td>
-                </tr>
                 <tr>
                     <td class="fee-label-col">Tuition Fee:</td>
                     <td class="fee-amount-col {{ $tuitionFee == 0 ? 'no-underline' : '' }}">
@@ -431,11 +418,6 @@
             <div class="terms-header">TERMS OF PAYMENT</div>
 
             @php
-                /*
-                 * $paymentTerms is passed by StudentFeeController::exportPdf()
-                 * as a collection of StudentPaymentTerm models.
-                 * We display them in term_order ASC (already sorted by controller).
-                 */
                 $terms = isset($paymentTerms) ? $paymentTerms : collect();
             @endphp
 
@@ -444,11 +426,10 @@
                 <tr>
                     <td class="term-label-col">{{ $term->term_name }}</td>
                     <td class="term-amount-col">
-                        {{ number_format((float)$term->amount, 2) }}
+                        {{ number_format((float) $term->amount, 2) }}
                     </td>
                 </tr>
                 @empty
-                {{-- Fallback: show standard term names with no amounts --}}
                 @foreach(['Upon Registration', 'Prelim', 'Midterm', 'Semi-Final', 'Final'] as $tName)
                 <tr>
                     <td class="term-label-col">{{ $tName }}</td>

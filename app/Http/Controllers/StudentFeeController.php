@@ -1007,7 +1007,8 @@ class StudentFeeController extends Controller
         }
 
         $paymentTerms = $assessment->paymentTerms()->orderBy('term_order')->get();
-        $miscItems    = \App\Models\FeeSetting::whereIn('category', ['miscellaneous', 'other'])
+
+        $miscItems = \App\Models\FeeSetting::whereIn('category', ['miscellaneous', 'other'])
             ->where('is_active', true)
             ->orderBy('sort_order')
             ->orderBy('id')
@@ -1016,8 +1017,11 @@ class StudentFeeController extends Controller
             ->all();
 
         $semesterMap = [
-            '1st' => '1st Sem', '2nd' => '2nd Sem', 'Summer' => 'Summer',
-            '1st Sem' => '1st Sem', '2nd Sem' => '2nd Sem',
+            '1st'     => '1st Sem',
+            '2nd'     => '2nd Sem',
+            'Summer'  => 'Summer',
+            '1st Sem' => '1st Sem',
+            '2nd Sem' => '2nd Sem',
         ];
         $semesterForSubjects = $semesterMap[$assessment->semester] ?? $assessment->semester;
 
@@ -1027,6 +1031,7 @@ class StudentFeeController extends Controller
             $subjectIds = is_array($assessment->subjects)
                 ? $assessment->subjects
                 : json_decode($assessment->subjects, true);
+
             $subjects = \DB::table('subjects')
                 ->whereIn('id', $subjectIds ?? [])
                 ->where('is_active', 1)
@@ -1042,6 +1047,7 @@ class StudentFeeController extends Controller
                 ->get();
         }
 
+        // ── Receipt download branch ───────────────────────────────────────────────
         if ($request->query('type') === 'receipt') {
             $latestPayment = $user->transactions()
                 ->where('kind', 'payment')
@@ -1070,15 +1076,35 @@ class StudentFeeController extends Controller
                 'remainingBalance' => $remainingBalance,
             ]);
             $receiptPdf->setPaper('A4', 'portrait');
-            return $receiptPdf->download('receipt-' . ($user->account_id ?? 'student') . '-' . $latestPayment->reference . '.pdf');
+            return $receiptPdf->download(
+                'receipt-' . ($user->account_id ?? 'student') . '-' . $latestPayment->reference . '.pdf'
+            );
         }
 
+        // ── Lab Fee: lab_subjects × ₱1,656 + ₱600 entrepreneurship (combined) ────
+        //
+        // AssessmentService::compute() stores lab_fee and entrepreneurship_fee
+        // separately. The PDF must show them as ONE combined Lab Fee line.
+        //
+        // We recompute from fee_settings (same source AssessmentService uses)
+        // so the display is always accurate regardless of which creation path
+        // stored the assessment — never trust the raw $assessment->lab_fee column
+        // because older rows may or may not have entrep baked in.
+        //
+        $rates           = \App\Services\AssessmentService::loadRates();
+        $labSubjectCount = (int) ($assessment->lab_subjects ?? $assessment->lab_units ?? 0);
+        $labFeeRaw       = round($labSubjectCount * $rates['lab_fee_per_subject'], 2);
+        $entrepFee       = $labSubjectCount > 0 ? round($rates['entrepreneurship_fee'], 2) : 0.0;
+        $labFeeCombined  = round($labFeeRaw + $entrepFee, 2);
+        // ─────────────────────────────────────────────────────────────────────────
+
         $pdf = Pdf::loadView('pdf.student-assessment', [
-            'student'      => $user,
-            'assessment'   => $assessment,
-            'paymentTerms' => $paymentTerms,
-            'miscItems'    => $miscItems,
-            'subjects'     => $subjects,
+            'student'         => $user,
+            'assessment'      => $assessment,
+            'paymentTerms'    => $paymentTerms,
+            'miscItems'       => $miscItems,
+            'subjects'        => $subjects,
+            'labFeeCombined'  => $labFeeCombined,  // lab_subjects × ₱1,656 + ₱600
         ]);
 
         $pdf->setPaper('A4', 'portrait');
