@@ -13,32 +13,19 @@ use Barryvdh\DomPDF\Facade\Pdf;
 
 class FinancialReportsController extends Controller
 {
-    // Statuses that represent money still owed
     private const UNPAID_STATUSES = ['unpaid', 'pending', 'partial', 'overdue'];
 
-    // ─── Academic year helper ─────────────────────────────────────────────────
-    //
-    // DB shows 2026-2027 is the active year as of May 2026.
-    // CCDI academic year starts June (month 6).
-    // Before June → prior academic year. June onwards → current academic year.
-    //
     private function currentAcademicYear(): string
     {
         $now   = now();
         $year  = (int) $now->format('Y');
         $month = (int) $now->format('n');
 
-        // Before June → still in the previous academic year start
         $startYear = $month < 6 ? $year - 1 : $year;
 
         return $startYear . '-' . ($startYear + 1);
     }
 
-    // ─── Semester values as stored in DB ─────────────────────────────────────
-    //
-    // DB stores '1st', '2nd', 'Summer' — NOT '1st Sem', '2nd Sem'.
-    // All semester values passed to queries must use these short forms.
-    //
     private function semesterOptions(): array
     {
         return ['1st', '2nd', 'Summer'];
@@ -50,7 +37,7 @@ class FinancialReportsController extends Controller
         $semester   = $request->get('semester', '1st');
         $year       = (int) explode('-', $schoolYear)[0];
 
-        // ── Summary stats ────────────────────────────────────────────────────
+        // ── Summary stats ─────────────────────────────────────────────────────
 
         $totalAssessments = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
@@ -66,14 +53,16 @@ class FinancialReportsController extends Controller
             ->where('semester', $semester)
             ->sum('amount');
 
+        // BUG FIX: Sum balance where balance > 0 — do NOT filter by status.
+        // status and balance can be out of sync; balance is the authoritative value.
         $totalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear, $semester) {
             $q->where('school_year', $schoolYear)
               ->where('semester', $semester);
         })
-            ->whereIn('status', self::UNPAID_STATUSES)
+            ->where('balance', '>', 0)
             ->sum('balance');
 
-        // ── Charts ───────────────────────────────────────────────────────────
+        // ── Charts ────────────────────────────────────────────────────────────
 
         $byCourseSummary = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
@@ -95,7 +84,7 @@ class FinancialReportsController extends Controller
                 'total' => $item->total,
             ]);
 
-        // ── Payment method breakdown ─────────────────────────────────────────
+        // ── Payment method breakdown ──────────────────────────────────────────
 
         $paymentMethods = Transaction::where('kind', 'payment')
             ->where('status', 'paid')
@@ -106,17 +95,25 @@ class FinancialReportsController extends Controller
             ->orderByDesc('total')
             ->get();
 
-        // ── Outstanding balances table ────────────────────────────────────────
-
+        // ── Outstanding balances ──────────────────────────────────────────────
+        //
+        // BUG FIX: Load ALL payment terms then sum where balance > 0.
+        // Do NOT filter terms by status — status can be stale/wrong.
+        // balance is always the authoritative remaining amount per term.
+        //
         $outstandingStudents = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
-            ->with([
-                'user',
-                'paymentTerms' => fn ($q) => $q->whereIn('status', self::UNPAID_STATUSES),
-            ])
+            ->with(['user', 'paymentTerms'])
             ->get()
             ->map(function ($assessment) use ($year, $semester) {
-                $pendingBalance = $assessment->paymentTerms->sum('balance');
+                // Trust balance, not status
+                $pendingBalance = $assessment->paymentTerms
+                    ->where('balance', '>', 0)
+                    ->sum('balance');
+
+                if ($pendingBalance <= 0) {
+                    return null;
+                }
 
                 $latestRef = $assessment->user?->transactions()
                     ->where('kind', 'payment')
@@ -133,10 +130,10 @@ class FinancialReportsController extends Controller
                     'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
                     'total'       => (float) $assessment->total_assessment,
                     'balance'     => (float) $pendingBalance,
-                    'status'      => $pendingBalance > 0 ? 'Pending' : 'Paid',
+                    'status'      => 'Pending',
                 ];
             })
-            ->filter(fn ($s) => $s['balance'] > 0)
+            ->filter(fn ($s) => $s !== null)
             ->sortByDesc('balance')
             ->values();
 
@@ -182,7 +179,7 @@ class FinancialReportsController extends Controller
             $q->where('school_year', $schoolYear)
               ->where('semester', $semester);
         })
-            ->whereIn('status', self::UNPAID_STATUSES)
+            ->where('balance', '>', 0)
             ->sum('balance');
 
         $summary = [
@@ -196,14 +193,18 @@ class FinancialReportsController extends Controller
 
         $students = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
-            ->with([
-                'user',
-                'paymentTerms' => fn ($q) => $q->whereIn('status', self::UNPAID_STATUSES),
-            ])
+            ->with(['user', 'paymentTerms'])
             ->get()
             ->map(function ($assessment) use ($year, $semester) {
-                $pendingBalance = $assessment->paymentTerms->sum('balance');
-                $paid           = $assessment->total_assessment - $pendingBalance;
+                $pendingBalance = $assessment->paymentTerms
+                    ->where('balance', '>', 0)
+                    ->sum('balance');
+
+                if ($pendingBalance <= 0) {
+                    return null;
+                }
+
+                $paid = (float) $assessment->total_assessment - (float) $pendingBalance;
 
                 $latestRef = $assessment->user?->transactions()
                     ->where('kind', 'payment')
@@ -219,12 +220,12 @@ class FinancialReportsController extends Controller
                     'studentName' => $assessment->user?->name ?? 'Unknown Student',
                     'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
                     'total'       => (float) $assessment->total_assessment,
-                    'paid'        => (float) $paid,
+                    'paid'        => $paid,
                     'balance'     => (float) $pendingBalance,
-                    'status'      => $pendingBalance > 0 ? 'Pending' : 'Paid',
+                    'status'      => 'Pending',
                 ];
             })
-            ->filter(fn ($s) => $s['balance'] > 0)
+            ->filter(fn ($s) => $s !== null)
             ->sortByDesc('balance')
             ->values();
 
@@ -246,12 +247,9 @@ class FinancialReportsController extends Controller
 
     private function getSchoolYears(): array
     {
-        $years       = [];
-        $now         = now();
-        $year        = (int) $now->format('Y');
-        $month       = (int) $now->format('n');
-
-        // Anchor on actual current academic year start
+        $years         = [];
+        $year          = (int) now()->format('Y');
+        $month         = (int) now()->format('n');
         $academicStart = $month < 6 ? $year - 1 : $year;
 
         for ($i = $academicStart - 3; $i <= $academicStart + 2; $i++) {
@@ -260,8 +258,6 @@ class FinancialReportsController extends Controller
 
         return $years;
     }
-
-    // ─── Export: All Student Assessments PDF ─────────────────────────────────
 
     public function exportAssessments(Request $request)
     {
@@ -294,8 +290,6 @@ class FinancialReportsController extends Controller
 
         return $pdf->download($filename);
     }
-
-    // ─── Export: All Payment Receipts PDF ────────────────────────────────────
 
     public function exportReceipts(Request $request)
     {
