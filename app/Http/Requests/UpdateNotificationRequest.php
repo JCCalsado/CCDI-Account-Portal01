@@ -53,7 +53,7 @@ class UpdateNotificationRequest extends FormRequest
                     $type         = $this->input('type');
                     $dueDateTypes = ['payment_due', 'payment_due_notice', 'deadline'];
                     if (in_array($type, $dueDateTypes, true) && empty($value)) {
-                        $fail("A due date is required when notification type is "{$type}".");
+                        $fail("A due date is required for notification type '{$type}'.");
                     }
                     if ($value && $value < now()->toDateString()) {
                         $fail('The due date must be today or a future date.');

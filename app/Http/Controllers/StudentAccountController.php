@@ -145,6 +145,7 @@ class StudentAccountController extends Controller
             ->withinDateRange()
             ->forDueDateTrigger($user)
             ->forBalance($user)
+            ->distinct()
             ->orderByDesc('created_at')
             ->take(10)
             ->get()

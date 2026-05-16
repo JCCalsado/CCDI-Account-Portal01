@@ -17,6 +17,8 @@ interface PaymentTerm {
 interface Props {
     students: Student[];
     paymentTerms: PaymentTerm[];
+    courses: string[];
+    yearLevels: string[];
 }
 
 defineProps<Props>();
@@ -24,5 +26,10 @@ defineProps<Props>();
 
 <template>
     <Head title="Create Notification" />
-    <Form :students="students" :payment-terms="paymentTerms" />
+    <Form
+        :students="students"
+        :payment-terms="paymentTerms"
+        :courses="courses"
+        :year-levels="yearLevels"
+    />
 </template>

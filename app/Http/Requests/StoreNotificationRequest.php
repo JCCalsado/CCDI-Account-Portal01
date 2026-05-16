@@ -49,10 +49,10 @@ class StoreNotificationRequest extends FormRequest
                 'nullable',
                 'date',
                 function ($attribute, $value, $fail) {
-                    $type = $this->input('type');
+                    $type         = $this->input('type');
                     $dueDateTypes = ['payment_due', 'payment_due_notice', 'deadline'];
                     if (in_array($type, $dueDateTypes, true) && empty($value)) {
-                        $fail("A due date is required when notification type is "{$type}".");
+                        $fail("A due date is required for notification type '{$type}'.");
                     }
                     if ($value && $value < now()->toDateString()) {
                         $fail('The due date must be today or a future date.');
@@ -70,11 +70,11 @@ class StoreNotificationRequest extends FormRequest
             'user_ids.*'  => ['integer', 'exists:users,id'],
 
             // ── Audience filters (student-only) ───────────────────────────────
-            'course_filter'      => ['nullable', 'array'],
-            'course_filter.*'    => ['string', 'max:120'],
-            'year_level_filter'  => ['nullable', 'array'],
-            'year_level_filter.*'=> ['string', 'max:50'],
-            'balance_filter'     => ['required', 'string', 'in:any,with_balance,overdue'],
+            'course_filter'       => ['nullable', 'array'],
+            'course_filter.*'     => ['string', 'max:120'],
+            'year_level_filter'   => ['nullable', 'array'],
+            'year_level_filter.*' => ['string', 'max:50'],
+            'balance_filter'      => ['required', 'string', 'in:any,with_balance,overdue'],
 
             // ── Term targeting ────────────────────────────────────────────────
             'term_ids'                => ['nullable', 'array'],

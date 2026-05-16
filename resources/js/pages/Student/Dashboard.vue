@@ -264,9 +264,18 @@ const dueDateLabel = (dueDateStr: string | null): string => {
 const hiddenNotifications = ref<Set<number>>(new Set());
 
 const activeNotifications = computed(() => {
-    const now = Date.now();
+    const now  = Date.now();
+    const seen = new Set<number>(); // deduplicate by id — guards against backend duplicates
+
     return props.notifications
         .filter((n) => {
+            // Deduplicate: skip if we've already included this notification id.
+            // This can happen when a notification matches multiple OR branches in
+            // scopeForUser (e.g. direct user_id + JSON user_ids overlap, or
+            // term_ids containing multiple terms each satisfying the subquery).
+            if (seen.has(n.id)) return false;
+            seen.add(n.id);
+
             if (n.dismissed_at) return false;
             if (n.is_complete) return false;
             if (hiddenNotifications.value.has(n.id)) return false;
@@ -528,13 +537,6 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                     <p class="text-sm font-medium text-foreground">
                                         {{ formatTransactionType(transaction.type) }}
                                     </p>
-                                    <!--
-                                        Fix #2 — Reference display
-                                        Cash payments: show "OR No. 12345" (official receipt number)
-                                        Online payments: show "Ref No. TXN-XXXXX" (PayMongo / system ref)
-                                        The label + value come from getTransactionDisplayRef() which reads
-                                        payment_channel and or_number now exposed by the controller.
-                                    -->
                                     <p class="text-xs text-muted-foreground">
                                         <span class="font-medium text-muted-foreground/80">
                                             {{ getTransactionDisplayRef(transaction).label }}

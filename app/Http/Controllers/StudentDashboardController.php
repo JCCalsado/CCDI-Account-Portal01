@@ -66,13 +66,14 @@ class StudentDashboardController extends Controller
             : 0;
 
         // ── Notifications ─────────────────────────────────────────────────────
-        // Fetches 10 so general announcements aren't crowded out by
-        // payment_due banners. Vue's visibleNotifications slice(0,3) + "View More"
-        // already handles the display limit on the front end.
+        // distinct() prevents duplicate rows that can appear when a student matches
+        // multiple OR branches in scopeForUser (e.g. direct user_id + JSON user_ids,
+        // or when term_ids contains multiple IDs that each satisfy the subquery).
         $notifications = Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
             ->forDueDateTrigger($user)
+            ->distinct()
             ->orderByDesc('created_at')
             ->take(10)
             ->get()
