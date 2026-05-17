@@ -13,7 +13,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 
 class FinancialReportsController extends Controller
 {
-    private const UNPAID_STATUSES = ['unpaid', 'pending', 'partial', 'overdue'];
+    // ─── Helpers ──────────────────────────────────────────────────────────────
 
     private function currentAcademicYear(): string
     {
@@ -31,220 +31,6 @@ class FinancialReportsController extends Controller
         return ['1st', '2nd', 'Summer'];
     }
 
-    public function index(Request $request)
-    {
-        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
-        $semester   = $request->get('semester', '1st');
-        $year       = (int) explode('-', $schoolYear)[0];
-
-        // ── Summary stats ─────────────────────────────────────────────────────
-
-        $totalAssessments = StudentAssessment::where('school_year', $schoolYear)
-            ->where('semester', $semester)
-            ->count();
-
-        $totalAssessmentAmount = StudentAssessment::where('school_year', $schoolYear)
-            ->where('semester', $semester)
-            ->sum('total_assessment');
-
-        $totalPaid = Transaction::where('kind', 'payment')
-            ->where('status', 'paid')
-            ->where('year', $year)
-            ->where('semester', $semester)
-            ->sum('amount');
-
-        // BUG FIX: Sum balance where balance > 0 — do NOT filter by status.
-        // status and balance can be out of sync; balance is the authoritative value.
-        $totalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear, $semester) {
-            $q->where('school_year', $schoolYear)
-              ->where('semester', $semester);
-        })
-            ->where('balance', '>', 0)
-            ->sum('balance');
-
-        // ── Charts ────────────────────────────────────────────────────────────
-
-        $byCourseSummary = StudentAssessment::where('school_year', $schoolYear)
-            ->where('semester', $semester)
-            ->selectRaw('course, COUNT(*) as student_count, SUM(total_assessment) as total')
-            ->groupBy('course')
-            ->orderBy('total', 'desc')
-            ->get();
-
-        $byMonthSummary = Transaction::where('kind', 'payment')
-            ->where('status', 'paid')
-            ->where('year', $year)
-            ->where('semester', $semester)
-            ->selectRaw('MONTH(created_at) as month, SUM(amount) as total')
-            ->groupBy('month')
-            ->orderBy('month')
-            ->get()
-            ->map(fn ($item) => [
-                'month' => Carbon::createFromFormat('m', $item->month)->format('M'),
-                'total' => $item->total,
-            ]);
-
-        // ── Payment method breakdown ──────────────────────────────────────────
-
-        $paymentMethods = Transaction::where('kind', 'payment')
-            ->where('status', 'paid')
-            ->where('year', $year)
-            ->where('semester', $semester)
-            ->selectRaw("COALESCE(payment_channel, 'Unspecified') as method, COUNT(*) as count, SUM(amount) as total")
-            ->groupBy('payment_channel')
-            ->orderByDesc('total')
-            ->get();
-
-        // ── Outstanding balances ──────────────────────────────────────────────
-        //
-        // BUG FIX: Load ALL payment terms then sum where balance > 0.
-        // Do NOT filter terms by status — status can be stale/wrong.
-        // balance is always the authoritative remaining amount per term.
-        //
-        $outstandingStudents = StudentAssessment::where('school_year', $schoolYear)
-            ->where('semester', $semester)
-            ->with(['user', 'paymentTerms'])
-            ->get()
-            ->map(function ($assessment) use ($year, $semester) {
-                // Trust balance, not status
-                $pendingBalance = $assessment->paymentTerms
-                    ->where('balance', '>', 0)
-                    ->sum('balance');
-
-                if ($pendingBalance <= 0) {
-                    return null;
-                }
-
-                $latestRef = $assessment->user?->transactions()
-                    ->where('kind', 'payment')
-                    ->where('status', 'paid')
-                    ->where('year', $year)
-                    ->where('semester', $semester)
-                    ->orderByDesc('paid_at')
-                    ->value('reference');
-
-                return [
-                    'accountId'   => $assessment->user?->account_id ?? 'N/A',
-                    'latestRef'   => $latestRef ?? '—',
-                    'studentName' => $assessment->user?->name ?? 'Unknown Student',
-                    'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
-                    'total'       => (float) $assessment->total_assessment,
-                    'balance'     => (float) $pendingBalance,
-                    'status'      => 'Pending',
-                ];
-            })
-            ->filter(fn ($s) => $s !== null)
-            ->sortByDesc('balance')
-            ->values();
-
-        return Inertia::render('Accounting/FinancialReports', [
-            'summary' => [
-                'totalAssessments'      => $totalAssessments,
-                'totalAssessmentAmount' => $totalAssessmentAmount,
-                'totalPaid'             => $totalPaid,
-                'totalOutstanding'      => $totalOutstanding,
-            ],
-            'charts' => [
-                'byCourse' => $byCourseSummary,
-                'byMonth'  => $byMonthSummary,
-            ],
-            'paymentMethods'      => $paymentMethods,
-            'outstandingStudents' => $outstandingStudents,
-            'filters' => [
-                'schoolYear' => $schoolYear,
-                'semester'   => $semester,
-            ],
-            'schoolYears' => $this->getSchoolYears(),
-            'semesters'   => $this->semesterOptions(),
-        ]);
-    }
-
-    public function export(Request $request)
-    {
-        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
-        $semester   = $request->get('semester', '1st');
-        $year       = (int) explode('-', $schoolYear)[0];
-
-        $totalPaid = Transaction::where('kind', 'payment')
-            ->where('status', 'paid')
-            ->where('year', $year)
-            ->where('semester', $semester)
-            ->sum('amount');
-
-        $totalAssessmentAmount = StudentAssessment::where('school_year', $schoolYear)
-            ->where('semester', $semester)
-            ->sum('total_assessment');
-
-        $totalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear, $semester) {
-            $q->where('school_year', $schoolYear)
-              ->where('semester', $semester);
-        })
-            ->where('balance', '>', 0)
-            ->sum('balance');
-
-        $summary = [
-            'totalAssessments'      => StudentAssessment::where('school_year', $schoolYear)
-                ->where('semester', $semester)
-                ->count(),
-            'totalAssessmentAmount' => $totalAssessmentAmount,
-            'totalPaid'             => $totalPaid,
-            'totalOutstanding'      => $totalOutstanding,
-        ];
-
-        $students = StudentAssessment::where('school_year', $schoolYear)
-            ->where('semester', $semester)
-            ->with(['user', 'paymentTerms'])
-            ->get()
-            ->map(function ($assessment) use ($year, $semester) {
-                $pendingBalance = $assessment->paymentTerms
-                    ->where('balance', '>', 0)
-                    ->sum('balance');
-
-                if ($pendingBalance <= 0) {
-                    return null;
-                }
-
-                $paid = (float) $assessment->total_assessment - (float) $pendingBalance;
-
-                $latestRef = $assessment->user?->transactions()
-                    ->where('kind', 'payment')
-                    ->where('status', 'paid')
-                    ->where('year', $year)
-                    ->where('semester', $semester)
-                    ->orderByDesc('paid_at')
-                    ->value('reference');
-
-                return [
-                    'accountId'   => $assessment->user?->account_id ?? 'N/A',
-                    'latestRef'   => $latestRef ?? '—',
-                    'studentName' => $assessment->user?->name ?? 'Unknown Student',
-                    'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
-                    'total'       => (float) $assessment->total_assessment,
-                    'paid'        => $paid,
-                    'balance'     => (float) $pendingBalance,
-                    'status'      => 'Pending',
-                ];
-            })
-            ->filter(fn ($s) => $s !== null)
-            ->sortByDesc('balance')
-            ->values();
-
-        $pdf = Pdf::loadView('pdf.financial-report', [
-            'schoolYear'  => $schoolYear,
-            'semester'    => $semester,
-            'summary'     => $summary,
-            'students'    => $students,
-            'generatedAt' => now(),
-        ]);
-
-        $filename = 'financial-report-'
-            . $schoolYear . '-'
-            . str_replace(' ', '-', $semester)
-            . '.pdf';
-
-        return $pdf->download($filename);
-    }
-
     private function getSchoolYears(): array
     {
         $years         = [];
@@ -257,6 +43,255 @@ class FinancialReportsController extends Controller
         }
 
         return $years;
+    }
+
+    /**
+     * Previous period = SAME semester, one academic year earlier.
+     *
+     * Examples:
+     *   1st Sem  2025-2026  →  1st Sem  2024-2025
+     *   2nd Sem  2025-2026  →  2nd Sem  2024-2025
+     *   Summer   2025-2026  →  Summer   2024-2025
+     */
+    private function previousPeriod(string $schoolYear, string $semester): array
+    {
+        [$startYear, $endYear] = explode('-', $schoolYear);
+
+        return [
+            'school_year' => ($startYear - 1) . '-' . ($endYear - 1),
+            'semester'    => $semester,
+        ];
+    }
+
+    // ─── Summary builder ──────────────────────────────────────────────────────
+
+    private function buildSummary(string $schoolYear, string $semester, int $year): array
+    {
+        $totalAssessments = StudentAssessment::where('school_year', $schoolYear)
+            ->where('semester', $semester)
+            ->count();
+
+        $totalAssessmentAmount = StudentAssessment::where('school_year', $schoolYear)
+            ->where('semester', $semester)
+            ->sum('total_assessment');
+
+        // paid_at: when money was actually received, not when the row was created
+        $totalPaid = Transaction::where('kind', 'payment')
+            ->where('status', 'paid')
+            ->where('year', $year)
+            ->where('semester', $semester)
+            ->whereNotNull('paid_at')
+            ->sum('amount');
+
+        // balance is the authoritative outstanding value — do NOT rely on status
+        $totalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear, $semester) {
+            $q->where('school_year', $schoolYear)
+              ->where('semester', $semester);
+        })
+            ->where('balance', '>', 0)
+            ->sum('balance');
+
+        return [
+            'totalAssessments'      => $totalAssessments,
+            'totalAssessmentAmount' => (float) $totalAssessmentAmount,
+            'totalPaid'             => (float) $totalPaid,
+            'totalOutstanding'      => (float) $totalOutstanding,
+        ];
+    }
+
+    /**
+     * Historical comparison: same semester, one academic year back.
+     * Returns null if that period has zero assessments (panel is hidden).
+     */
+    private function buildHistoricalComparison(string $schoolYear, string $semester): ?array
+    {
+        $prev     = $this->previousPeriod($schoolYear, $semester);
+        $prevYear = (int) explode('-', $prev['school_year'])[0];
+
+        $count = StudentAssessment::where('school_year', $prev['school_year'])
+            ->where('semester', $prev['semester'])
+            ->count();
+
+        if ($count === 0) {
+            return null;
+        }
+
+        $prevSummary = $this->buildSummary($prev['school_year'], $prev['semester'], $prevYear);
+
+        return array_merge($prevSummary, [
+            'label'      => $prev['semester'] . ' Sem ' . $prev['school_year'],
+            'schoolYear' => $prev['school_year'],
+            'semester'   => $prev['semester'],
+        ]);
+    }
+
+    // ─── Chart builders ───────────────────────────────────────────────────────
+
+    private function buildCharts(string $schoolYear, string $semester, int $year): array
+    {
+        $byCourse = StudentAssessment::where('school_year', $schoolYear)
+            ->where('semester', $semester)
+            ->selectRaw('course, COUNT(*) as student_count, SUM(total_assessment) as total')
+            ->groupBy('course')
+            ->orderBy('total', 'desc')
+            ->get();
+
+        // paid_at: financial reports must reflect when payment was confirmed
+        $byMonth = Transaction::where('kind', 'payment')
+            ->where('status', 'paid')
+            ->where('year', $year)
+            ->where('semester', $semester)
+            ->whereNotNull('paid_at')
+            ->selectRaw('MONTH(paid_at) as month, SUM(amount) as total')
+            ->groupBy('month')
+            ->orderBy('month')
+            ->get()
+            ->map(fn ($item) => [
+                'month' => Carbon::createFromFormat('m', $item->month)->format('M'),
+                'total' => (float) $item->total,
+            ]);
+
+        return [
+            'byCourse' => $byCourse,
+            'byMonth'  => $byMonth,
+        ];
+    }
+
+    private function buildPaymentMethods(int $year, string $semester): array
+    {
+        return Transaction::where('kind', 'payment')
+            ->where('status', 'paid')
+            ->where('year', $year)
+            ->where('semester', $semester)
+            ->whereNotNull('paid_at')
+            ->selectRaw("COALESCE(payment_channel, 'Unspecified') as method, COUNT(*) as count, SUM(amount) as total")
+            ->groupBy('payment_channel')
+            ->orderByDesc('total')
+            ->get()
+            ->toArray();
+    }
+
+    // ─── Outstanding students — ALL rows, no pagination ───────────────────────
+
+    /**
+     * Returns every student with an outstanding balance for the period.
+     * No pagination — callers get the full list.
+     *
+     * Performance notes:
+     *  - whereHas filters at DB level, no PHP collection filtering
+     *  - withSum computes balance totals in SQL (no paymentTerms rows loaded into PHP)
+     *  - latest references fetched in a single batch query (no N+1)
+     */
+    private function buildOutstandingStudents(string $schoolYear, string $semester, int $year): array
+    {
+        $assessments = StudentAssessment::where('school_year', $schoolYear)
+            ->where('semester', $semester)
+            ->whereHas('paymentTerms', fn ($q) => $q->where('balance', '>', 0))
+            ->with(['user:id,last_name,first_name,middle_initial,account_id,course'])
+            ->withSum(
+                ['paymentTerms' => fn ($q) => $q->where('balance', '>', 0)],
+                'balance'
+            )
+            ->orderByDesc('payment_terms_sum_balance')
+            ->get();
+
+        // Single query for all latest payment references — avoids N+1
+        $userIds    = $assessments->pluck('user_id')->filter()->unique()->values();
+        $latestRefs = Transaction::where('kind', 'payment')
+            ->where('status', 'paid')
+            ->where('year', $year)
+            ->where('semester', $semester)
+            ->whereIn('user_id', $userIds)
+            ->select('user_id', 'reference', 'paid_at')
+            ->orderByDesc('paid_at')
+            ->get()
+            ->groupBy('user_id')
+            ->map(fn ($txns) => $txns->first()->reference);
+
+        return $assessments->map(function ($assessment) use ($latestRefs) {
+            $user = $assessment->user;
+
+            $studentName = $user
+                ? trim(
+                    "{$user->last_name}, {$user->first_name}"
+                    . ($user->middle_initial ? " {$user->middle_initial}." : '')
+                )
+                : 'Unknown Student';
+
+            return [
+                'accountId'   => $user?->account_id ?? 'N/A',
+                'latestRef'   => $latestRefs[$assessment->user_id] ?? '—',
+                'studentName' => $studentName,
+                'course'      => $assessment->course ?? $user?->course ?? 'N/A',
+                'total'       => (float) $assessment->total_assessment,
+                'balance'     => (float) ($assessment->payment_terms_sum_balance ?? 0),
+            ];
+        })->values()->toArray();
+    }
+
+    // ─── Controller actions ───────────────────────────────────────────────────
+
+    public function index(Request $request)
+    {
+        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
+        $semester   = $request->get('semester', '1st');
+        $year       = (int) explode('-', $schoolYear)[0];
+
+        $summary              = $this->buildSummary($schoolYear, $semester, $year);
+        $charts               = $this->buildCharts($schoolYear, $semester, $year);
+        $paymentMethods       = $this->buildPaymentMethods($year, $semester);
+        $historicalComparison = $this->buildHistoricalComparison($schoolYear, $semester);
+        $outstandingStudents  = $this->buildOutstandingStudents($schoolYear, $semester, $year);
+
+        return Inertia::render('Accounting/FinancialReports', [
+            'summary'              => $summary,
+            'charts'               => $charts,
+            'paymentMethods'       => $paymentMethods,
+            'historicalComparison' => $historicalComparison,
+            'outstandingStudents'  => $outstandingStudents,
+            'filters'              => [
+                'schoolYear' => $schoolYear,
+                'semester'   => $semester,
+            ],
+            'schoolYears' => $this->getSchoolYears(),
+            'semesters'   => $this->semesterOptions(),
+        ]);
+    }
+
+    // ─── PDF exports ──────────────────────────────────────────────────────────
+
+    public function export(Request $request)
+    {
+        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
+        $semester   = $request->get('semester', '1st');
+        $year       = (int) explode('-', $schoolYear)[0];
+
+        $summary  = $this->buildSummary($schoolYear, $semester, $year);
+        $students = $this->buildOutstandingStudents($schoolYear, $semester, $year);
+
+        // Add paid column for the PDF table
+        $students = array_map(function ($s) {
+            $s['paid']   = $s['total'] - $s['balance'];
+            $s['status'] = 'Pending';
+            return $s;
+        }, $students);
+
+        $pdf = Pdf::loadView('pdf.financial-report', [
+            'schoolYear'  => $schoolYear,
+            'semester'    => $semester,
+            'summary'     => $summary,
+            'students'    => $students,
+            'generatedAt' => now(),
+        ]);
+
+        $pdf->setPaper('A4', 'landscape');
+
+        $filename = 'financial-report-'
+            . $schoolYear . '-'
+            . str_replace(' ', '-', $semester)
+            . '.pdf';
+
+        return $pdf->download($filename);
     }
 
     public function exportAssessments(Request $request)
