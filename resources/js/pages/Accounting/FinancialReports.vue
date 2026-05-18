@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDataFormatting } from '@/composables/useDataFormatting'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { Head, router } from '@inertiajs/vue3'
-import { BarChart3, Download, TrendingUp } from 'lucide-vue-next'
+import { BarChart3, Download, Eye, TrendingUp, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -17,13 +17,25 @@ interface PaymentMethod {
 }
 
 interface AssessedStudent {
+    userId: number
     accountId: string
-    latestRef: string
     studentName: string
     course: string
     total: number
     balance: number
     status: 'Fully Paid' | 'Partial' | 'Unpaid'
+}
+
+interface StudentTransaction {
+    id: number
+    reference: string
+    orNumber: string | null
+    amount: number
+    method: string
+    termName: string
+    schoolYear: string | number
+    semester: string
+    paidAt: string
 }
 
 interface Props {
@@ -38,7 +50,7 @@ interface Props {
         byMonth: Array<{ month: string; total: number }>
     }
     paymentMethods: PaymentMethod[]
-    assessedStudents: AssessedStudent[]   // renamed from outstandingStudents
+    assessedStudents: AssessedStudent[]
     filters: {
         schoolYear: string
         semester: string
@@ -53,10 +65,15 @@ const props = defineProps<Props>()
 const { formatCurrency } = useDataFormatting()
 
 const selectedSchoolYear = ref(props.filters.schoolYear)
-const selectedSemester = ref(props.filters.semester)
+const selectedSemester   = ref(props.filters.semester)
+const searchQuery        = ref('')
 
-// Client-side search within the already-loaded student list (no round-trip)
-const searchQuery = ref('')
+// ── Transaction history modal state ──────────────────────────────────────────
+const modalOpen        = ref(false)
+const modalStudent     = ref<AssessedStudent | null>(null)
+const modalLoading     = ref(false)
+const modalError       = ref<string | null>(null)
+const modalTransactions = ref<StudentTransaction[]>([])
 
 const breadcrumbs = [
     { title: 'Dashboard', href: route('dashboard') },
@@ -72,31 +89,27 @@ const collectionRate = computed(() => {
     return Math.round((props.summary.totalPaid / total) * 100)
 })
 
-const filteredPaymentMethods = computed(() => {
-    return props.paymentMethods.filter(
+const filteredPaymentMethods = computed(() =>
+    props.paymentMethods.filter(
         (m) =>
-            m.method.toLowerCase() !== 'credit card' &&
-            m.method.toLowerCase() !== 'credit_card' &&
-            m.method.toLowerCase() !== 'debit card' &&
-            m.method.toLowerCase() !== 'debit_card',
-    )
-})
+            !['credit card', 'credit_card', 'debit card', 'debit_card'].includes(
+                m.method.toLowerCase(),
+            ),
+    ),
+)
 
-/** Client-side filter for the assessed students table */
 const filteredAssessedStudents = computed(() => {
     if (!searchQuery.value.trim()) return props.assessedStudents
-
     const q = searchQuery.value.toLowerCase()
     return props.assessedStudents.filter(
         (s) =>
             s.studentName.toLowerCase().includes(q) ||
             s.accountId.toLowerCase().includes(q) ||
-            s.course.toLowerCase().includes(q) ||
-            s.latestRef.toLowerCase().includes(q),
+            s.course.toLowerCase().includes(q),
     )
 })
 
-// ─── Status badge helpers ─────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function statusBadgeClass(status: AssessedStudent['status']): string {
     switch (status) {
@@ -117,39 +130,58 @@ function balanceClass(balance: number): string {
         : 'px-4 py-3 text-right text-sm font-semibold text-red-600'
 }
 
-// ─── Actions ─────────────────────────────────────────────────────────────────
+// ─── Modal: View student transaction history ──────────────────────────────────
+
+async function openHistoryModal(student: AssessedStudent) {
+    modalStudent.value     = student
+    modalTransactions.value = []
+    modalError.value       = null
+    modalLoading.value     = true
+    modalOpen.value        = true
+
+    try {
+        const url   = route('accounting.financial-reports.student-history')
+        const resp  = await fetch(`${url}?user_id=${student.userId}`, {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        })
+        if (!resp.ok) throw new Error(`Server error: ${resp.status}`)
+        const data = await resp.json()
+        modalTransactions.value = data.transactions ?? []
+    } catch (err: unknown) {
+        modalError.value = err instanceof Error ? err.message : 'Failed to load transactions.'
+    } finally {
+        modalLoading.value = false
+    }
+}
+
+function closeModal() {
+    modalOpen.value    = false
+    modalStudent.value = null
+}
+
+// ─── Download per-student semester receipt ────────────────────────────────────
+
+function downloadStudentReceipt(student: AssessedStudent) {
+    const url = route('accounting.financial-reports.student-receipt')
+    window.location.href =
+        `${url}?user_id=${student.userId}` +
+        `&school_year=${encodeURIComponent(selectedSchoolYear.value)}` +
+        `&semester=${encodeURIComponent(selectedSemester.value)}`
+}
+
+// ─── Page-level actions ───────────────────────────────────────────────────────
 
 const applyFilters = () => {
     router.get(
         route('accounting.financial-reports'),
-        {
-            school_year: selectedSchoolYear.value,
-            semester: selectedSemester.value,
-        },
+        { school_year: selectedSchoolYear.value, semester: selectedSemester.value },
         { preserveState: false },
     )
 }
 
-const exportPDF = () => {
-    window.location.href = route('accounting.financial-reports.export', {
-        school_year: selectedSchoolYear.value,
-        semester: selectedSemester.value,
-    })
-}
-
-const exportAssessments = () => {
-    window.location.href = route('accounting.financial-reports.export-assessments', {
-        school_year: selectedSchoolYear.value,
-        semester: selectedSemester.value,
-    })
-}
-
-const exportReceipts = () => {
-    window.location.href = route('accounting.financial-reports.export-receipts', {
-        school_year: selectedSchoolYear.value,
-        semester: selectedSemester.value,
-    })
-}
+const exportPDF          = () => { window.location.href = route('accounting.financial-reports.export', { school_year: selectedSchoolYear.value, semester: selectedSemester.value }) }
+const exportAssessments  = () => { window.location.href = route('accounting.financial-reports.export-assessments', { school_year: selectedSchoolYear.value, semester: selectedSemester.value }) }
+const exportReceipts     = () => { window.location.href = route('accounting.financial-reports.export-receipts', { school_year: selectedSchoolYear.value, semester: selectedSemester.value }) }
 </script>
 
 <template>
@@ -192,7 +224,6 @@ const exportReceipts = () => {
                             <label for="school-year" class="block text-sm font-medium text-foreground mb-1">School Year</label>
                             <select
                                 id="school-year"
-                                name="school_year"
                                 v-model="selectedSchoolYear"
                                 class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
                             >
@@ -203,7 +234,6 @@ const exportReceipts = () => {
                             <label for="semester" class="block text-sm font-medium text-foreground mb-1">Semester</label>
                             <select
                                 id="semester"
-                                name="semester"
                                 v-model="selectedSemester"
                                 class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
                             >
@@ -226,7 +256,6 @@ const exportReceipts = () => {
                         <p class="mt-1 text-xs text-muted-foreground">Students assessed</p>
                     </CardContent>
                 </Card>
-
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Total Assessment</CardTitle>
@@ -236,7 +265,6 @@ const exportReceipts = () => {
                         <p class="mt-1 text-xs text-muted-foreground">Total billed</p>
                     </CardContent>
                 </Card>
-
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Total Paid</CardTitle>
@@ -246,7 +274,6 @@ const exportReceipts = () => {
                         <p class="mt-1 text-xs text-muted-foreground">{{ collectionRate }}% collection rate</p>
                     </CardContent>
                 </Card>
-
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Outstanding</CardTitle>
@@ -260,7 +287,6 @@ const exportReceipts = () => {
 
             <!-- ── Charts ────────────────────────────────────────────────────── -->
             <div class="grid gap-6 lg:grid-cols-2">
-                <!-- By Course -->
                 <Card>
                     <CardHeader>
                         <CardTitle class="flex items-center gap-2">
@@ -279,9 +305,7 @@ const exportReceipts = () => {
                                     <div class="h-2 mt-1 w-full rounded-full bg-muted overflow-hidden">
                                         <div
                                             class="h-full bg-blue-500"
-                                            :style="{
-                                                width: (course.total / Math.max(...charts.byCourse.map((c) => c.total))) * 100 + '%',
-                                            }"
+                                            :style="{ width: (course.total / Math.max(...charts.byCourse.map((c) => c.total))) * 100 + '%' }"
                                         ></div>
                                     </div>
                                 </div>
@@ -294,7 +318,6 @@ const exportReceipts = () => {
                     </CardContent>
                 </Card>
 
-                <!-- By Month -->
                 <Card>
                     <CardHeader>
                         <CardTitle class="flex items-center gap-2">
@@ -313,9 +336,7 @@ const exportReceipts = () => {
                                     <div class="h-2 mt-1 w-full rounded-full bg-muted overflow-hidden">
                                         <div
                                             class="h-full bg-green-500"
-                                            :style="{
-                                                width: (month.total / Math.max(...charts.byMonth.map((m) => m.total), 1)) * 100 + '%',
-                                            }"
+                                            :style="{ width: (month.total / Math.max(...charts.byMonth.map((m) => m.total), 1)) * 100 + '%' }"
                                         ></div>
                                     </div>
                                 </div>
@@ -348,9 +369,9 @@ const exportReceipts = () => {
             </Card>
 
             <!-- ── Student Account Status ─────────────────────────────────────
-                 Shows ALL students assessed for the selected period.
+                 All assessed students for this period.
                  Sorted by outstanding balance descending (debtors first).
-                 Status badge: Fully Paid (green) | Partial (amber) | Unpaid (red)
+                 Actions: View (all-year history modal) | Download Receipt (semester PDF)
             ─────────────────────────────────────────────────────────────────── -->
             <Card>
                 <CardHeader>
@@ -366,7 +387,6 @@ const exportReceipts = () => {
                                 </template>
                             </span>
                         </CardTitle>
-                        <!-- Client-side search — no page reload -->
                         <input
                             v-model="searchQuery"
                             type="text"
@@ -380,27 +400,13 @@ const exportReceipts = () => {
                         <table class="min-w-full divide-y divide-border">
                             <thead class="bg-muted/50">
                                 <tr>
-                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Account ID
-                                    </th>
-                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Latest Reference
-                                    </th>
-                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Student Name
-                                    </th>
-                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Course
-                                    </th>
-                                    <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Total Assessment
-                                    </th>
-                                    <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Outstanding Balance
-                                    </th>
-                                    <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                        Status
-                                    </th>
+                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Account ID</th>
+                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Student Name</th>
+                                    <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Course</th>
+                                    <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Assessment</th>
+                                    <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Outstanding Balance</th>
+                                    <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
+                                    <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-muted-foreground">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-border">
@@ -410,28 +416,43 @@ const exportReceipts = () => {
                                     class="hover:bg-muted/30"
                                 >
                                     <td class="px-4 py-3 text-sm font-mono text-muted-foreground">{{ student.accountId }}</td>
-                                    <td class="px-4 py-3 text-sm font-mono text-indigo-600">{{ student.latestRef }}</td>
                                     <td class="px-4 py-3 text-sm font-medium">{{ student.studentName }}</td>
                                     <td class="px-4 py-3 text-sm text-muted-foreground">{{ student.course }}</td>
                                     <td class="px-4 py-3 text-right text-sm">{{ formatCurrency(student.total) }}</td>
-                                    <td :class="balanceClass(student.balance)">
-                                        {{ formatCurrency(student.balance) }}
-                                    </td>
+                                    <td :class="balanceClass(student.balance)">{{ formatCurrency(student.balance) }}</td>
                                     <td class="px-4 py-3 text-center">
-                                        <span :class="statusBadgeClass(student.status)">
-                                            {{ student.status }}
-                                        </span>
+                                        <span :class="statusBadgeClass(student.status)">{{ student.status }}</span>
+                                    </td>
+                                    <!-- Actions -->
+                                    <td class="px-4 py-3 text-center">
+                                        <div class="flex items-center justify-center gap-2">
+                                            <!-- View: opens all-year transaction history modal -->
+                                            <button
+                                                @click="openHistoryModal(student)"
+                                                class="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
+                                                title="View transaction history"
+                                            >
+                                                <Eye class="h-3.5 w-3.5" />
+                                                View
+                                            </button>
+                                            <!-- Download Receipt: semester PDF -->
+                                            <button
+                                                @click="downloadStudentReceipt(student)"
+                                                class="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
+                                                title="Download semester receipt"
+                                            >
+                                                <Download class="h-3.5 w-3.5" />
+                                                Receipt
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             </tbody>
                         </table>
 
-                        <!-- Empty state: no assessments at all for this period -->
                         <div v-if="assessedStudents.length === 0" class="py-8 text-center">
                             <p class="text-sm text-muted-foreground">No students assessed for this period.</p>
                         </div>
-
-                        <!-- Empty state: search returned nothing -->
                         <div v-else-if="filteredAssessedStudents.length === 0" class="py-8 text-center">
                             <p class="text-sm text-muted-foreground">No students match your search.</p>
                         </div>
@@ -439,5 +460,142 @@ const exportReceipts = () => {
                 </CardContent>
             </Card>
         </div>
+
+        <!-- ── Transaction History Modal ──────────────────────────────────────
+             Appears as a fixed overlay. Fetches all-time paid transactions
+             for the selected student via the student-history JSON endpoint.
+             No page load — stays on the Financial Reports page.
+        ──────────────────────────────────────────────────────────────────────── -->
+        <Teleport to="body">
+            <Transition
+                enter-active-class="transition-opacity duration-200"
+                enter-from-class="opacity-0"
+                enter-to-class="opacity-100"
+                leave-active-class="transition-opacity duration-150"
+                leave-from-class="opacity-100"
+                leave-to-class="opacity-0"
+            >
+                <div
+                    v-if="modalOpen"
+                    class="fixed inset-0 z-50 flex items-center justify-center"
+                    @click.self="closeModal"
+                >
+                    <!-- Backdrop -->
+                    <div class="absolute inset-0 bg-black/50" @click="closeModal" />
+
+                    <!-- Panel -->
+                    <div class="relative z-10 mx-4 w-full max-w-3xl rounded-xl border border-border bg-background shadow-2xl">
+
+                        <!-- Header -->
+                        <div class="flex items-center justify-between border-b border-border px-6 py-4">
+                            <div>
+                                <h2 class="text-lg font-semibold text-foreground">
+                                    Transaction History
+                                </h2>
+                                <p v-if="modalStudent" class="mt-0.5 text-sm text-muted-foreground">
+                                    {{ modalStudent.studentName }}
+                                    <span class="ml-2 font-mono text-xs">{{ modalStudent.accountId }}</span>
+                                </p>
+                            </div>
+                            <button
+                                @click="closeModal"
+                                class="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                            >
+                                <X class="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        <!-- Body -->
+                        <div class="max-h-[60vh] overflow-y-auto px-6 py-4">
+
+                            <!-- Loading -->
+                            <div v-if="modalLoading" class="flex items-center justify-center py-12">
+                                <div class="h-8 w-8 animate-spin rounded-full border-4 border-blue-600 border-t-transparent"></div>
+                                <span class="ml-3 text-sm text-muted-foreground">Loading transactions…</span>
+                            </div>
+
+                            <!-- Error -->
+                            <div v-else-if="modalError" class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+                                {{ modalError }}
+                            </div>
+
+                            <!-- Empty -->
+                            <div v-else-if="modalTransactions.length === 0" class="py-10 text-center">
+                                <p class="text-sm text-muted-foreground">No paid transactions found for this student.</p>
+                            </div>
+
+                            <!-- Transaction table -->
+                            <template v-else>
+                                <p class="mb-3 text-xs text-muted-foreground">
+                                    Showing all {{ modalTransactions.length }} paid transaction{{ modalTransactions.length !== 1 ? 's' : '' }} across all school years.
+                                </p>
+                                <table class="min-w-full divide-y divide-border text-sm">
+                                    <thead class="bg-muted/50">
+                                        <tr>
+                                            <th class="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Date Paid</th>
+                                            <th class="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Reference / OR</th>
+                                            <th class="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Term</th>
+                                            <th class="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">School Year</th>
+                                            <th class="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Method</th>
+                                            <th class="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-border">
+                                        <tr
+                                            v-for="txn in modalTransactions"
+                                            :key="txn.id"
+                                            class="hover:bg-muted/30"
+                                        >
+                                            <td class="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">{{ txn.paidAt }}</td>
+                                            <td class="px-3 py-2.5">
+                                                <span class="font-mono text-xs text-indigo-600">{{ txn.reference }}</span>
+                                                <span v-if="txn.orNumber" class="ml-1 text-xs text-muted-foreground">(OR: {{ txn.orNumber }})</span>
+                                            </td>
+                                            <td class="px-3 py-2.5 text-xs">{{ txn.termName }}</td>
+                                            <td class="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                                                {{ txn.schoolYear }} {{ txn.semester }}
+                                            </td>
+                                            <td class="px-3 py-2.5 text-xs text-muted-foreground">{{ txn.method }}</td>
+                                            <td class="px-3 py-2.5 text-right text-sm font-semibold text-green-600">
+                                                {{ formatCurrency(txn.amount) }}
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                    <!-- Grand total row -->
+                                    <tfoot>
+                                        <tr class="border-t-2 border-border bg-muted/30">
+                                            <td colspan="5" class="px-3 py-2.5 text-sm font-semibold text-right text-foreground">
+                                                Total Paid (all time):
+                                            </td>
+                                            <td class="px-3 py-2.5 text-right text-sm font-bold text-green-600">
+                                                {{ formatCurrency(modalTransactions.reduce((s, t) => s + t.amount, 0)) }}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </template>
+                        </div>
+
+                        <!-- Footer -->
+                        <div class="flex items-center justify-end gap-2 border-t border-border px-6 py-3">
+                            <button
+                                v-if="modalStudent"
+                                @click="downloadStudentReceipt(modalStudent)"
+                                class="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+                            >
+                                <Download class="h-4 w-4" />
+                                Download {{ filters.semester }} Receipt
+                            </button>
+                            <button
+                                @click="closeModal"
+                                class="inline-flex items-center rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </Transition>
+        </Teleport>
     </AppLayout>
 </template>

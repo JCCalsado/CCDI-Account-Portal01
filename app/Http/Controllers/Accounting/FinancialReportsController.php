@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\StudentAssessment;
 use App\Models\StudentPaymentTerm;
 use App\Models\Transaction;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -32,11 +33,10 @@ class FinancialReportsController extends Controller
     }
 
     /**
-     * Derive a human-readable payment status from balance vs total assessment.
-     *
+     * Derive payment status from balance vs total assessment.
      * - 'Fully Paid' : balance <= 0
      * - 'Partial'    : 0 < balance < total_assessment
-     * - 'Unpaid'     : balance >= total_assessment (or total is 0)
+     * - 'Unpaid'     : balance >= total_assessment
      */
     private function deriveStatus(float $balance, float $total): string
     {
@@ -59,7 +59,7 @@ class FinancialReportsController extends Controller
         $semester   = $request->get('semester', '1st');
         $year       = (int) explode('-', $schoolYear)[0];
 
-        // ── Summary stats ─────────────────────────────────────────────────────
+        // ── Summary ───────────────────────────────────────────────────────────
 
         $totalAssessments = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
@@ -75,10 +75,8 @@ class FinancialReportsController extends Controller
             ->where('semester', $semester)
             ->sum('amount');
 
-        // Balance is the authoritative value — do NOT filter by status.
         $totalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear, $semester) {
-            $q->where('school_year', $schoolYear)
-              ->where('semester', $semester);
+            $q->where('school_year', $schoolYear)->where('semester', $semester);
         })
             ->where('balance', '>', 0)
             ->sum('balance');
@@ -105,7 +103,7 @@ class FinancialReportsController extends Controller
                 'total' => $item->total,
             ]);
 
-        // ── Payment method breakdown ──────────────────────────────────────────
+        // ── Payment methods ───────────────────────────────────────────────────
 
         $paymentMethods = Transaction::where('kind', 'payment')
             ->where('status', 'paid')
@@ -117,10 +115,9 @@ class FinancialReportsController extends Controller
             ->get();
 
         // ── All assessed students ─────────────────────────────────────────────
-        //
-        // Shows EVERY student with an assessment for this Yr/Sem.
-        // Fully paid students appear with balance ₱0.00 and status "Fully Paid".
-        // Sorted by balance descending so debtors appear first.
+        // Every student with an assessment for this period.
+        // Sorted by outstanding balance DESC (debtors first).
+        // userId is passed so the Vue layer can request their transaction history.
         //
         $assessedStudents = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
@@ -132,17 +129,9 @@ class FinancialReportsController extends Controller
                     ->where('balance', '>', 0)
                     ->sum('balance');
 
-                $latestRef = $assessment->user?->transactions()
-                    ->where('kind', 'payment')
-                    ->where('status', 'paid')
-                    ->where('year', $year)
-                    ->where('semester', $semester)
-                    ->orderByDesc('paid_at')
-                    ->value('reference');
-
                 return [
+                    'userId'      => $assessment->user_id,
                     'accountId'   => $assessment->user?->account_id ?? 'N/A',
-                    'latestRef'   => $latestRef ?? '—',
                     'studentName' => $assessment->user?->name ?? 'Unknown Student',
                     'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
                     'total'       => $total,
@@ -165,7 +154,7 @@ class FinancialReportsController extends Controller
                 'byMonth'  => $byMonthSummary,
             ],
             'paymentMethods'  => $paymentMethods,
-            'assessedStudents' => $assessedStudents,   // renamed from outstandingStudents
+            'assessedStudents' => $assessedStudents,
             'filters' => [
                 'schoolYear' => $schoolYear,
                 'semester'   => $semester,
@@ -173,6 +162,148 @@ class FinancialReportsController extends Controller
             'schoolYears' => $this->getSchoolYears(),
             'semesters'   => $this->semesterOptions(),
         ]);
+    }
+
+    // ─── Student Transaction History (JSON — for modal) ───────────────────────
+    //
+    // Returns ALL paid transactions for a student across ALL school years.
+    // Called via fetch() from the Vue modal — no page load.
+    //
+    public function studentTransactionHistory(Request $request)
+    {
+        $request->validate([
+            'user_id' => ['required', 'integer', 'exists:users,id'],
+        ]);
+
+        $transactions = Transaction::where('user_id', $request->user_id)
+            ->where('kind', 'payment')
+            ->where('status', 'paid')
+            ->orderBy('paid_at', 'desc')
+            ->get()
+            ->map(function ($txn) {
+                $methodLabels = [
+                    'cash'          => 'Cash',
+                    'gcash'         => 'GCash',
+                    'bank_transfer' => 'Bank Transfer',
+                    'credit_card'   => 'Credit Card',
+                    'debit_card'    => 'Debit Card',
+                    'paymaya'       => 'Maya',
+                    'maya'          => 'Maya',
+                    'paymongo'      => 'Online Payment',
+                ];
+                $raw    = strtolower($txn->payment_channel ?? '');
+                $method = $methodLabels[$raw]
+                    ?? strtoupper(str_replace('_', ' ', $txn->payment_channel ?? ''))
+                    ?: 'N/A';
+
+                return [
+                    'id'         => $txn->id,
+                    'reference'  => $txn->reference ?? '—',
+                    'orNumber'   => $txn->or_number ?? null,
+                    'amount'     => (float) $txn->amount,
+                    'method'     => $method,
+                    'termName'   => $txn->meta['term_name'] ?? $txn->type ?? '—',
+                    'schoolYear' => $txn->meta['school_year'] ?? ($txn->year ?? '—'),
+                    'semester'   => $txn->semester ?? '—',
+                    'paidAt'     => $txn->paid_at
+                        ? $txn->paid_at->format('M j, Y g:i A')
+                        : ($txn->created_at?->format('M j, Y g:i A') ?? '—'),
+                ];
+            });
+
+        return response()->json(['transactions' => $transactions]);
+    }
+
+    // ─── Download per-student semester receipt PDF ────────────────────────────
+    //
+    // Generates a single-page PDF for one student covering all their payments
+    // in the selected school year + semester. This is NOT the per-transaction
+    // receipt from TransactionController::receipt() — this is a semester
+    // account statement that accounting can hand off to students.
+    //
+    public function downloadStudentReceipt(Request $request)
+    {
+        $request->validate([
+            'user_id'     => ['required', 'integer', 'exists:users,id'],
+            'school_year' => ['required', 'string'],
+            'semester'    => ['required', 'string'],
+        ]);
+
+        $user       = User::with(['account', 'student'])->findOrFail($request->user_id);
+        $schoolYear = $request->school_year;
+        $semester   = $request->semester;
+        $year       = (int) explode('-', $schoolYear)[0];
+
+        // Assessment for this period
+        $assessment = StudentAssessment::where('user_id', $user->id)
+            ->where('school_year', $schoolYear)
+            ->where('semester', $semester)
+            ->with('paymentTerms')
+            ->first();
+
+        // All paid transactions in this period
+        $transactions = Transaction::where('user_id', $user->id)
+            ->where('kind', 'payment')
+            ->where('status', 'paid')
+            ->where('year', $year)
+            ->where('semester', $semester)
+            ->orderBy('paid_at', 'asc')
+            ->get()
+            ->map(function ($txn) {
+                $methodLabels = [
+                    'cash'          => 'Cash',
+                    'gcash'         => 'GCash',
+                    'bank_transfer' => 'Bank Transfer',
+                    'credit_card'   => 'Credit Card',
+                    'debit_card'    => 'Debit Card',
+                    'paymaya'       => 'Maya',
+                    'maya'          => 'Maya',
+                    'paymongo'      => 'Online Payment',
+                ];
+                $raw    = strtolower($txn->payment_channel ?? '');
+                $method = $methodLabels[$raw]
+                    ?? strtoupper(str_replace('_', ' ', $txn->payment_channel ?? ''))
+                    ?: 'N/A';
+
+                return (object) [
+                    'reference'  => $txn->reference ?? '—',
+                    'or_number'  => $txn->or_number,
+                    'amount'     => (float) $txn->amount,
+                    'method'     => $method,
+                    'term_name'  => $txn->meta['term_name'] ?? $txn->type ?? '—',
+                    'paid_at'    => $txn->paid_at
+                        ? $txn->paid_at->format('M j, Y g:i A')
+                        : ($txn->created_at?->format('M j, Y g:i A') ?? '—'),
+                ];
+            });
+
+        $totalPaid    = $transactions->sum('amount');
+        $totalBalance = $assessment
+            ? (float) $assessment->paymentTerms->where('balance', '>', 0)->sum('balance')
+            : 0.0;
+        $totalAmount  = $assessment ? (float) $assessment->total_assessment : 0.0;
+        $status       = $this->deriveStatus($totalBalance, $totalAmount);
+
+        $pdf = Pdf::loadView('pdf.student-receipt', [
+            'student'      => $user,
+            'assessment'   => $assessment,
+            'transactions' => $transactions,
+            'totalPaid'    => $totalPaid,
+            'totalBalance' => $totalBalance,
+            'totalAmount'  => $totalAmount,
+            'status'       => $status,
+            'schoolYear'   => $schoolYear,
+            'semester'     => $semester,
+            'generatedAt'  => now(),
+        ]);
+
+        $pdf->setPaper('A4', 'portrait');
+
+        $accountId = $user->account_id ?? 'unknown';
+        $semSlug   = str_replace([' ', '/'], '-', $semester);
+        $filename  = "receipt-{$accountId}-{$schoolYear}-{$semSlug}.pdf";
+
+        return $pdf->download($filename);
     }
 
     // ─── Financial Report PDF export ──────────────────────────────────────────
@@ -194,22 +325,19 @@ class FinancialReportsController extends Controller
             ->sum('total_assessment');
 
         $totalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear, $semester) {
-            $q->where('school_year', $schoolYear)
-              ->where('semester', $semester);
+            $q->where('school_year', $schoolYear)->where('semester', $semester);
         })
             ->where('balance', '>', 0)
             ->sum('balance');
 
         $summary = [
             'totalAssessments'      => StudentAssessment::where('school_year', $schoolYear)
-                ->where('semester', $semester)
-                ->count(),
+                ->where('semester', $semester)->count(),
             'totalAssessmentAmount' => $totalAssessmentAmount,
             'totalPaid'             => $totalPaid,
             'totalOutstanding'      => $totalOutstanding,
         ];
 
-        // All assessed students — same logic as index(), no filter on balance.
         $students = StudentAssessment::where('school_year', $schoolYear)
             ->where('semester', $semester)
             ->with(['user', 'paymentTerms'])
@@ -221,17 +349,8 @@ class FinancialReportsController extends Controller
                     ->sum('balance');
                 $paid    = $total - $balance;
 
-                $latestRef = $assessment->user?->transactions()
-                    ->where('kind', 'payment')
-                    ->where('status', 'paid')
-                    ->where('year', $year)
-                    ->where('semester', $semester)
-                    ->orderByDesc('paid_at')
-                    ->value('reference');
-
                 return [
                     'accountId'   => $assessment->user?->account_id ?? 'N/A',
-                    'latestRef'   => $latestRef ?? '—',
                     'studentName' => $assessment->user?->name ?? 'Unknown Student',
                     'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
                     'total'       => $total,
