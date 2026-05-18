@@ -25,6 +25,7 @@
         .summary-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         .summary-table th, .summary-table td { padding: 4px 8px; border: 1px solid #ddd; font-size: 8px; }
         .summary-table th { background: #1a3c5e; color: #fff; }
+        .discount-badge { display:inline-block; padding:1px 6px; font-size:7.5px; font-weight:700; border-radius:3px; background:#dbeafe; color:#1e40af; margin-left:4px; }
     </style>
 </head>
 <body>
@@ -46,7 +47,11 @@
                 ID: {{ $student?->account_id ?? 'N/A' }} &nbsp;|&nbsp;
                 {{ $assessment->course }} &nbsp;|&nbsp;
                 {{ $assessment->year_level }} &nbsp;|&nbsp;
+                Units: {{ $assessment->lec_units + $assessment->lab_units }} &nbsp;|&nbsp;
                 Assessment No: {{ $assessment->assessment_number }}
+                @if($assessment->discount_type && $assessment->discount_percentage > 0)
+                    <span class="discount-badge">{{ $assessment->discount_type }} {{ number_format($assessment->discount_percentage, 0) }}%</span>
+                @endif
             </div>
 
             <div class="section-title">Fee Breakdown</div>
@@ -54,6 +59,9 @@
                 <tr><th>Fee Type</th><th style="text-align:right">Amount</th></tr>
                 <tr><td>Tuition Fee</td><td style="text-align:right">₱{{ number_format($assessment->tuition_fee, 2) }}</td></tr>
                 <tr><td>Laboratory Fee</td><td style="text-align:right">₱{{ number_format($assessment->lab_fee, 2) }}</td></tr>
+                <tr><td>Lecture Units</td><td style="text-align:right">{{ $assessment->lec_units }}</td></tr>
+                <tr><td>Lab Units</td><td style="text-align:right">{{ $assessment->lab_units }}</td></tr>
+                <tr><td>Total Units</td><td style="text-align:right"><strong>{{ $assessment->lec_units + $assessment->lab_units }}</strong></td></tr>
                 <tr><td>Miscellaneous Fee</td><td style="text-align:right">₱{{ number_format($assessment->misc_fee, 2) }}</td></tr>
                 <tr class="total-row"><td>Total Assessment</td><td style="text-align:right">₱{{ number_format($assessment->total_assessment, 2) }}</td></tr>
             </table>

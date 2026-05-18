@@ -51,7 +51,7 @@
                 <td>{{ $txn->type ?? ($txn->meta['term_name'] ?? '—') }}</td>
                 <td>{{ ucfirst(str_replace('_', ' ', $txn->payment_channel ?? '—')) }}</td>
                 <td style="text-align:right">₱{{ number_format($txn->amount, 2) }}</td>
-                <td>{{ $txn->paid_at ? \Carbon\Carbon::parse($txn->paid_at)->format('M j, Y') : ($txn->created_at ? $txn->created_at->format('M j, Y') : '—') }}</td>
+                <td>{{ $txn->paid_at ? \Carbon\Carbon::parse($txn->paid_at)->format('M j, Y g:i A') : ($txn->created_at ? $txn->created_at->format('M j, Y g:i A') : '—') }}</td>
                 <td class="badge-paid">{{ ucfirst($txn->status) }}</td>
             </tr>
             @endforeach

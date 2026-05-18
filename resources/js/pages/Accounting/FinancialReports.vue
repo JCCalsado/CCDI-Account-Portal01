@@ -5,10 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDataFormatting } from '@/composables/useDataFormatting'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { Head, router } from '@inertiajs/vue3'
-import { BarChart3, Download, TrendingDown, TrendingUp } from 'lucide-vue-next'
+import { BarChart3, Download, TrendingUp } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PaymentMethod {
     method: string
@@ -16,23 +16,14 @@ interface PaymentMethod {
     total: number
 }
 
-interface OutstandingStudent {
+interface AssessedStudent {
     accountId: string
     latestRef: string
     studentName: string
     course: string
     total: number
     balance: number
-}
-
-interface HistoricalSummary {
-    label: string
-    schoolYear: string
-    semester: string
-    totalAssessments: number
-    totalAssessmentAmount: number
-    totalPaid: number
-    totalOutstanding: number
+    status: 'Fully Paid' | 'Partial' | 'Unpaid'
 }
 
 interface Props {
@@ -47,8 +38,7 @@ interface Props {
         byMonth: Array<{ month: string; total: number }>
     }
     paymentMethods: PaymentMethod[]
-    historicalComparison: HistoricalSummary | null
-    outstandingStudents: OutstandingStudent[]
+    assessedStudents: AssessedStudent[]   // renamed from outstandingStudents
     filters: {
         schoolYear: string
         semester: string
@@ -57,92 +47,84 @@ interface Props {
     semesters: string[]
 }
 
-// ── Props & composables ────────────────────────────────────────────────────────
+// ─── Setup ────────────────────────────────────────────────────────────────────
 
 const props = defineProps<Props>()
 const { formatCurrency } = useDataFormatting()
 
-// ── Local state ────────────────────────────────────────────────────────────────
-
 const selectedSchoolYear = ref(props.filters.schoolYear)
-const selectedSemester   = ref(props.filters.semester)
-const searchQuery        = ref('')
+const selectedSemester = ref(props.filters.semester)
 
-// ── Breadcrumbs ────────────────────────────────────────────────────────────────
+// Client-side search within the already-loaded student list (no round-trip)
+const searchQuery = ref('')
 
 const breadcrumbs = [
-    { title: 'Dashboard',  href: route('dashboard') },
+    { title: 'Dashboard', href: route('dashboard') },
     { title: 'Accounting', href: route('accounting.dashboard') },
     { title: 'Financial Reports' },
 ]
 
-// ── Computed ───────────────────────────────────────────────────────────────────
+// ─── Computed ─────────────────────────────────────────────────────────────────
 
 const collectionRate = computed(() => {
     const total = props.summary.totalAssessmentAmount
-    if (total <= 0) return 0
-    return Math.min(Math.round((props.summary.totalPaid / total) * 100), 100)
+    if (total === 0) return 0
+    return Math.round((props.summary.totalPaid / total) * 100)
 })
 
-const historicalCollectionRate = computed(() => {
-    if (!props.historicalComparison) return 0
-    const total = props.historicalComparison.totalAssessmentAmount
-    if (total <= 0) return 0
-    return Math.min(
-        Math.round((props.historicalComparison.totalPaid / total) * 100),
-        100,
+const filteredPaymentMethods = computed(() => {
+    return props.paymentMethods.filter(
+        (m) =>
+            m.method.toLowerCase() !== 'credit card' &&
+            m.method.toLowerCase() !== 'credit_card' &&
+            m.method.toLowerCase() !== 'debit card' &&
+            m.method.toLowerCase() !== 'debit_card',
     )
 })
 
-// Deltas: current period vs same semester last year
-const delta = computed(() => {
-    if (!props.historicalComparison) return null
-    const prev = props.historicalComparison
-    return {
-        assessments:    props.summary.totalAssessments      - prev.totalAssessments,
-        paid:           props.summary.totalPaid             - prev.totalPaid,
-        outstanding:    props.summary.totalOutstanding      - prev.totalOutstanding,
-        collectionRate: collectionRate.value                - historicalCollectionRate.value,
-    }
-})
+/** Client-side filter for the assessed students table */
+const filteredAssessedStudents = computed(() => {
+    if (!searchQuery.value.trim()) return props.assessedStudents
 
-// Payment method filter — hide card methods (they can't be used in test mode anyway)
-const filteredPaymentMethods = computed(() =>
-    props.paymentMethods.filter((m) => {
-        const key = m.method.toLowerCase().replace(/\s+/g, '_')
-        return key !== 'credit_card' && key !== 'debit_card'
-    }),
-)
-
-const maxCourseTotal = computed(() =>
-    Math.max(...props.charts.byCourse.map((c) => c.total), 1),
-)
-
-const maxMonthTotal = computed(() =>
-    Math.max(...props.charts.byMonth.map((m) => m.total), 1),
-)
-
-// Client-side search — all students are already loaded so no round-trip needed
-const filteredOutstandingStudents = computed(() => {
-    const q = searchQuery.value.trim().toLowerCase()
-    if (!q) return props.outstandingStudents
-    return props.outstandingStudents.filter(
+    const q = searchQuery.value.toLowerCase()
+    return props.assessedStudents.filter(
         (s) =>
             s.studentName.toLowerCase().includes(q) ||
-            s.accountId.toLowerCase().includes(q)   ||
-            s.course.toLowerCase().includes(q)       ||
+            s.accountId.toLowerCase().includes(q) ||
+            s.course.toLowerCase().includes(q) ||
             s.latestRef.toLowerCase().includes(q),
     )
 })
 
-// ── Actions ────────────────────────────────────────────────────────────────────
+// ─── Status badge helpers ─────────────────────────────────────────────────────
+
+function statusBadgeClass(status: AssessedStudent['status']): string {
+    switch (status) {
+        case 'Fully Paid':
+            return 'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold bg-green-100 text-green-800'
+        case 'Partial':
+            return 'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold bg-amber-100 text-amber-800'
+        case 'Unpaid':
+            return 'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold bg-red-100 text-red-800'
+        default:
+            return 'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold bg-muted text-muted-foreground'
+    }
+}
+
+function balanceClass(balance: number): string {
+    return balance <= 0
+        ? 'px-4 py-3 text-right text-sm font-semibold text-green-600'
+        : 'px-4 py-3 text-right text-sm font-semibold text-red-600'
+}
+
+// ─── Actions ─────────────────────────────────────────────────────────────────
 
 const applyFilters = () => {
     router.get(
         route('accounting.financial-reports'),
         {
             school_year: selectedSchoolYear.value,
-            semester:    selectedSemester.value,
+            semester: selectedSemester.value,
         },
         { preserveState: false },
     )
@@ -151,21 +133,21 @@ const applyFilters = () => {
 const exportPDF = () => {
     window.location.href = route('accounting.financial-reports.export', {
         school_year: selectedSchoolYear.value,
-        semester:    selectedSemester.value,
+        semester: selectedSemester.value,
     })
 }
 
 const exportAssessments = () => {
     window.location.href = route('accounting.financial-reports.export-assessments', {
         school_year: selectedSchoolYear.value,
-        semester:    selectedSemester.value,
+        semester: selectedSemester.value,
     })
 }
 
 const exportReceipts = () => {
     window.location.href = route('accounting.financial-reports.export-receipts', {
         school_year: selectedSchoolYear.value,
-        semester:    selectedSemester.value,
+        semester: selectedSemester.value,
     })
 }
 </script>
@@ -177,15 +159,13 @@ const exportReceipts = () => {
         <div class="w-full space-y-6 p-6">
             <Breadcrumbs :items="breadcrumbs" />
 
-            <!-- ── Page Header ─────────────────────────────────────────────── -->
+            <!-- ── Page Header ───────────────────────────────────────────────── -->
             <div class="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
                 <div>
                     <h1 class="text-3xl font-bold text-foreground">Financial Reports</h1>
-                    <p class="mt-1 text-sm text-muted-foreground">
-                        Monitor assessments, payments, and financial health
-                    </p>
+                    <p class="mt-1 text-sm text-muted-foreground">Monitor assessments, payments, and financial health</p>
                 </div>
-                <div class="flex flex-wrap gap-2">
+                <div class="flex gap-2 flex-wrap">
                     <Button @click="exportPDF" class="gap-2">
                         <Download class="h-4 w-4" />
                         Financial Report
@@ -201,7 +181,7 @@ const exportReceipts = () => {
                 </div>
             </div>
 
-            <!-- ── Filters ─────────────────────────────────────────────────── -->
+            <!-- ── Filters ───────────────────────────────────────────────────── -->
             <Card>
                 <CardHeader>
                     <CardTitle class="text-base">Filters</CardTitle>
@@ -209,11 +189,10 @@ const exportReceipts = () => {
                 <CardContent>
                     <div class="flex flex-col gap-4 sm:flex-row sm:items-end">
                         <div class="flex-1">
-                            <label for="school-year" class="mb-1 block text-sm font-medium text-foreground">
-                                School Year
-                            </label>
+                            <label for="school-year" class="block text-sm font-medium text-foreground mb-1">School Year</label>
                             <select
                                 id="school-year"
+                                name="school_year"
                                 v-model="selectedSchoolYear"
                                 class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
                             >
@@ -221,28 +200,23 @@ const exportReceipts = () => {
                             </select>
                         </div>
                         <div class="flex-1">
-                            <label for="semester" class="mb-1 block text-sm font-medium text-foreground">
-                                Semester
-                            </label>
+                            <label for="semester" class="block text-sm font-medium text-foreground mb-1">Semester</label>
                             <select
                                 id="semester"
+                                name="semester"
                                 v-model="selectedSemester"
                                 class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
                             >
                                 <option v-for="sem in semesters" :key="sem" :value="sem">{{ sem }}</option>
                             </select>
                         </div>
-                        <Button @click="applyFilters" class="bg-blue-600 hover:bg-blue-700">
-                            Apply Filters
-                        </Button>
+                        <Button @click="applyFilters" class="bg-blue-600 hover:bg-blue-700">Apply Filters</Button>
                     </div>
                 </CardContent>
             </Card>
 
-            <!-- ── Summary KPI Cards ───────────────────────────────────────── -->
+            <!-- ── Summary Cards ─────────────────────────────────────────────── -->
             <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-                <!-- Total Assessments -->
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Total Assessments</CardTitle>
@@ -250,20 +224,9 @@ const exportReceipts = () => {
                     <CardContent>
                         <div class="text-3xl font-bold">{{ summary.totalAssessments }}</div>
                         <p class="mt-1 text-xs text-muted-foreground">Students assessed</p>
-                        <p
-                            v-if="delta"
-                            class="mt-2 flex items-center gap-1 text-xs font-medium"
-                            :class="delta.assessments >= 0 ? 'text-green-600' : 'text-red-500'"
-                        >
-                            <TrendingUp v-if="delta.assessments >= 0" class="h-3 w-3" />
-                            <TrendingDown v-else class="h-3 w-3" />
-                            {{ delta.assessments >= 0 ? '+' : '' }}{{ delta.assessments }}
-                            vs {{ historicalComparison!.label }}
-                        </p>
                     </CardContent>
                 </Card>
 
-                <!-- Total Assessment Amount -->
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Total Assessment</CardTitle>
@@ -271,13 +234,9 @@ const exportReceipts = () => {
                     <CardContent>
                         <div class="text-2xl font-bold">{{ formatCurrency(summary.totalAssessmentAmount) }}</div>
                         <p class="mt-1 text-xs text-muted-foreground">Total billed</p>
-                        <p v-if="historicalComparison" class="mt-2 text-xs text-muted-foreground">
-                            Prev: {{ formatCurrency(historicalComparison.totalAssessmentAmount) }}
-                        </p>
                     </CardContent>
                 </Card>
 
-                <!-- Total Paid -->
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Total Paid</CardTitle>
@@ -285,20 +244,9 @@ const exportReceipts = () => {
                     <CardContent>
                         <div class="text-2xl font-bold text-green-600">{{ formatCurrency(summary.totalPaid) }}</div>
                         <p class="mt-1 text-xs text-muted-foreground">{{ collectionRate }}% collection rate</p>
-                        <p
-                            v-if="delta"
-                            class="mt-2 flex items-center gap-1 text-xs font-medium"
-                            :class="delta.paid >= 0 ? 'text-green-600' : 'text-red-500'"
-                        >
-                            <TrendingUp v-if="delta.paid >= 0" class="h-3 w-3" />
-                            <TrendingDown v-else class="h-3 w-3" />
-                            {{ delta.paid >= 0 ? '+' : '' }}{{ formatCurrency(delta.paid) }}
-                            vs {{ historicalComparison!.label }}
-                        </p>
                     </CardContent>
                 </Card>
 
-                <!-- Outstanding -->
                 <Card>
                     <CardHeader class="pb-3">
                         <CardTitle class="text-sm font-medium text-muted-foreground">Outstanding</CardTitle>
@@ -306,86 +254,13 @@ const exportReceipts = () => {
                     <CardContent>
                         <div class="text-2xl font-bold text-red-600">{{ formatCurrency(summary.totalOutstanding) }}</div>
                         <p class="mt-1 text-xs text-muted-foreground">Pending payments</p>
-                        <!-- Lower outstanding = improvement, so flip the colour logic -->
-                        <p
-                            v-if="delta"
-                            class="mt-2 flex items-center gap-1 text-xs font-medium"
-                            :class="delta.outstanding <= 0 ? 'text-green-600' : 'text-red-500'"
-                        >
-                            <TrendingDown v-if="delta.outstanding <= 0" class="h-3 w-3" />
-                            <TrendingUp v-else class="h-3 w-3" />
-                            {{ delta.outstanding >= 0 ? '+' : '' }}{{ formatCurrency(delta.outstanding) }}
-                            vs {{ historicalComparison!.label }}
-                        </p>
                     </CardContent>
                 </Card>
             </div>
 
-            <!-- ── Year-over-Year Comparison Panel ────────────────────────── -->
-            <!--
-                Only rendered when the same semester existed one AY ago.
-                Label example: "1st Sem 2024-2025"
-            -->
-            <Card v-if="historicalComparison">
-                <CardHeader>
-                    <CardTitle class="text-base">
-                        Year-over-Year Comparison
-                        <span class="ml-2 text-sm font-normal text-muted-foreground">
-                            {{ filters.semester }} Sem {{ filters.schoolYear }}
-                            vs
-                            {{ historicalComparison.label }}
-                        </span>
-                    </CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-                        <div class="rounded-lg border border-border bg-muted/30 p-4">
-                            <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                {{ historicalComparison.label }}
-                            </p>
-                            <p class="mt-2 text-2xl font-bold">{{ historicalComparison.totalAssessments }}</p>
-                            <p class="mt-1 text-xs text-muted-foreground">students assessed</p>
-                        </div>
-
-                        <div class="rounded-lg border border-border bg-muted/30 p-4">
-                            <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                Total Billed
-                            </p>
-                            <p class="mt-2 text-xl font-bold">
-                                {{ formatCurrency(historicalComparison.totalAssessmentAmount) }}
-                            </p>
-                        </div>
-
-                        <div class="rounded-lg border border-border bg-muted/30 p-4">
-                            <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                Total Paid
-                            </p>
-                            <p class="mt-2 text-xl font-bold text-green-600">
-                                {{ formatCurrency(historicalComparison.totalPaid) }}
-                            </p>
-                            <p class="mt-1 text-xs text-muted-foreground">
-                                {{ historicalCollectionRate }}% collection rate
-                            </p>
-                        </div>
-
-                        <div class="rounded-lg border border-border bg-muted/30 p-4">
-                            <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                                Outstanding
-                            </p>
-                            <p class="mt-2 text-xl font-bold text-red-600">
-                                {{ formatCurrency(historicalComparison.totalOutstanding) }}
-                            </p>
-                        </div>
-
-                    </div>
-                </CardContent>
-            </Card>
-
-            <!-- ── Charts ─────────────────────────────────────────────────── -->
+            <!-- ── Charts ────────────────────────────────────────────────────── -->
             <div class="grid gap-6 lg:grid-cols-2">
-
-                <!-- Assessments by Course -->
+                <!-- By Course -->
                 <Card>
                     <CardHeader>
                         <CardTitle class="flex items-center gap-2">
@@ -395,29 +270,22 @@ const exportReceipts = () => {
                     </CardHeader>
                     <CardContent>
                         <div class="space-y-4">
-                            <div
-                                v-if="charts.byCourse.length === 0"
-                                class="py-6 text-center text-sm text-muted-foreground"
-                            >
+                            <div v-if="charts.byCourse.length === 0" class="py-6 text-center text-sm text-muted-foreground">
                                 No assessment data for this period.
                             </div>
-                            <div
-                                v-for="course in charts.byCourse"
-                                :key="course.course"
-                                class="flex items-end gap-3"
-                            >
-                                <div class="min-w-0 flex-1">
-                                    <div class="truncate text-sm font-medium text-foreground">
-                                        {{ course.course }}
-                                    </div>
-                                    <div class="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
+                            <div v-for="course in charts.byCourse" :key="course.course" class="flex items-end gap-3">
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-sm font-medium text-foreground truncate">{{ course.course }}</div>
+                                    <div class="h-2 mt-1 w-full rounded-full bg-muted overflow-hidden">
                                         <div
                                             class="h-full bg-blue-500"
-                                            :style="{ width: (course.total / maxCourseTotal) * 100 + '%' }"
+                                            :style="{
+                                                width: (course.total / Math.max(...charts.byCourse.map((c) => c.total))) * 100 + '%',
+                                            }"
                                         ></div>
                                     </div>
                                 </div>
-                                <div class="whitespace-nowrap text-right">
+                                <div class="text-right whitespace-nowrap">
                                     <div class="text-sm font-semibold">{{ course.student_count }}</div>
                                     <div class="text-xs text-muted-foreground">{{ formatCurrency(course.total) }}</div>
                                 </div>
@@ -426,7 +294,7 @@ const exportReceipts = () => {
                     </CardContent>
                 </Card>
 
-                <!-- Payments by Month -->
+                <!-- By Month -->
                 <Card>
                     <CardHeader>
                         <CardTitle class="flex items-center gap-2">
@@ -436,27 +304,22 @@ const exportReceipts = () => {
                     </CardHeader>
                     <CardContent>
                         <div class="space-y-4">
-                            <div
-                                v-if="charts.byMonth.length === 0"
-                                class="py-6 text-center text-sm text-muted-foreground"
-                            >
+                            <div v-if="charts.byMonth.length === 0" class="py-6 text-center text-sm text-muted-foreground">
                                 No payment data for this period.
                             </div>
-                            <div
-                                v-for="month in charts.byMonth"
-                                :key="month.month"
-                                class="flex items-end gap-3"
-                            >
-                                <div class="min-w-0 flex-1">
+                            <div v-for="month in charts.byMonth" :key="month.month" class="flex items-end gap-3">
+                                <div class="flex-1 min-w-0">
                                     <div class="text-sm font-medium text-foreground">{{ month.month }}</div>
-                                    <div class="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
+                                    <div class="h-2 mt-1 w-full rounded-full bg-muted overflow-hidden">
                                         <div
                                             class="h-full bg-green-500"
-                                            :style="{ width: (month.total / maxMonthTotal) * 100 + '%' }"
+                                            :style="{
+                                                width: (month.total / Math.max(...charts.byMonth.map((m) => m.total), 1)) * 100 + '%',
+                                            }"
                                         ></div>
                                     </div>
                                 </div>
-                                <div class="whitespace-nowrap text-right">
+                                <div class="text-right whitespace-nowrap">
                                     <div class="text-sm font-semibold">{{ formatCurrency(month.total) }}</div>
                                 </div>
                             </div>
@@ -465,25 +328,18 @@ const exportReceipts = () => {
                 </Card>
             </div>
 
-            <!-- ── Payment Methods ─────────────────────────────────────────── -->
+            <!-- ── Payment Methods ───────────────────────────────────────────── -->
             <Card>
                 <CardHeader>
                     <CardTitle>Payment Method Breakdown</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <div
-                        v-if="filteredPaymentMethods.length === 0"
-                        class="py-6 text-center text-sm text-muted-foreground"
-                    >
+                    <div v-if="filteredPaymentMethods.length === 0" class="py-6 text-center text-sm text-muted-foreground">
                         No payment data for this period.
                     </div>
                     <div class="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
-                        <div
-                            v-for="method in filteredPaymentMethods"
-                            :key="method.method"
-                            class="rounded-lg border border-border p-4"
-                        >
-                            <div class="text-sm font-medium capitalize text-muted-foreground">{{ method.method }}</div>
+                        <div v-for="method in filteredPaymentMethods" :key="method.method" class="rounded-lg border border-border p-4">
+                            <div class="text-sm font-medium text-muted-foreground capitalize">{{ method.method }}</div>
                             <div class="mt-2 text-2xl font-bold">{{ method.count }}</div>
                             <div class="mt-1 text-xs text-muted-foreground">{{ formatCurrency(method.total) }}</div>
                         </div>
@@ -491,27 +347,31 @@ const exportReceipts = () => {
                 </CardContent>
             </Card>
 
-            <!-- ── Outstanding Balances — ALL students, client-side search ── -->
+            <!-- ── Student Account Status ─────────────────────────────────────
+                 Shows ALL students assessed for the selected period.
+                 Sorted by outstanding balance descending (debtors first).
+                 Status badge: Fully Paid (green) | Partial (amber) | Unpaid (red)
+            ─────────────────────────────────────────────────────────────────── -->
             <Card>
                 <CardHeader>
                     <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <CardTitle>
-                            Outstanding Balances
+                            Student Account Status
                             <span class="ml-2 text-sm font-normal text-muted-foreground">
                                 <template v-if="searchQuery.trim()">
-                                    {{ filteredOutstandingStudents.length }} of {{ outstandingStudents.length }}
+                                    {{ filteredAssessedStudents.length }} of {{ assessedStudents.length }} students
                                 </template>
                                 <template v-else>
-                                    {{ outstandingStudents.length }}
+                                    {{ assessedStudents.length }} student{{ assessedStudents.length !== 1 ? 's' : '' }}
                                 </template>
-                                student{{ outstandingStudents.length !== 1 ? 's' : '' }}
                             </span>
                         </CardTitle>
+                        <!-- Client-side search — no page reload -->
                         <input
                             v-model="searchQuery"
                             type="text"
-                            placeholder="Search by name, ID, course…"
-                            class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 sm:w-72"
+                            placeholder="Search by name, ID, course..."
+                            class="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 sm:w-64"
                         />
                     </div>
                 </CardHeader>
@@ -538,48 +398,46 @@ const exportReceipts = () => {
                                     <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                                         Outstanding Balance
                                     </th>
+                                    <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                        Status
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-border">
                                 <tr
-                                    v-for="(student, index) in filteredOutstandingStudents"
+                                    v-for="(student, index) in filteredAssessedStudents"
                                     :key="index"
                                     class="hover:bg-muted/30"
                                 >
-                                    <td class="px-4 py-3 font-mono text-sm text-muted-foreground">
-                                        {{ student.accountId }}
-                                    </td>
-                                    <td class="px-4 py-3 font-mono text-sm text-indigo-600">
-                                        {{ student.latestRef }}
-                                    </td>
+                                    <td class="px-4 py-3 text-sm font-mono text-muted-foreground">{{ student.accountId }}</td>
+                                    <td class="px-4 py-3 text-sm font-mono text-indigo-600">{{ student.latestRef }}</td>
                                     <td class="px-4 py-3 text-sm font-medium">{{ student.studentName }}</td>
                                     <td class="px-4 py-3 text-sm text-muted-foreground">{{ student.course }}</td>
-                                    <td class="px-4 py-3 text-right text-sm">
-                                        {{ formatCurrency(student.total) }}
-                                    </td>
-                                    <td class="px-4 py-3 text-right text-sm font-semibold text-red-600">
+                                    <td class="px-4 py-3 text-right text-sm">{{ formatCurrency(student.total) }}</td>
+                                    <td :class="balanceClass(student.balance)">
                                         {{ formatCurrency(student.balance) }}
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span :class="statusBadgeClass(student.status)">
+                                            {{ student.status }}
+                                        </span>
                                     </td>
                                 </tr>
                             </tbody>
                         </table>
 
-                        <!-- Empty: no data for period -->
-                        <div v-if="outstandingStudents.length === 0" class="py-8 text-center">
-                            <p class="text-sm text-muted-foreground">No outstanding balances for this period.</p>
+                        <!-- Empty state: no assessments at all for this period -->
+                        <div v-if="assessedStudents.length === 0" class="py-8 text-center">
+                            <p class="text-sm text-muted-foreground">No students assessed for this period.</p>
                         </div>
 
-                        <!-- Empty: search returned nothing -->
-                        <div
-                            v-else-if="filteredOutstandingStudents.length === 0"
-                            class="py-8 text-center"
-                        >
+                        <!-- Empty state: search returned nothing -->
+                        <div v-else-if="filteredAssessedStudents.length === 0" class="py-8 text-center">
                             <p class="text-sm text-muted-foreground">No students match your search.</p>
                         </div>
                     </div>
                 </CardContent>
             </Card>
-
         </div>
     </AppLayout>
 </template>
