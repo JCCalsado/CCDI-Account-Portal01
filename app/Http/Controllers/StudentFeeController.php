@@ -362,31 +362,44 @@ class StudentFeeController extends Controller
                     $assessment->paymentTerms()->create($term);
                 }
 
-                Transaction::create([
-                    'user_id'         => $validated['user_id'],
-                    'kind'            => 'charge',
-                    'status'          => 'paid',
-                    'amount'          => $fees['total'],
-                    'reference'       => 'ASMT-' . strtoupper(Str::random(8)),
-                    'payment_channel' => 'assessment',
-                    'year'            => now()->year,
-                    'semester'        => $validated['semester'],
-                    'meta'            => json_encode([
-                        'lec_units'           => $validated['lec_units'],
-                        'lab_units'           => $validated['lab_units'],
-                        'nstp_lec_units'      => $validated['nstp_lec_units'],
-                        'discount_percentage' => $validated['discount_percentage'],
-                        'tuition_fee'         => $fees['tuition_fee'],
-                        'billable_tuition'    => $fees['billable_tuition'],
-                        'nstp_tuition'        => $fees['nstp_tuition'],
-                        'discount_saving'     => $fees['discount_saving'],
-                        'lab_fee'             => $fees['lab_fee'],
-                        'misc_fee'            => $fees['misc_fee'],
-                        'school_year'         => $validated['school_year'],
-                        'discount_applied'    => $fees['discount_applied'],
-                        'year_level'          => $yearLevelForAssessment,
-                    ]),
+                // FIX: Guard against duplicate charge transactions.
+                $chargeYear = (int) explode('-', $validated['school_year'])[0];
+                $chargeMeta = json_encode([
+                    'lec_units'           => $validated['lec_units'],
+                    'lab_units'           => $validated['lab_units'],
+                    'nstp_lec_units'      => $validated['nstp_lec_units'],
+                    'discount_percentage' => $validated['discount_percentage'],
+                    'tuition_fee'         => $fees['tuition_fee'],
+                    'billable_tuition'    => $fees['billable_tuition'],
+                    'nstp_tuition'        => $fees['nstp_tuition'],
+                    'discount_saving'     => $fees['discount_saving'],
+                    'lab_fee'             => $fees['lab_fee'],
+                    'misc_fee'            => $fees['misc_fee'],
+                    'school_year'         => $validated['school_year'],
+                    'discount_applied'    => $fees['discount_applied'],
+                    'year_level'          => $yearLevelForAssessment,
                 ]);
+                $existingCharge = Transaction::where('user_id', $validated['user_id'])
+                    ->where('kind', 'charge')
+                    ->where('payment_channel', 'assessment')
+                    ->where('semester', $validated['semester'])
+                    ->where('year', $chargeYear)
+                    ->first();
+                if ($existingCharge) {
+                    $existingCharge->update(['amount' => $fees['total'], 'meta' => $chargeMeta]);
+                } else {
+                    Transaction::create([
+                        'user_id'         => $validated['user_id'],
+                        'kind'            => 'charge',
+                        'status'          => 'paid',
+                        'amount'          => $fees['total'],
+                        'reference'       => 'ASMT-' . strtoupper(Str::random(8)),
+                        'payment_channel' => 'assessment',
+                        'year'            => $chargeYear,
+                        'semester'        => $validated['semester'],
+                        'meta'            => $chargeMeta,
+                    ]);
+                }
 
                 AccountService::recalculate($student);
             });
@@ -809,6 +822,7 @@ class StudentFeeController extends Controller
             Transaction::where('user_id', $userId)
                 ->where('kind', 'charge')
                 ->where('semester', $validated['semester'])
+                ->where('year', (int) explode('-', $validated['school_year'])[0])
                 ->where('payment_channel', 'assessment')
                 ->latest()
                 ->first()

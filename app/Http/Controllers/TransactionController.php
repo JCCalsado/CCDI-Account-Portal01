@@ -61,8 +61,12 @@ class TransactionController extends Controller
             $allAssessments = [];
             $enrolledSubjectsByAssessment = [];
         } else {
+            // FIX: Students only see payment-kind transactions in Transaction History.
+            // Charge rows (kind='charge', ref='ASMT-*') are internal ledger entries,
+            // not cashier payments. Per Claude.md: excluded from this view.
             $transactions = $user->transactions()
                 ->with('user')
+                ->where('kind', 'payment')
                 ->orderByDesc('year')
                 ->orderByDesc('semester')
                 ->get()
