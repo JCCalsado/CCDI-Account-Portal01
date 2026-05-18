@@ -385,10 +385,16 @@ class StudentFeeController extends Controller
                     ->where('semester', $validated['semester'])
                     ->where('year', $chargeYear)
                     ->first();
+                // Use withoutEvents / saveQuietly so the Transaction::saved observer
+                // does NOT fire mid-transaction (payment terms aren't rebuilt yet at
+                // that point). The explicit recalculate() below is the authoritative,
+                // final-state call that runs after all terms have been written.
                 if ($existingCharge) {
-                    $existingCharge->update(['amount' => $fees['total'], 'meta' => $chargeMeta]);
+                    $existingCharge->amount = $fees['total'];
+                    $existingCharge->meta   = $chargeMeta;
+                    $existingCharge->saveQuietly();
                 } else {
-                    Transaction::create([
+                    Transaction::withoutEvents(fn () => Transaction::create([
                         'user_id'         => $validated['user_id'],
                         'kind'            => 'charge',
                         'status'          => 'paid',
@@ -398,9 +404,11 @@ class StudentFeeController extends Controller
                         'year'            => $chargeYear,
                         'semester'        => $validated['semester'],
                         'meta'            => $chargeMeta,
-                    ]);
+                    ]));
                 }
 
+                // Single, authoritative recalculate after the full assessment
+                // (assessment row + payment terms + charge transaction) is committed.
                 AccountService::recalculate($student);
             });
         } catch (\RuntimeException $e) {

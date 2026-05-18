@@ -159,16 +159,16 @@
                                     <td>Laboratory</td>
                                     <td style="text-align:right">{{ $assessment->lab_units }}</td>
                                 </tr>
-                                @if($assessment->nstp_units > 0)
+                                @if($assessment->nstp_lec_units > 0)
                                 <tr>
                                     <td>NSTP</td>
-                                    <td style="text-align:right">{{ $assessment->nstp_units }}</td>
+                                    <td style="text-align:right">{{ $assessment->nstp_lec_units }}</td>
                                 </tr>
                                 @endif
                                 <tr class="subtotal-row">
                                     <td>Total Units</td>
                                     <td style="text-align:right">
-                                        {{ $assessment->lec_units + $assessment->lab_units + ($assessment->nstp_units ?? 0) }}
+                                        {{ $assessment->lec_units + $assessment->lab_units + ($assessment->nstp_lec_units ?? 0) }}
                                     </td>
                                 </tr>
                             </tbody>
