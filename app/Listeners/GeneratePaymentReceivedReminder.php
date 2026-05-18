@@ -14,6 +14,26 @@ class GeneratePaymentReceivedReminder
     {
         $user = $event->user;
 
+        // ── IDEMPOTENCY GUARD ──────────────────────────────────────────────────
+        // If a PaymentReminder already exists for this exact transaction_id
+        // (stored in metadata), do NOT create a duplicate row.
+        // This guards against PaymentRecorded firing twice for the same
+        // transaction (e.g. staff-direct pay + approval path overlap, or
+        // retry-on-failure from a queued listener).
+        if ($event->transactionId !== null) {
+            $alreadyExists = PaymentReminder::where('user_id', $user->id)
+                ->whereJsonContains('metadata->transaction_id', $event->transactionId)
+                ->exists();
+
+            if ($alreadyExists) {
+                Log::info('GeneratePaymentReceivedReminder: skipped duplicate — reminder already exists for transaction', [
+                    'user_id'        => $user->id,
+                    'transaction_id' => $event->transactionId,
+                ]);
+                return;
+            }
+        }
+
         $assessment = $this->resolveAssessment($user, $event->transactionId);
 
         if (! $assessment) {
@@ -90,12 +110,6 @@ class GeneratePaymentReceivedReminder
         }
     }
 
-    /**
-     * Resolve which StudentAssessment this payment belongs to.
-     *
-     * Uses a direct Eloquent query in the fallback instead of
-     * $user->assessments() to stay independent of User model relationships.
-     */
     private function resolveAssessment(\App\Models\User $user, int $transactionId): ?StudentAssessment
     {
         $transaction = $user->transactions()->find($transactionId);
@@ -107,7 +121,6 @@ class GeneratePaymentReceivedReminder
             }
         }
 
-        // Fallback: query directly — avoids any dependency on User model relationships.
         return StudentAssessment::where('user_id', $user->id)
             ->latest('created_at')
             ->first();

@@ -3,8 +3,10 @@ import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, router, useForm } from '@inertiajs/vue3';
-import { CheckCircle2, Download, ExternalLink, FileText, ImageOff, RotateCcw, XCircle } from 'lucide-vue-next';
-import { ref } from 'vue';
+import { CheckCircle2, Download, ExternalLink, FileText, ImageOff, Info, RotateCcw, XCircle } from 'lucide-vue-next';
+import { computed, ref } from 'vue';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface TransactionMeta {
     term_name?: string;
@@ -54,6 +56,18 @@ interface UnpaidTerm {
     status: string;
 }
 
+/**
+ * UnpaidTerm enriched with waterfall allocation data.
+ * Only meaningful when approval.status === 'pending'.
+ */
+interface AllocatedTerm extends UnpaidTerm {
+    applied: number;
+    projectedBalance: number;
+    derivedStatus: 'paid' | 'partial' | 'pending';
+    isAffected: boolean;
+    isStartingTerm: boolean;
+}
+
 interface Assessment {
     id: number;
     assessment_number: string;
@@ -72,15 +86,21 @@ interface Props {
     proofType?: 'image' | 'pdf' | null;
 }
 
+// ─── Props & Composables ─────────────────────────────────────────────────────
+
 const props = defineProps<Props>();
 
 const { formatCurrency } = useDataFormatting();
+
+// ─── Breadcrumbs ─────────────────────────────────────────────────────────────
 
 const breadcrumbs = [
     { title: 'Dashboard', href: route('accounting.dashboard') },
     { title: 'Approvals', href: route('approvals.index') },
     { title: 'Details' },
 ];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const formatDate = (date: string | null) => {
     if (!date) return '—';
@@ -95,8 +115,19 @@ const formatDate = (date: string | null) => {
 
 const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1);
 
+const paymentMethodLabel: Record<string, string> = {
+    cash: 'Cash',
+    gcash: 'GCash',
+    bank_transfer: 'Bank Transfer',
+    credit_card: 'Credit Card',
+    debit_card: 'Debit Card',
+    paymongo_checkout: 'PayMongo',
+};
+
+// ─── UI State ─────────────────────────────────────────────────────────────────
+
 const showRejectDialog = ref(false);
-const proofLoadError = ref(false);
+const proofLoadError   = ref(false);
 
 const approveForm = useForm({});
 
@@ -119,22 +150,102 @@ const reject = () => {
     });
 };
 
-const refreshApproval = () => {
-    router.reload();
-};
+const refreshApproval = () => router.reload();
+const onProofLoadError = () => { proofLoadError.value = true; };
 
-const onProofLoadError = () => {
-    proofLoadError.value = true;
-};
+// ─── Payment Allocation Computeds ─────────────────────────────────────────────
 
-const paymentMethodLabel: Record<string, string> = {
-    cash: 'Cash',
-    gcash: 'GCash',
-    bank_transfer: 'Bank Transfer',
-    credit_card: 'Credit Card',
-    debit_card: 'Debit Card',
-    paymongo_checkout: 'PayMongo',
-};
+/** The gross payment amount submitted by the student. */
+const paymentAmount = computed((): number =>
+    Number(props.approval.workflow_instance?.workflowable?.amount ?? 0),
+);
+
+/** The term the student selected when submitting the payment. */
+const selectedTermId = computed((): number | null =>
+    props.approval.workflow_instance?.workflowable?.meta?.selected_term_id ?? null,
+);
+
+/**
+ * Waterfall allocation preview.
+ *
+ * Rules:
+ * 1. Locate the starting term from selectedTermId.
+ *    If the selected term is not found in unpaidTerms (already paid / data race),
+ *    fall back to starting from index 0.
+ * 2. Terms that appear BEFORE the starting term in the server-ordered list
+ *    are untouched by this payment.
+ * 3. From the starting term onward, allocate the payment amount sequentially:
+ *    each term gets min(remaining, balance).
+ * 4. A term is 'paid' when applied >= balance, 'partial' when 0 < applied < balance.
+ */
+const allocationPreview = computed((): AllocatedTerm[] => {
+    const terms = props.unpaidTerms ?? [];
+    if (!terms.length) return [];
+
+    const amount  = paymentAmount.value;
+    const startId = selectedTermId.value;
+
+    let startIdx = startId !== null ? terms.findIndex((t) => t.id === startId) : -1;
+    if (startIdx === -1) startIdx = 0; // graceful fallback
+
+    let remaining = amount;
+
+    return terms.map((term, idx): AllocatedTerm => {
+        const isStartingTerm = term.id === startId;
+
+        // Terms before the selected term are untouched
+        if (idx < startIdx || remaining <= 0) {
+            return {
+                ...term,
+                applied: 0,
+                projectedBalance: term.balance,
+                derivedStatus: term.status as 'paid' | 'partial' | 'pending',
+                isAffected: false,
+                isStartingTerm,
+            };
+        }
+
+        const applied          = Math.min(remaining, term.balance);
+        remaining              = Math.max(0, remaining - applied);
+        const projectedBalance = Math.max(0, term.balance - applied);
+
+        let derivedStatus: 'paid' | 'partial' | 'pending' = 'pending';
+        if (applied >= term.balance) derivedStatus = 'paid';
+        else if (applied > 0)        derivedStatus = 'partial';
+
+        return {
+            ...term,
+            applied,
+            projectedBalance,
+            derivedStatus,
+            isAffected: applied > 0,
+            isStartingTerm,
+        };
+    });
+});
+
+/** Total amount that will be distributed across terms. */
+const totalApplied = computed((): number =>
+    allocationPreview.value.reduce((sum, t) => sum + t.applied, 0),
+);
+
+/**
+ * Excess amount after all unpaid balances are satisfied.
+ * > 0 means this payment creates a credit on the student's account.
+ */
+const excessAmount = computed((): number =>
+    Math.max(0, paymentAmount.value - totalApplied.value),
+);
+
+/** Number of terms that receive at least partial coverage. */
+const affectedTermCount = computed((): number =>
+    allocationPreview.value.filter((t) => t.isAffected).length,
+);
+
+/** True if any terms are fully paid off by this payment. */
+const fullyPaidTermCount = computed((): number =>
+    allocationPreview.value.filter((t) => t.derivedStatus === 'paid').length,
+);
 </script>
 
 <template>
@@ -144,7 +255,7 @@ const paymentMethodLabel: Record<string, string> = {
         <div class="w-full space-y-6 p-6">
             <Breadcrumbs :items="breadcrumbs" />
 
-            <!-- Header -->
+            <!-- ── Page Header ── -->
             <div class="flex items-center justify-between">
                 <div>
                     <h1 class="text-3xl font-bold">Approval Details</h1>
@@ -159,7 +270,7 @@ const paymentMethodLabel: Record<string, string> = {
                 </button>
             </div>
 
-            <!-- Approval Details Card -->
+            <!-- ── Main Card ── -->
             <div class="space-y-6 rounded-xl border bg-white p-6 shadow-sm">
 
                 <!-- Status Badge + Amount -->
@@ -168,13 +279,16 @@ const paymentMethodLabel: Record<string, string> = {
                         class="rounded-full px-4 py-2 text-sm font-semibold"
                         :class="{
                             'bg-yellow-100 text-yellow-800': approval.status === 'pending',
-                            'bg-green-100 text-green-800': approval.status === 'approved',
-                            'bg-red-100 text-red-800': approval.status === 'rejected',
+                            'bg-green-100 text-green-800':  approval.status === 'approved',
+                            'bg-red-100 text-red-800':      approval.status === 'rejected',
                         }"
                     >
                         {{ capitalize(approval.status) }}
                     </span>
-                    <p v-if="approval.workflow_instance?.workflowable?.amount" class="text-2xl font-bold text-blue-700">
+                    <p
+                        v-if="approval.workflow_instance?.workflowable?.amount"
+                        class="text-2xl font-bold text-blue-700"
+                    >
                         {{ formatCurrency(approval.workflow_instance.workflowable.amount) }}
                     </p>
                 </div>
@@ -193,11 +307,7 @@ const paymentMethodLabel: Record<string, string> = {
                             }}
                         </p>
                         <p class="text-xs text-gray-400">
-                            {{
-                                student?.user?.account_id
-                                    ?? approval.workflow_instance?.workflowable?.user?.account_id
-                                    ?? ''
-                            }}
+                            {{ student?.user?.account_id ?? approval.workflow_instance?.workflowable?.user?.account_id ?? '' }}
                         </p>
                     </div>
                     <div>
@@ -213,7 +323,11 @@ const paymentMethodLabel: Record<string, string> = {
                     <div>
                         <p class="text-sm text-gray-500">Term</p>
                         <p class="font-semibold">
-                            {{ approval.workflow_instance?.workflowable?.meta?.term_name ?? approval.workflow_instance?.workflowable?.type ?? '—' }}
+                            {{
+                                approval.workflow_instance?.workflowable?.meta?.term_name
+                                ?? approval.workflow_instance?.workflowable?.type
+                                ?? '—'
+                            }}
                         </p>
                     </div>
                     <div>
@@ -266,7 +380,7 @@ const paymentMethodLabel: Record<string, string> = {
                         </a>
                     </div>
 
-                    <!-- No proof uploaded -->
+                    <!-- No proof -->
                     <div
                         v-if="!proofUrl"
                         class="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 py-12 text-center"
@@ -278,9 +392,8 @@ const paymentMethodLabel: Record<string, string> = {
                         </p>
                     </div>
 
-                    <!-- Image proof (jpg, png, webp) -->
+                    <!-- Image proof -->
                     <div v-else-if="proofType === 'image'" class="overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
-                        <!-- Load error fallback -->
                         <div
                             v-if="proofLoadError"
                             class="flex flex-col items-center justify-center py-12 text-center"
@@ -336,45 +449,184 @@ const paymentMethodLabel: Record<string, string> = {
                     <p class="mt-2 rounded-lg bg-gray-50 p-4 text-sm">{{ approval.comments }}</p>
                 </div>
 
-                <!-- Other Unpaid Terms -->
+                <!-- ── PAYMENT ALLOCATION PREVIEW ────────────────────────── -->
                 <div v-if="unpaidTerms && unpaidTerms.length > 0" class="border-t pt-6">
-                    <h3 class="mb-4 font-semibold text-gray-900">Other Unpaid Payment Terms</h3>
+
+                    <!-- Section header + summary badges -->
+                    <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <h3 class="font-semibold text-gray-900">
+                                <template v-if="approval.status === 'pending'">
+                                    Payment Allocation Preview
+                                </template>
+                                <template v-else>
+                                    Other Unpaid Payment Terms
+                                </template>
+                            </h3>
+                            <p v-if="approval.status === 'pending'" class="mt-0.5 text-sm text-gray-500">
+                                How {{ formatCurrency(paymentAmount) }} will be distributed if approved
+                            </p>
+                        </div>
+
+                        <!-- Allocation summary badges (pending only) -->
+                        <div
+                            v-if="approval.status === 'pending'"
+                            class="flex flex-wrap items-center gap-2 text-xs"
+                        >
+                            <span class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-800">
+                                {{ formatCurrency(totalApplied) }} applied
+                            </span>
+                            <span
+                                v-if="fullyPaidTermCount > 0"
+                                class="inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-1 font-semibold text-green-800"
+                            >
+                                {{ fullyPaidTermCount }} term{{ fullyPaidTermCount !== 1 ? 's' : '' }} fully paid
+                            </span>
+                            <span
+                                v-if="excessAmount > 0"
+                                class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 font-semibold text-amber-800"
+                            >
+                                {{ formatCurrency(excessAmount) }} excess
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- Allocation table -->
                     <div class="overflow-x-auto rounded-lg border">
                         <table class="w-full">
                             <thead class="bg-gray-50">
                                 <tr>
-                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">Term</th>
-                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">Amount</th>
-                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">Balance</th>
-                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">Due Date</th>
-                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">Status</th>
+                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                                        Term
+                                    </th>
+                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                                        Balance Due
+                                    </th>
+                                    <!-- "Applied" column only shown for pending approvals -->
+                                    <th
+                                        v-if="approval.status === 'pending'"
+                                        class="border-b px-4 py-3 text-left text-sm font-semibold text-blue-700"
+                                    >
+                                        Applied
+                                    </th>
+                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                                        {{ approval.status === 'pending' ? 'After Payment' : 'Balance' }}
+                                    </th>
+                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                                        Due Date
+                                    </th>
+                                    <th class="border-b px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                                        Status
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="term in unpaidTerms" :key="term.id" class="border-b hover:bg-gray-50">
-                                    <td class="px-4 py-3 text-sm">{{ term.term_name }}</td>
-                                    <td class="px-4 py-3 text-sm">{{ formatCurrency(term.amount) }}</td>
-                                    <td class="px-4 py-3 text-sm font-semibold text-orange-600">{{ formatCurrency(term.balance) }}</td>
+                                <tr
+                                    v-for="term in allocationPreview"
+                                    :key="term.id"
+                                    class="border-b transition-colors"
+                                    :class="{
+                                        'bg-green-50 hover:bg-green-100/70':  term.isAffected && term.derivedStatus === 'paid',
+                                        'bg-amber-50 hover:bg-amber-100/70':  term.isAffected && term.derivedStatus === 'partial',
+                                        'hover:bg-gray-50':                   !term.isAffected,
+                                    }"
+                                >
+                                    <!-- Term name + "Selected" badge -->
+                                    <td class="px-4 py-3 text-sm">
+                                        <div class="flex items-center gap-2">
+                                            <span>{{ term.term_name }}</span>
+                                            <span
+                                                v-if="term.isStartingTerm"
+                                                class="rounded bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-700"
+                                            >
+                                                Selected
+                                            </span>
+                                        </div>
+                                    </td>
+
+                                    <!-- Original balance — strikethrough when fully covered -->
+                                    <td class="px-4 py-3 text-sm">
+                                        <span
+                                            :class="
+                                                term.isAffected && term.derivedStatus === 'paid'
+                                                    ? 'text-gray-400 line-through'
+                                                    : 'font-semibold text-orange-600'
+                                            "
+                                        >
+                                            {{ formatCurrency(term.balance) }}
+                                        </span>
+                                    </td>
+
+                                    <!-- Applied amount (pending only) -->
+                                    <td v-if="approval.status === 'pending'" class="px-4 py-3 text-sm">
+                                        <span v-if="term.applied > 0" class="font-semibold text-green-700">
+                                            + {{ formatCurrency(term.applied) }}
+                                        </span>
+                                        <span v-else class="text-gray-400">—</span>
+                                    </td>
+
+                                    <!-- Projected balance after payment (pending) / current balance (non-pending) -->
+                                    <td class="px-4 py-3 text-sm font-semibold">
+                                        <span
+                                            :class="{
+                                                'text-green-600':  (approval.status === 'pending' ? term.projectedBalance : term.balance) === 0,
+                                                'text-amber-600':  approval.status === 'pending' && term.projectedBalance > 0 && term.projectedBalance < term.balance,
+                                                'text-orange-600': (approval.status === 'pending' ? term.projectedBalance : term.balance) > 0 && !(approval.status === 'pending' && term.projectedBalance < term.balance),
+                                            }"
+                                        >
+                                            {{ formatCurrency(approval.status === 'pending' ? term.projectedBalance : term.balance) }}
+                                        </span>
+                                    </td>
+
+                                    <!-- Due date -->
                                     <td class="px-4 py-3 text-sm">{{ formatDate(term.due_date) }}</td>
+
+                                    <!-- Status badge -->
                                     <td class="px-4 py-3 text-sm">
                                         <span
                                             class="rounded-full px-2.5 py-1 text-xs font-semibold"
                                             :class="{
-                                                'bg-yellow-100 text-yellow-800': term.status === 'pending',
-                                                'bg-orange-100 text-orange-800': term.status === 'partial',
-                                                'bg-green-100 text-green-800': term.status === 'paid',
+                                                'bg-green-100 text-green-800':   (approval.status === 'pending' ? term.derivedStatus : term.status) === 'paid',
+                                                'bg-amber-100 text-amber-800':   (approval.status === 'pending' ? term.derivedStatus : term.status) === 'partial',
+                                                'bg-yellow-100 text-yellow-800': (approval.status === 'pending' ? term.derivedStatus : term.status) === 'pending',
+                                                'bg-orange-100 text-orange-800': (approval.status === 'pending' ? term.derivedStatus : term.status) === 'overdue',
                                             }"
                                         >
-                                            {{ capitalize(term.status) }}
+                                            {{ capitalize(approval.status === 'pending' ? term.derivedStatus : term.status) }}
                                         </span>
                                     </td>
                                 </tr>
                             </tbody>
+
+                            <!-- Excess / credit notice -->
+                            <tfoot v-if="approval.status === 'pending' && excessAmount > 0">
+                                <tr class="bg-amber-50">
+                                    <td
+                                        colspan="6"
+                                        class="px-4 py-3 text-sm text-amber-800"
+                                    >
+                                        <div class="flex items-start gap-2">
+                                            <Info :size="16" class="mt-0.5 flex-shrink-0 text-amber-600" />
+                                            <span>
+                                                Payment exceeds all outstanding balances by
+                                                <strong>{{ formatCurrency(excessAmount) }}</strong>.
+                                                The excess will be recorded as a credit on the student's account.
+                                            </span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
-                </div>
 
-                <!-- Action Buttons — pending only -->
+                    <!-- "Allocation flows from selected term" note for pending -->
+                    <p v-if="approval.status === 'pending' && affectedTermCount > 1" class="mt-2 text-xs text-gray-400">
+                        Payment covers the selected term first, then flows to subsequent unpaid terms in order.
+                    </p>
+                </div>
+                <!-- ── END PAYMENT ALLOCATION PREVIEW ────────────────────── -->
+
+                <!-- ── ACTION BUTTONS ─────────────────────────────────────── -->
                 <div v-if="approval.status === 'pending'" class="border-t pt-6">
                     <p class="mb-4 text-sm font-semibold text-gray-700">Take Action</p>
                     <div class="grid grid-cols-2 gap-4">
@@ -383,7 +635,11 @@ const paymentMethodLabel: Record<string, string> = {
                             :disabled="approveForm.processing"
                             class="group relative inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-green-500 to-green-600 px-6 py-3 font-semibold text-white shadow-lg transition-all duration-200 hover:scale-105 hover:from-green-600 hover:to-green-700 hover:shadow-xl disabled:scale-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                            <CheckCircle2 v-if="!approveForm.processing" :size="20" class="transition-transform group-hover:scale-110" />
+                            <CheckCircle2
+                                v-if="!approveForm.processing"
+                                :size="20"
+                                class="transition-transform group-hover:scale-110"
+                            />
                             <span>{{ approveForm.processing ? 'Approving…' : 'Approve' }}</span>
                         </button>
                         <button
@@ -391,7 +647,11 @@ const paymentMethodLabel: Record<string, string> = {
                             :disabled="approveForm.processing"
                             class="group relative inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-red-500 to-red-600 px-6 py-3 font-semibold text-white shadow-lg transition-all duration-200 hover:scale-105 hover:from-red-600 hover:to-red-700 hover:shadow-xl disabled:scale-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                            <XCircle v-if="!approveForm.processing" :size="20" class="transition-transform group-hover:scale-110" />
+                            <XCircle
+                                v-if="!approveForm.processing"
+                                :size="20"
+                                class="transition-transform group-hover:scale-110"
+                            />
                             <span>Decline</span>
                         </button>
                     </div>
@@ -399,7 +659,7 @@ const paymentMethodLabel: Record<string, string> = {
             </div>
         </div>
 
-        <!-- Decline Dialog -->
+        <!-- ── Decline Dialog ── -->
         <div
             v-if="showRejectDialog"
             class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, router } from '@inertiajs/vue3';
-import { ChevronDown, BookOpen, FlaskConical } from 'lucide-vue-next';
+import { BookOpen, ChevronDown, FlaskConical, Receipt } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 const { formatCurrency } = useDataFormatting();
@@ -92,7 +92,17 @@ const showDetailsDialog   = ref(false);
 const isStaff = computed(() => ['admin', 'accounting', 'super_admin'].includes(props.auth.user.role));
 
 // ─── Auto-expand current term ─────────────────────────────────────────────────
-if (props.currentTerm && props.transactionsByTerm?.[props.currentTerm]) {
+// Expand if the current term has transactions OR if it has an assessment
+// (covers newly-assessed students with zero payments yet).
+const hasCurrentTermTransactions = !!(
+    props.currentTerm && props.transactionsByTerm?.[props.currentTerm]
+);
+const hasCurrentTermAssessment = !!(
+    props.currentTerm &&
+    props.allAssessments?.some((a) => `${a.school_year} ${a.semester}` === props.currentTerm)
+);
+
+if (hasCurrentTermTransactions || hasCurrentTermAssessment) {
     expanded.value[props.currentTerm] = true;
 }
 
@@ -120,6 +130,22 @@ const calculateTermSummary = (termKey: string, transactions: Transaction[]): Ter
         .reduce((s, t) => s + parseFloat(String(t.amount || 0)), 0);
     return { total_assessment: totalAssessment, total_paid: payments, current_balance: totalAssessment - payments };
 };
+
+// ─── Assessment for the current term (student-facing) ─────────────────────────
+
+/**
+ * The assessment object that matches props.currentTerm.
+ * Used to populate the empty-state card when a student has been assessed
+ * but has not yet made any payments.
+ */
+const currentTermAssessment = computed((): Assessment | null => {
+    if (!props.allAssessments?.length || !props.currentTerm) return null;
+    return (
+        props.allAssessments.find(
+            (a) => `${a.school_year} ${a.semester}` === props.currentTerm,
+        ) ?? null
+    );
+});
 
 // ─── Enrolled Subjects by Term ────────────────────────────────────────────────
 function buildSubjectPanel(assessment: Assessment) {
@@ -202,7 +228,7 @@ const toggleSubjectTerm = (assessmentId: number) => {
 const subjectPanelsByTerm = computed(() => {
     const result: Record<string, ReturnType<typeof buildSubjectPanel> | null> = {};
 
-    for (const [termKey] of Object.entries(props.transactionsByTerm ?? {})) {
+    for (const termKey of Object.keys(filteredTransactionsByTermWithAssessments.value)) {
         const parts      = termKey.split(' ');
         const schoolYear = parts[0];
         const semester   = parts.slice(1).join(' ');
@@ -284,6 +310,36 @@ const filteredTransactionsByTerm = computed(() => {
     });
 
     return result;
+});
+
+/**
+ * Final term map used by the template.
+ *
+ * Extends filteredTransactionsByTerm with a synthetic empty entry for
+ * the current term when ALL of these are true:
+ *  1. The user is a student (not staff).
+ *  2. An assessment exists for props.currentTerm.
+ *  3. The current term has no transactions yet (assessed but zero payments).
+ *
+ * This guarantees the current term section always renders for students,
+ * even before their first payment, showing assessment details + empty state.
+ */
+const filteredTransactionsByTermWithAssessments = computed((): Record<string, Transaction[]> => {
+    const terms = filteredTransactionsByTerm.value;
+
+    if (
+        !isStaff.value &&
+        currentTermAssessment.value &&
+        !(props.currentTerm in terms)
+    ) {
+        // Prepend the current term at the top (empty array = no transactions)
+        return {
+            [props.currentTerm]: [] as Transaction[],
+            ...terms,
+        };
+    }
+
+    return terms;
 });
 
 // ─── Balance ──────────────────────────────────────────────────────────────────
@@ -408,14 +464,18 @@ const displayRefLabel = (t: Transaction): string => {
             </div>
 
             <!-- ── No Results ── -->
-            <div v-if="Object.keys(filteredTransactionsByTerm).length === 0" class="py-12 text-center">
+            <!-- ── No Results (only when truly nothing — no transactions AND no current assessment) ── -->
+            <div
+                v-if="Object.keys(filteredTransactionsByTermWithAssessments).length === 0"
+                class="py-12 text-center"
+            >
                 <p class="text-lg text-gray-500">No transactions found</p>
                 <p class="mt-2 text-sm text-gray-400">Try adjusting your search or show past semesters</p>
             </div>
 
             <!-- ── Term Groups ── -->
             <div
-                v-for="(transactions, termKey) in filteredTransactionsByTerm"
+                v-for="(transactions, termKey) in filteredTransactionsByTermWithAssessments"
                 :key="termKey"
                 class="overflow-hidden rounded-xl border bg-white shadow-sm"
             >
@@ -432,7 +492,12 @@ const displayRefLabel = (t: Transaction): string => {
                             </span>
                         </div>
                         <p class="mt-1 text-gray-500">
-                            {{ transactions.length }} transaction{{ transactions.length !== 1 ? 's' : '' }}
+                            <template v-if="transactions.length > 0">
+                                {{ transactions.length }} transaction{{ transactions.length !== 1 ? 's' : '' }}
+                            </template>
+                            <template v-else>
+                                <span class="text-amber-600">No payments recorded yet</span>
+                            </template>
                         </p>
                     </div>
 
@@ -482,9 +547,70 @@ const displayRefLabel = (t: Transaction): string => {
                     </div>
                 </div>
 
-                <!-- Expanded rows -->
+                <!-- Expanded content -->
                 <div v-if="expanded[termKey]" class="border-t p-5">
-                    <div class="overflow-x-auto">
+
+                    <!-- ══ EMPTY STATE — assessment exists, no payments yet ══ -->
+                    <div v-if="transactions.length === 0" class="py-4">
+
+                        <!-- Icon + message -->
+                        <div class="flex flex-col items-center justify-center py-8 text-center">
+                            <div class="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50">
+                                <Receipt class="h-7 w-7 text-blue-400" />
+                            </div>
+                            <h3 class="mb-1 text-base font-semibold text-gray-700">
+                                No payments recorded yet
+                            </h3>
+                            <p class="mb-5 max-w-sm text-sm text-gray-500">
+                                Your account has been assessed for this term.
+                                Make your first payment to get started.
+                            </p>
+                            <button
+                                v-if="!isStaff && canMakePayment"
+                                @click="payNow"
+                                class="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+                            >
+                                Make a Payment
+                            </button>
+                        </div>
+
+                        <!-- Current assessment details card -->
+                        <div
+                            v-if="currentTermAssessment && termKey === currentTerm"
+                            class="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-5"
+                        >
+                            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-blue-600">
+                                Assessment Summary
+                            </p>
+                            <div class="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                                <div>
+                                    <p class="text-xs text-gray-500">Year Level</p>
+                                    <p class="mt-0.5 text-sm font-semibold text-gray-800">
+                                        {{ currentTermAssessment.year_level }}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p class="text-xs text-gray-500">Term</p>
+                                    <p class="mt-0.5 text-sm font-semibold text-gray-800">
+                                        {{ currentTermAssessment.school_year }} · {{ currentTermAssessment.semester }}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p class="text-xs text-gray-500">Total Assessment</p>
+                                    <p class="mt-0.5 text-sm font-bold text-red-600">
+                                        {{ formatCurrency(currentTermAssessment.total_assessment) }}
+                                    </p>
+                                </div>
+                            </div>
+                            <p class="mt-3 text-xs text-blue-500">
+                                Your full assessment is shown below in the enrolled subjects panel.
+                            </p>
+                        </div>
+                    </div>
+                    <!-- ══ END EMPTY STATE ══ -->
+
+                    <!-- ══ TRANSACTION TABLE — when payments exist ══ -->
+                    <div v-else class="overflow-x-auto">
                         <table class="w-full border-collapse text-left">
                             <thead>
                                 <tr class="bg-gray-100 text-xs text-gray-600 uppercase">
@@ -608,6 +734,7 @@ const displayRefLabel = (t: Transaction): string => {
                             </tbody>
                         </table>
                     </div>
+                    <!-- ══ END TRANSACTION TABLE ══ -->
 
                     <!-- ── Enrolled Subjects for this term ── -->
                     <div v-if="subjectPanelsByTerm[termKey]" class="border-t border-gray-100">

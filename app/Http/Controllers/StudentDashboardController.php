@@ -123,6 +123,8 @@ class StudentDashboardController extends Controller
             ->orderByDesc('created_at')
             ->limit(10)
             ->get()
+            ->unique(fn ($r) => $r->metadata['transaction_id'] ?? $r->id) // collapse duplicates by transaction
+            ->values()
             ->map(fn ($r) => [
                 'id'                  => $r->id,
                 'type'                => $r->type,
