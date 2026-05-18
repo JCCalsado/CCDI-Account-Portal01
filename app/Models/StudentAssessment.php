@@ -93,6 +93,7 @@ class StudentAssessment extends Model
         $year = date('Y');
 
         $maxNum = DB::table('student_assessments')
+            ->lockForUpdate()
             ->where('assessment_number', 'like', "ASMT-{$year}-%")
             ->selectRaw("MAX(CAST(SUBSTRING_INDEX(assessment_number, '-', -1) AS UNSIGNED)) as max_num")
             ->value('max_num');
