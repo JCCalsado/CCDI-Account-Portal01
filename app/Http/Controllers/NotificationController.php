@@ -9,6 +9,7 @@ use App\Models\Notification;
 use App\Models\StudentAssessment;
 use App\Models\StudentPaymentTerm;
 use App\Models\User;
+use App\Services\PhilSmsService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -31,6 +32,8 @@ class NotificationController extends Controller
     ];
 
     private const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
+
+    public function __construct(private readonly PhilSmsService $sms) {}
 
     // =========================================================================
     // Routing entry point
@@ -62,8 +65,6 @@ class NotificationController extends Controller
     {
         $user = $request->user();
 
-        // FIX #2: forCourseYearLevel() scope applied so course_filter and
-        // year_level_filter columns actually restrict student visibility.
         $active = Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
@@ -89,8 +90,6 @@ class NotificationController extends Controller
             ->get()
             ->map(fn ($n) => $this->mapNotification($n));
 
-        // FIX #2: forCourseYearLevel() applied here too — mark-as-read must
-        // only touch records this student is actually allowed to see.
         Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
@@ -111,7 +110,6 @@ class NotificationController extends Controller
     {
         $user = $request->user();
 
-        // FIX #2: forCourseYearLevel() applied here as well.
         Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
@@ -152,6 +150,7 @@ class NotificationController extends Controller
         if ($validated['notification_status'] === 'active') {
             $this->syncDueDateToPaymentTerms($validated);
             $this->dispatchNotificationEmails($validated);
+            $this->dispatchNotificationSms($validated);
         }
 
         return redirect('/accounting/notifications')
@@ -191,6 +190,7 @@ class NotificationController extends Controller
         if ($validated['notification_status'] === 'active') {
             $this->syncDueDateToPaymentTerms($validated);
             $this->dispatchNotificationEmails($validated);
+            $this->dispatchNotificationSms($validated);
         }
 
         return redirect('/accounting/notifications')
@@ -306,6 +306,105 @@ class NotificationController extends Controller
             ]);
         }
     }
+
+    // =========================================================================
+    // SMS Dispatch (PhilSMS)
+    // =========================================================================
+
+    /**
+     * Dispatch SMS notifications via PhilSMS for admin-created notifications.
+     *
+     * Only fires when:
+     *   1. The notification status is 'active'
+     *   2. PhilSMS is enabled in config (PHILSMS_ENABLED=true)
+     *   3. The resolved recipient has a phone number on record
+     *
+     * SMS is always best-effort — failures are logged but never thrown.
+     */
+    private function dispatchNotificationSms(array $data): void
+    {
+        try {
+            $recipients = $this->resolveEmailRecipients($data);
+
+            if ($recipients->isEmpty()) {
+                return;
+            }
+
+            $type    = $data['type'] ?? 'general';
+            $phones  = [];
+
+            foreach ($recipients as $user) {
+                $phone = $user->phone ?? null;
+                if (! $phone) {
+                    continue;
+                }
+
+                $phones[$user->id] = [
+                    'phone' => $phone,
+                    'name'  => $user->first_name ?? 'Student',
+                ];
+            }
+
+            if (empty($phones)) {
+                Log::info('NotificationController: no phone numbers found for SMS', [
+                    'notification_title' => $data['title'],
+                ]);
+                return;
+            }
+
+            $sent   = 0;
+            $failed = 0;
+
+            foreach ($phones as $userId => $info) {
+                $message = $this->buildSmsMessage($data, $info['name'], $type);
+                $this->sms->send($info['phone'], $message) ? $sent++ : $failed++;
+            }
+
+            Log::info('NotificationController: SMS dispatch completed', [
+                'title'  => $data['title'],
+                'type'   => $type,
+                'sent'   => $sent,
+                'failed' => $failed,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('NotificationController: SMS dispatch exception', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Build a concise SMS body for a given notification.
+     *
+     * Kept under 160 characters when possible. PhilSmsService::truncate()
+     * is the safety net if this still exceeds the limit.
+     */
+    private function buildSmsMessage(array $data, string $firstName, string $type): string
+    {
+        $title   = $data['title'];
+        $dueDate = isset($data['due_date']) ? \Carbon\Carbon::parse($data['due_date'])->format('M j, Y') : null;
+
+        $body = match (true) {
+            in_array($type, ['payment_due', 'payment_due_notice', 'deadline'], true) && $dueDate
+                => "Hi {$firstName}! {$title}. Due: {$dueDate}. Login to CCDI Portal to pay. -CCDI",
+
+            $type === 'payment_approved'
+                => "Hi {$firstName}! {$title}. Your payment has been approved. -CCDI",
+
+            $type === 'payment_rejected'
+                => "Hi {$firstName}! {$title}. Please contact the accounting office. -CCDI",
+
+            default
+                => "Hi {$firstName}! {$title}. Login to CCDI Portal for details. -CCDI",
+        };
+
+        return $body;
+    }
+
+    // =========================================================================
+    // Recipient Resolution
+    // =========================================================================
 
     /**
      * Resolve email recipients.
@@ -443,7 +542,6 @@ class NotificationController extends Controller
         $yearFilter   = array_filter((array) ($data['year_level_filter'] ?? []));
         $termName     = $data['target_term_name'];
 
-        // Course/year-level scoped update — safe because audience is bounded.
         if (! empty($courseFilter) || ! empty($yearFilter)) {
             $assessmentIds = StudentAssessment::query()
                 ->when(! empty($courseFilter), fn ($q) => $q->whereIn('course', $courseFilter))
@@ -461,7 +559,6 @@ class NotificationController extends Controller
             return;
         }
 
-        // Single user or multi-user scope — safe because audience is bounded.
         $query = StudentPaymentTerm::where('term_name', $termName);
 
         if (! empty($data['user_id'])) {
@@ -476,11 +573,7 @@ class NotificationController extends Controller
             return;
         }
 
-        // FIX #6: No user or audience scope provided — a fully unbounded UPDATE
-        // on term_name alone would overwrite due_date for every student in the
-        // system. Refuse and log instead of silently mass-mutating data.
-        Log::warning('NotificationController: syncByTermName aborted — no user or audience scope set. ' .
-                     'Provide user_id, user_ids, course_filter, or year_level_filter to enable due_date sync.', [
+        Log::warning('NotificationController: syncByTermName aborted — no user or audience scope set.', [
             'term_name' => $termName,
             'due_date'  => $dueDate,
         ]);
@@ -490,21 +583,12 @@ class NotificationController extends Controller
     // Private Helpers
     // =========================================================================
 
-    /**
-     * Prepare validated data before persistence:
-     *   - Derive is_active / is_complete from notification_status (FIX #1)
-     *   - Normalise nulls for empty arrays/strings
-     *   - Resolve user targeting priority
-     */
     private function prepareValidatedData(array $data): array
     {
-        // FIX #1: deriveActiveFlagsFromStatus() now exists on the model.
-        // Derive boolean flags from notification_status so they stay in sync.
         $data = array_merge($data, Notification::deriveActiveFlagsFromStatus(
             $data['notification_status'] ?? 'draft'
         ));
 
-        // Multi-student takes priority over single user_id.
         if (! empty($data['user_ids'])) {
             $data['user_id']     = null;
             $data['target_role'] = 'student';
@@ -513,7 +597,6 @@ class NotificationController extends Controller
             $data['target_role'] = 'student';
         }
 
-        // Normalise empty strings / arrays to null.
         $nullIfEmpty = ['target_term_name', 'due_date', 'end_date'];
         foreach ($nullIfEmpty as $key) {
             if (isset($data[$key]) && $data[$key] === '') {
@@ -595,14 +678,6 @@ class NotificationController extends Controller
             ]);
     }
 
-    /**
-     * FIX #5: Return truly distinct term names, not one row per student's term.
-     *
-     * The original query used distinct() with id selected — since id is always
-     * unique, DISTINCT had no effect and returned every payment term row in the
-     * system (potentially hundreds). This returns a short, unique list of term
-     * names that Accounting can select in the dropdown.
-     */
     private function resolvePaymentTermsList(): \Illuminate\Support\Collection
     {
         return StudentPaymentTerm::select('term_name', 'term_order')

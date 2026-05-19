@@ -1,30 +1,37 @@
 <?php
+
 namespace App\Notifications;
+
 use App\Models\Transaction;
+use App\Services\PhilSmsService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Bus\Queueable;
-use Illuminate\Notifications\Notification;
-use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Messages\DatabaseMessage;
+use Illuminate\Notifications\Messages\MailMessage;
+use Illuminate\Notifications\Notification;
+
 class PaymentConfirmed extends Notification
 {
     use Queueable;
+
     public function __construct(
-        private int $transactionId,
-        private float $amount,
+        private int    $transactionId,
+        private float  $amount,
         private string $reference,
     ) {}
+
     public function via(object $notifiable): array
     {
         return ['mail', 'database'];
     }
+
     public function toMail(object $notifiable): MailMessage
     {
-        $transaction = Transaction::with(['user', 'account', 'fee'])
-            ->find($this->transactionId);
-        $studentName = $notifiable->name ?? 'Student';
+        $transaction   = Transaction::with(['user', 'account', 'fee'])->find($this->transactionId);
+        $studentName   = $notifiable->name ?? 'Student';
         $paymentMethod = $transaction ? ucwords(str_replace('_', ' ', $transaction->payment_channel ?? '')) : 'N/A';
-        $datePaid = $transaction ? $transaction->created_at->format('F d, Y') : now()->format('F d, Y');
+        $datePaid      = $transaction ? $transaction->created_at->format('F d, Y') : now()->format('F d, Y');
+
         $mail = (new MailMessage)
             ->subject('Payment Receipt - CCDI Portal')
             ->greeting('Good day,')
@@ -38,43 +45,64 @@ class PaymentConfirmed extends Notification
             ->line('Thank you for using our payment system!')
             ->salutation('- CCDI Payment Portal')
             ->action('View Account', route('student.account', ['tab' => 'history']));
+
         if ($transaction) {
             $student = $notifiable;
+
             $pdf = Pdf::loadView('pdf.receipt', [
-                'transaction' => $transaction,
-                'student' => $student,
-		'balanceBefore'     => (float) ($notifiable->account->total_balance ?? 0) + (float) $this->amount,
-		'currentBalance'    => (float) ($notifiable->account->total_balance ?? 0),
-		'remainingBalance'  => (float) ($notifiable->account->total_balance ?? 0),
+                'transaction'      => $transaction,
+                'student'          => $student,
+                'balanceBefore'    => (float) ($notifiable->account->total_balance ?? 0) + (float) $this->amount,
+                'currentBalance'   => (float) ($notifiable->account->total_balance ?? 0),
+                'remainingBalance' => (float) ($notifiable->account->total_balance ?? 0),
             ])->setPaper('A4', 'portrait');
+
             $filename = 'receipt-' . $this->reference . '.pdf';
+
             $mail->attachData($pdf->output(), $filename, [
                 'mime' => 'application/pdf',
             ]);
         }
-        // $this->toSms($notifiable); // SMS disabled
+
         return $mail;
     }
-    public function toSms(object $notifiable): void
-{
-    $phone = $notifiable->phone ?? null;
-    if (!$phone) return;
 
-    $message = "CCDI Portal: Your payment of P" . number_format($this->amount, 2) . " has been confirmed. Ref: " . $this->reference;
+    /**
+     * Send SMS confirmation via PhilSMS after payment is confirmed.
+     *
+     * Called explicitly by SendPaymentConfirmationNotification listener
+     * (not via the `via()` channel array — Laravel's built-in SMS channel
+     * is not configured for PhilSMS and would throw).
+     */
+    public function sendSms(object $notifiable): void
+    {
+        $phone = $notifiable->phone ?? null;
+        if (! $phone) {
+            return;
+        }
 
-    app(\App\Services\SmsService::class)->send($phone, $message);
-}
+        $appUrl     = rtrim(config('app.url'), '/');
+        $receiptUrl = $appUrl . '/transactions/' . $this->transactionId . '/receipt';
+        $amount     = number_format($this->amount, 2);
+        $name       = $notifiable->first_name ?? 'Student';
+
+        $message = "Hi {$name}! Payment of P{$amount} confirmed. Ref: {$this->reference}. "
+                 . "View receipt: {$receiptUrl} -CCDI";
+
+        app(PhilSmsService::class)->send($phone, $message);
+    }
+
     public function toDatabase(object $notifiable): DatabaseMessage
     {
         return new DatabaseMessage([
-            'type' => 'payment_confirmed',
-            'title' => 'Payment Recorded',
-            'message' => "Payment of ₱" . number_format($this->amount, 2) . " has been recorded.",
-            'reference' => $this->reference,
+            'type'           => 'payment_confirmed',
+            'title'          => 'Payment Recorded',
+            'message'        => 'Payment of ₱' . number_format($this->amount, 2) . ' has been recorded.',
+            'reference'      => $this->reference,
             'transaction_id' => $this->transactionId,
-            'amount' => $this->amount,
-            'icon' => 'check-circle',
-            'color' => 'green',
+            'amount'         => $this->amount,
+            'icon'           => 'check-circle',
+            'color'          => 'green',
         ]);
     }
 }

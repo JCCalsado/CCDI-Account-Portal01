@@ -47,6 +47,9 @@ return [
         'key' => env('BREVO_API_KEY'),
     ],
 
+    // ── PhilSMS (Primary SMS Provider) ──────────────────────────────────────
+    // Dashboard: https://dashboard.philsms.com/developers
+    // API Endpoint: https://dashboard.philsms.com/api/v3/
     'philsms' => [
         'token'     => env('PHILSMS_TOKEN', ''),
         'sender_id' => env('PHILSMS_SENDER_ID', 'PhilSMS'),

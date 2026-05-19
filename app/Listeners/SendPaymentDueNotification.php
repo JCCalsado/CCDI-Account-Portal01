@@ -13,15 +13,21 @@ class SendPaymentDueNotification implements ShouldQueue
 {
     use InteractsWithQueue;
 
+    public function __construct(private readonly PhilSmsService $sms) {}
+
     public function handle(DueAssigned $event): void
     {
         $term = $event->term;
         $user = $event->user;
 
-        if (! $term->due_date) return;
+        if (! $term->due_date) {
+            return;
+        }
 
         $daysUntilDue = now()->diffInDays($term->due_date, false);
-        if ($daysUntilDue < 0) return;
+        if ($daysUntilDue < 0) {
+            return;
+        }
 
         // Email + database notification
         $user->notify(new PaymentDueNotification(
@@ -32,7 +38,9 @@ class SendPaymentDueNotification implements ShouldQueue
 
         // SMS via PhilSMS
         $phone = $user->phone ?? null;
-        if (! $phone) return;
+        if (! $phone) {
+            return;
+        }
 
         $amount  = number_format((float) $term->balance, 2);
         $dueDate = Carbon::parse($term->due_date)->format('M j, Y');
@@ -41,6 +49,6 @@ class SendPaymentDueNotification implements ShouldQueue
         $message = "Hi {$name}! Your CCDI {$term->term_name} payment of P{$amount} is due on {$dueDate}. "
                  . "Login to your portal to pay. -CCDI";
 
-        app(PhilSmsService::class)->send($phone, $message);
+        $this->sms->send($phone, $message);
     }
 }

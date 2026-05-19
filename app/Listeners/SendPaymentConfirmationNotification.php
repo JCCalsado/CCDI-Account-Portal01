@@ -12,31 +12,23 @@ class SendPaymentConfirmationNotification implements ShouldQueue
 {
     use InteractsWithQueue;
 
+    public function __construct(private readonly PhilSmsService $sms) {}
+
     public function handle(PaymentRecorded $event): void
     {
         $user = $event->user;
 
         // Email + database notification
-        $user->notify(new PaymentConfirmed(
+        $notification = new PaymentConfirmed(
             $event->transactionId,
             $event->amount,
             $event->reference,
-        ));
+        );
 
-        // SMS via PhilSMS
-        $phone = $user->phone ?? null;
-        if (! $phone) return;
+        $user->notify($notification);
 
-        $amount = number_format($event->amount, 2);
-        $ref    = $event->reference;
-        $name   = $user->first_name ?? 'Student';
-
-        $appUrl  = rtrim(config('app.url'), '/');
-        $receiptUrl = $appUrl . '/transactions/' . $event->transactionId . '/receipt';
-
-        $message = "Hi {$name}! Payment of P{$amount} confirmed. Ref: {$ref}. "
-                 . "View receipt: {$receiptUrl} -CCDI";
-
-        app(PhilSmsService::class)->send($phone, $message);
+        // SMS via PhilSMS — delegated to the notification itself
+        // so the message template stays co-located with the notification class.
+        $notification->sendSms($user);
     }
 }
