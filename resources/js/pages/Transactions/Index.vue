@@ -385,7 +385,7 @@ const closeDetailsDialog = () => {
 
 const payNow = () => {
     if (!canMakePayment.value) return;
-    router.visit(route('student.account', { tab: 'payment' }));
+    router.visit(route('payment.create'));
 };
 
 const formatPaymentMethod = (m: string): string => {
