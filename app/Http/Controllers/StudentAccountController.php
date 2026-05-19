@@ -23,6 +23,8 @@ class StudentAccountController extends Controller
             ['balance' => 0]
         );
 
+        // Resolve the student's current active assessment.
+        // All financial data on this page is scoped to this assessment.
         $assessment = StudentAssessment::where('user_id', $user->id)
             ->where('status', 'active')
             ->latest()
@@ -34,13 +36,10 @@ class StudentAccountController extends Controller
             ->orderBy('school_year')
             ->get()
             ->map(function ($a) {
-                // ── Use stored columns — never recalculate from live fee_settings ──
                 $tuitionFee = (float) $a->tuition_fee;
                 $labFee     = (float) $a->lab_fee;
                 $miscFee    = (float) $a->misc_fee;
 
-                // Entrepreneurship fee has no dedicated column.
-                // Recover it: total − tuition − lab − misc.
                 $entrepFee = max(0.0, round(
                     (float) $a->total_assessment - $tuitionFee - $labFee - $miscFee,
                     2
@@ -110,10 +109,42 @@ class StudentAccountController extends Controller
                 ->get()
             : collect();
 
-        $transactions = Transaction::where('user_id', $user->id)
-            ->where('kind', 'payment')
-            ->orderBy('created_at', 'desc')
-            ->get();
+        // ── FIXED: Scope transactions to the current assessment only. ──────────
+        //
+        // Previously this query had no assessment scope, returning every payment
+        // the student had ever made across all semesters.
+        //
+        // The WHERE uses two conditions in OR to handle both data generations:
+        //
+        //   (A) meta->assessment_id match  — post-S3 records. StudentPaymentService
+        //       has written assessment_id into meta since the S3 fix.
+        //
+        //   (B) year + semester column match — pre-S3 records that were created
+        //       before assessment_id was stored in meta. Safe to use because the
+        //       system enforces one active assessment per student per year+semester.
+        //
+        // pendingApprovalPayments is derived from $transactions below, so it is
+        // also automatically scoped to the current assessment as a side effect.
+        // ──────────────────────────────────────────────────────────────────────
+        $transactions = collect();
+
+        if ($assessment) {
+            $assessmentStartYear = explode('-', $assessment->school_year)[0]; // "2025" from "2025-2026"
+
+            $transactions = Transaction::where('user_id', $user->id)
+                ->where('kind', 'payment')
+                ->where(function ($q) use ($assessment, $assessmentStartYear) {
+                    // (A) Primary: meta->assessment_id set by StudentPaymentService (post-S3)
+                    $q->whereJsonContains('meta->assessment_id', $assessment->id)
+                      // (B) Fallback: year + semester columns for pre-S3 records
+                      ->orWhere(function ($inner) use ($assessment, $assessmentStartYear) {
+                          $inner->where('year', $assessmentStartYear)
+                                ->where('semester', $assessment->semester);
+                      });
+                })
+                ->orderBy('created_at', 'desc')
+                ->get();
+        }
 
         $totalPaid = 0;
         if ($assessment) {
@@ -134,12 +165,6 @@ class StudentAccountController extends Controller
             ])
             ->values();
 
-        // ── BUG FIX #2: Apply all required notification scopes consistently ──
-        // Previously this used a raw manual query that skipped:
-        //   - withinDateRange() → students saw expired notifications
-        //   - forDueDateTrigger() → students saw premature trigger-based notifications
-        //   - forBalance() → balance_filter was not respected
-        // Now we use the same scope chain as StudentDashboardController.
         $notifications = Notification::active()
             ->forUser($user->id)
             ->withinDateRange()

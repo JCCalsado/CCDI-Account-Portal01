@@ -67,7 +67,6 @@ const cancelPayment = async () => {
             throw new Error(data.error || `Server error: ${response.status}`);
         }
 
-        // Redirect back to the payment form so the student can resubmit.
         router.get(route('payment.create'));
 
     } catch (err) {
@@ -80,9 +79,6 @@ const cancelPayment = async () => {
     }
 };
 
-/**
- * Convert a File to base64 string (strips the data URI prefix).
- */
 const fileToBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -94,10 +90,6 @@ const fileToBase64 = (file: File): Promise<string> =>
         reader.readAsDataURL(file);
     });
 
-/**
- * Send the selected image/PDF to Claude via the Anthropic API and check
- * whether it looks like a legitimate payment receipt or proof of payment.
- */
 const validateWithAI = async (file: File): Promise<void> => {
     aiValidating.value = true;
     aiResult.value = null;
@@ -171,7 +163,7 @@ Respond ONLY in this JSON format with no extra text:
             const clean = raw.replace(/```json|```/g, '').trim();
             parsed = JSON.parse(clean);
         } catch {
-            // If JSON parse fails, treat as uncertain
+            // fallthrough to uncertain
         }
 
         if (parsed?.result === 'valid') {
@@ -246,7 +238,7 @@ const submit = () => {
 const isValidFile = computed(() => {
     if (!form.proof_of_payment) return false;
     const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-    const maxSize = 5120 * 1024; // 5MB
+    const maxSize = 5120 * 1024;
     return validTypes.includes(form.proof_of_payment.type) && form.proof_of_payment.size <= maxSize;
 });
 
@@ -256,6 +248,32 @@ const canSubmit = computed(() =>
     !aiValidating.value &&
     aiResult.value !== 'invalid',
 );
+
+// ─── What's Next — Step 1 reactive state ──────────────────────────────────
+// Drives the icon and label for Step 1 in the sidebar panel.
+// States:
+//   idle      → no file selected yet          → gray number badge "1"
+//   checking  → file selected, AI running     → indigo spinner
+//   done      → valid or uncertain (accepted) → green checkmark
+//   error     → AI returned invalid           → red X
+const step1State = computed<'idle' | 'checking' | 'done' | 'error'>(() => {
+    if (!fileName.value) return 'idle';
+    if (aiValidating.value) return 'checking';
+    if (aiResult.value === 'invalid') return 'error';
+    if (aiResult.value === 'valid' || aiResult.value === 'uncertain') return 'done';
+    return 'idle';
+});
+
+const step1Label = computed(() => {
+    switch (step1State.value) {
+        case 'checking': return 'Verifying your file…';
+        case 'done':     return aiResult.value === 'uncertain'
+                             ? 'Done! Our team will verify.'
+                             : 'Done! Ready to submit.';
+        case 'error':    return 'Invalid file. Please re-upload.';
+        default:         return 'Upload your receipt to continue.';
+    }
+});
 </script>
 
 <template>
@@ -311,9 +329,7 @@ const canSubmit = computed(() =>
                             @drop="handleDrop"
                             @dragover.prevent
                             class="rounded-xl border-2 border-dashed border-gray-300 hover:border-indigo-400 p-8 text-center transition-colors cursor-pointer"
-                            :class="{
-                                'border-indigo-400 bg-indigo-50': fileName,
-                            }"
+                            :class="{ 'border-indigo-400 bg-indigo-50': fileName }"
                         >
                             <input
                                 ref="fileInput"
@@ -369,7 +385,13 @@ const canSubmit = computed(() =>
                             </div>
                             <button
                                 type="button"
-                                @click="() => { fileName = null; fileSize = null; form.proof_of_payment = null; }"
+                                @click="() => {
+                                    fileName = null;
+                                    fileSize = null;
+                                    form.proof_of_payment = null;
+                                    aiResult = null;
+                                    aiMessage = null;
+                                }"
                                 class="text-green-600 hover:text-green-700 font-medium"
                             >
                                 Remove
@@ -442,17 +464,12 @@ const canSubmit = computed(() =>
                             <span v-else>Submit for Verification</span>
                         </button>
 
-                        <!-- ── Cancel payment section ────────────────────────────
-                             Only shown when proof has NOT been uploaded yet.
-                             Once proof is uploaded (status = awaiting_approval) this
-                             page is not reachable, so the button is always safe here.
-                        -->
+                        <!-- Cancel Payment Section -->
                         <div class="border-t pt-4">
                             <p class="text-xs text-center text-gray-400 mb-3">
                                 Changed your mind? You can cancel this payment and start over.
                             </p>
 
-                            <!-- Confirm step — shown after first click -->
                             <div v-if="showCancelConfirm" class="rounded-lg border border-red-200 bg-red-50 p-4 space-y-3">
                                 <div class="flex items-start gap-2">
                                     <XCircle :size="18" class="text-red-500 flex-shrink-0 mt-0.5" />
@@ -490,7 +507,6 @@ const canSubmit = computed(() =>
                                 </div>
                             </div>
 
-                            <!-- Initial cancel button -->
                             <button
                                 v-else
                                 type="button"
@@ -505,23 +521,62 @@ const canSubmit = computed(() =>
 
                 <!-- Right: Info Panel -->
                 <div class="space-y-4">
-                    <!-- What Happens Next -->
+                    <!-- What's Next -->
                     <div class="ccdi-card p-5">
                         <h3 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">
                             What's Next
                         </h3>
                         <div class="space-y-4">
+
+                            <!-- ── Step 1: Upload Receipt — REACTIVE ──────────── -->
                             <div class="flex gap-3">
                                 <div class="flex-shrink-0">
-                                    <div class="flex items-center justify-center h-8 w-8 rounded-full bg-green-100">
+                                    <!-- idle: gray number badge -->
+                                    <div
+                                        v-if="step1State === 'idle'"
+                                        class="flex items-center justify-center h-8 w-8 rounded-full bg-gray-100"
+                                    >
+                                        <span class="text-xs font-semibold text-gray-500">1</span>
+                                    </div>
+                                    <!-- checking: indigo spinner -->
+                                    <div
+                                        v-else-if="step1State === 'checking'"
+                                        class="flex items-center justify-center h-8 w-8 rounded-full bg-indigo-100"
+                                    >
+                                        <Loader2 :size="16" class="text-indigo-600 animate-spin" />
+                                    </div>
+                                    <!-- done: green checkmark -->
+                                    <div
+                                        v-else-if="step1State === 'done'"
+                                        class="flex items-center justify-center h-8 w-8 rounded-full bg-green-100"
+                                    >
                                         <CheckCircle :size="18" class="text-green-600" />
+                                    </div>
+                                    <!-- error: red X -->
+                                    <div
+                                        v-else-if="step1State === 'error'"
+                                        class="flex items-center justify-center h-8 w-8 rounded-full bg-red-100"
+                                    >
+                                        <XCircle :size="18" class="text-red-600" />
                                     </div>
                                 </div>
                                 <div>
                                     <p class="font-medium text-sm text-gray-900">Upload Receipt</p>
-                                    <p class="text-xs text-gray-500 mt-0.5">Done! You're on this step now.</p>
+                                    <p
+                                        class="text-xs mt-0.5 transition-colors"
+                                        :class="{
+                                            'text-gray-500':   step1State === 'idle',
+                                            'text-indigo-600': step1State === 'checking',
+                                            'text-green-600':  step1State === 'done',
+                                            'text-red-600':    step1State === 'error',
+                                        }"
+                                    >
+                                        {{ step1Label }}
+                                    </p>
                                 </div>
                             </div>
+
+                            <!-- ── Step 2: Awaiting Verification ─────────────── -->
                             <div class="flex gap-3">
                                 <div class="flex-shrink-0">
                                     <div class="flex items-center justify-center h-8 w-8 rounded-full bg-blue-100">
@@ -533,6 +588,8 @@ const canSubmit = computed(() =>
                                     <p class="text-xs text-gray-500 mt-0.5">Accounting staff will review your receipt.</p>
                                 </div>
                             </div>
+
+                            <!-- ── Step 3: Payment Approved ───────────────────── -->
                             <div class="flex gap-3">
                                 <div class="flex-shrink-0">
                                     <div class="flex items-center justify-center h-8 w-8 rounded-full bg-gray-100">
@@ -544,6 +601,7 @@ const canSubmit = computed(() =>
                                     <p class="text-xs text-gray-500 mt-0.5">Balance updated once verified.</p>
                                 </div>
                             </div>
+
                         </div>
                     </div>
 
