@@ -23,7 +23,7 @@ class PaymentConfirmed extends Notification
         $transaction = Transaction::with(['user', 'account', 'fee'])
             ->find($this->transactionId);
         $studentName = $notifiable->name ?? 'Student';
-        $paymentMethod = $transaction ? ucwords(str_replace('_', ' ', $transaction->payment_method ?? '')) : 'N/A';
+        $paymentMethod = $transaction ? ucwords(str_replace('_', ' ', $transaction->payment_channel ?? '')) : 'N/A';
         $datePaid = $transaction ? $transaction->created_at->format('F d, Y') : now()->format('F d, Y');
         $mail = (new MailMessage)
             ->subject('Payment Receipt - CCDI Portal')

@@ -36,10 +36,13 @@ class StudentAccountController extends Controller
             ->orderBy('school_year')
             ->get()
             ->map(function ($a) {
+                // ── Use stored columns — never recalculate from live fee_settings ──
                 $tuitionFee = (float) $a->tuition_fee;
                 $labFee     = (float) $a->lab_fee;
                 $miscFee    = (float) $a->misc_fee;
 
+                // Entrepreneurship fee has no dedicated column.
+                // Recover it: total − tuition − lab − misc.
                 $entrepFee = max(0.0, round(
                     (float) $a->total_assessment - $tuitionFee - $labFee - $miscFee,
                     2
@@ -112,16 +115,17 @@ class StudentAccountController extends Controller
         // ── FIXED: Scope transactions to the current assessment only. ──────────
         //
         // Previously this query had no assessment scope, returning every payment
-        // the student had ever made across all semesters.
+        // the student has ever made across all semesters and school years.
         //
-        // The WHERE uses two conditions in OR to handle both data generations:
+        // The WHERE uses two conditions joined by OR to handle both data generations:
         //
         //   (A) meta->assessment_id match  — post-S3 records. StudentPaymentService
-        //       has written assessment_id into meta since the S3 fix.
+        //       has written assessment_id into meta since the S3 fix was applied.
         //
         //   (B) year + semester column match — pre-S3 records that were created
-        //       before assessment_id was stored in meta. Safe to use because the
-        //       system enforces one active assessment per student per year+semester.
+        //       before assessment_id was stored in meta. This is safe because the
+        //       system enforces one active assessment per student per year+semester,
+        //       so year+semester is an unambiguous proxy for the assessment.
         //
         // pendingApprovalPayments is derived from $transactions below, so it is
         // also automatically scoped to the current assessment as a side effect.
@@ -129,12 +133,13 @@ class StudentAccountController extends Controller
         $transactions = collect();
 
         if ($assessment) {
-            $assessmentStartYear = explode('-', $assessment->school_year)[0]; // "2025" from "2025-2026"
+            // $assessment->school_year is "2025-2026"; transactions.year stores "2025"
+            $assessmentStartYear = explode('-', $assessment->school_year)[0];
 
             $transactions = Transaction::where('user_id', $user->id)
                 ->where('kind', 'payment')
                 ->where(function ($q) use ($assessment, $assessmentStartYear) {
-                    // (A) Primary: meta->assessment_id set by StudentPaymentService (post-S3)
+                    // (A) Primary: assessment_id in meta (StudentPaymentService post-S3)
                     $q->whereJsonContains('meta->assessment_id', $assessment->id)
                       // (B) Fallback: year + semester columns for pre-S3 records
                       ->orWhere(function ($inner) use ($assessment, $assessmentStartYear) {
@@ -165,6 +170,7 @@ class StudentAccountController extends Controller
             ])
             ->values();
 
+        // ── Apply all required notification scopes consistently ───────────────
         $notifications = Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
