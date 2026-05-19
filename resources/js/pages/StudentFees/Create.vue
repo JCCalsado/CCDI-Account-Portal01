@@ -578,6 +578,28 @@ function semLabel(s: string) {
             </CardContent>
           </Card>
 
+          <!-- Cannot Create Assessment Warning -->
+          <div v-if="selectedStudent && hasRemainingBalance"
+               class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 px-4 py-4 text-sm">
+            <AlertTriangle class="h-5 w-5 shrink-0 text-red-600 mt-0.5" />
+            <div class="flex-1">
+              <p class="font-bold text-red-800">Cannot Create Assessment — Unsettled Balance</p>
+              <p class="text-red-700 mt-1">
+                This student has an outstanding balance of
+                <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>.
+                The remaining balance must be fully settled before a new assessment can be created.
+              </p>
+              <p class="text-xs text-red-600 mt-2">Go to the student's profile to record a payment, then return here.</p>
+              <div class="mt-3">
+                <Button variant="outline" size="sm"
+                        class="border-red-400 text-red-700 hover:bg-red-100"
+                        @click="router.visit(route('student-fees.show', selectedStudent.id))">
+                  View Student Profile &amp; Record Payment
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <!-- ── Paid Semester History ── -->
           <Card v-if="paidSemesters.length > 0" class="border-green-200 bg-green-50/40">
             <CardHeader class="pb-3">
@@ -980,27 +1002,6 @@ function semLabel(s: string) {
             </CardContent>
           </Card>
 
-          <!-- Cannot Create Assessment Warning -->
-          <div v-if="selectedStudent && hasRemainingBalance"
-               class="flex items-start gap-3 rounded-lg border-2 border-red-400 bg-red-50 px-4 py-4 text-sm">
-            <AlertTriangle class="h-5 w-5 shrink-0 text-red-600 mt-0.5" />
-            <div class="flex-1">
-              <p class="font-bold text-red-800">Cannot Create Assessment — Unsettled Balance</p>
-              <p class="text-red-700 mt-1">
-                This student has an outstanding balance of
-                <span class="font-bold">{{ formatCurrency(selectedStudent.remaining_balance) }}</span>.
-                The remaining balance must be fully settled before a new assessment can be created.
-              </p>
-              <p class="text-xs text-red-600 mt-2">Go to the student's profile to record a payment, then return here.</p>
-              <div class="mt-3">
-                <Button variant="outline" size="sm"
-                        class="border-red-400 text-red-700 hover:bg-red-100"
-                        @click="router.visit(route('student-fees.show', selectedStudent.id))">
-                  View Student Profile &amp; Record Payment
-                </Button>
-              </div>
-            </div>
-          </div>
 
           <!-- Submit -->
           <div class="flex gap-3 justify-end">
