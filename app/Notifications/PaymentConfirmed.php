@@ -3,7 +3,6 @@
 namespace App\Notifications;
 
 use App\Models\Transaction;
-use App\Services\PhilSmsService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\DatabaseMessage;
@@ -47,49 +46,20 @@ class PaymentConfirmed extends Notification
             ->action('View Account', route('student.account', ['tab' => 'history']));
 
         if ($transaction) {
-            $student = $notifiable;
-
             $pdf = Pdf::loadView('pdf.receipt', [
                 'transaction'      => $transaction,
-                'student'          => $student,
+                'student'          => $notifiable,
                 'balanceBefore'    => (float) ($notifiable->account->total_balance ?? 0) + (float) $this->amount,
                 'currentBalance'   => (float) ($notifiable->account->total_balance ?? 0),
                 'remainingBalance' => (float) ($notifiable->account->total_balance ?? 0),
             ])->setPaper('A4', 'portrait');
 
-            $filename = 'receipt-' . $this->reference . '.pdf';
-
-            $mail->attachData($pdf->output(), $filename, [
+            $mail->attachData($pdf->output(), 'receipt-' . $this->reference . '.pdf', [
                 'mime' => 'application/pdf',
             ]);
         }
 
         return $mail;
-    }
-
-    /**
-     * Send SMS confirmation via PhilSMS after payment is confirmed.
-     *
-     * Called explicitly by SendPaymentConfirmationNotification listener
-     * (not via the `via()` channel array — Laravel's built-in SMS channel
-     * is not configured for PhilSMS and would throw).
-     */
-    public function sendSms(object $notifiable): void
-    {
-        $phone = $notifiable->phone ?? null;
-        if (! $phone) {
-            return;
-        }
-
-        $appUrl     = rtrim(config('app.url'), '/');
-        $receiptUrl = $appUrl . '/transactions/' . $this->transactionId . '/receipt';
-        $amount     = number_format($this->amount, 2);
-        $name       = $notifiable->first_name ?? 'Student';
-
-        $message = "Hi {$name}! Payment of P{$amount} confirmed. Ref: {$this->reference}. "
-                 . "View receipt: {$receiptUrl} -CCDI";
-
-        app(PhilSmsService::class)->send($phone, $message);
     }
 
     public function toDatabase(object $notifiable): DatabaseMessage

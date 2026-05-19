@@ -18,17 +18,26 @@ class SendPaymentConfirmationNotification implements ShouldQueue
     {
         $user = $event->user;
 
-        // Email + database notification
-        $notification = new PaymentConfirmed(
+        // ── Email + database notification ─────────────────────────────────
+        $user->notify(new PaymentConfirmed(
             $event->transactionId,
             $event->amount,
             $event->reference,
-        );
+        ));
 
-        $user->notify($notification);
+        // ── SMS via PhilSMS ───────────────────────────────────────────────
+        $phone = $user->phone ?? null;
 
-        // SMS via PhilSMS — delegated to the notification itself
-        // so the message template stays co-located with the notification class.
-        $notification->sendSms($user);
+        if (! $phone) {
+            return;
+        }
+
+        $name    = $user->first_name ?? 'Student';
+        $amount  = number_format($event->amount, 2);
+
+        $message = "Hi {$name}! Your CCDI payment of P{$amount} has been confirmed. "
+                 . "Ref: {$event->reference}. Login to the portal to view your receipt. -CCDI";
+
+        $this->sms->send($phone, $message);
     }
 }
