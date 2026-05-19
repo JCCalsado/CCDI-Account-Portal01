@@ -200,8 +200,12 @@ const totalOutstandingBalance = computed(() => {
 });
 
 const effectiveBalance = computed(() => {
-    const totalPending = props.pendingApprovalPayments.reduce((s, p) => s + p.amount, 0);
-    return parseFloat(Math.max(0, totalOutstandingBalance.value - totalPending).toFixed(2));
+    const pendingCents = props.pendingApprovalPayments.reduce(
+        (sum, p) => sum + toCents(p.amount),
+        0,
+    );
+    const outstandingCents = toCents(totalOutstandingBalance.value);
+    return fromCents(Math.max(0, outstandingCents - pendingCents));
 });
 
 // ── Form ──────────────────────────────────────────────────────────────────────
@@ -675,7 +679,6 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                                 type="number"
                                 step="0.01"
                                 min="1"
-                                :max="effectiveBalance"
                                 placeholder="0.00"
                                 :disabled="effectiveBalance <= 0 || !form.selected_term_id"
                                 class="w-full rounded-lg border px-4 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-100"

@@ -463,6 +463,14 @@ class PaymentController extends Controller
                     2
                 );
 
+                // ── SNAP GUARD ─────────────────────────────────────────────
+                // If the requested amount is within rounding error (< 0.01) of the
+                // total outstanding, snap it to exact total. This prevents 419
+                // "slight overage" rejections due to floating-point arithmetic.
+                if (abs($requestAmount - $totalOutstanding) < 0.01) {
+                    $requestAmount = $totalOutstanding;
+                }
+
                 if ($requestAmount > $totalOutstanding) {
                     return response()->json([
                         'error' => sprintf(
