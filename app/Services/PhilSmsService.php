@@ -7,19 +7,19 @@ use Illuminate\Support\Facades\Log;
 
 class PhilSmsService
 {
+    private string $baseUrl;
     private string $token;
     private string $senderId;
-    private string $baseUrl = 'https://dashboard.philsms.com/api/v3';
-    private bool $enabled;
+    private bool   $enabled;
 
-    /** Maximum safe SMS length. Messages beyond this are truncated with a suffix. */
     public const MAX_LENGTH = 160;
 
     public function __construct()
     {
-        $this->token    = config('services.philsms.token', '');
-        $this->senderId = config('services.philsms.sender_id', 'PhilSMS');
-        $this->enabled  = (bool) config('services.philsms.enabled', false);
+        $this->baseUrl   = rtrim(config('services.philsms.base_url', 'https://dashboard.philsms.com/api/v3'), '/');
+        $this->token     = config('services.philsms.token', '');
+        $this->senderId  = config('services.philsms.sender_id', 'PhilSMS');
+        $this->enabled   = (bool) config('services.philsms.enabled', false);
     }
 
     /**
@@ -57,7 +57,7 @@ class PhilSmsService
             $body = $response->json();
 
             if ($response->successful() && ($body['status'] ?? '') === 'success') {
-                Log::info('PhilSMS: SMS sent successfully', [
+                Log::info('PhilSMS: SMS sent', [
                     'phone'   => $normalized,
                     'preview' => substr($message, 0, 40),
                 ]);
@@ -83,10 +83,7 @@ class PhilSmsService
     /**
      * Send SMS to multiple recipients.
      *
-     * Logs aggregate results rather than per-recipient to avoid log flooding.
-     *
-     * @param  array<string>  $phones   List of raw phone numbers
-     * @param  string         $message
+     * @param  array<string>  $phones
      * @return array{sent: int, failed: int}
      */
     public function sendBulk(array $phones, string $message): array
@@ -98,37 +95,34 @@ class PhilSmsService
             $this->send($phone, $message) ? $sent++ : $failed++;
         }
 
-        Log::info('PhilSMS: bulk send completed', [
-            'sent'   => $sent,
-            'failed' => $failed,
-        ]);
+        Log::info('PhilSMS: bulk send completed', compact('sent', 'failed'));
 
         return compact('sent', 'failed');
     }
 
     /**
      * Normalise Philippine phone numbers to E.164 (+639XXXXXXXXX).
-     * Returns null for unrecognised formats so the caller can skip invalid numbers.
+     * Returns null for unrecognised formats.
      */
     private function normalizePhone(string $phone): ?string
     {
         $digits = preg_replace('/\D/', '', $phone);
 
-        if (strlen($digits) === 11 && str_starts_with($digits, '09')) {
-            return '+63' . substr($digits, 1);
-        }
-        if (strlen($digits) === 12 && str_starts_with($digits, '639')) {
-            return '+' . $digits;
-        }
-        if (strlen($digits) === 13 && str_starts_with($digits, '6309')) {
-            // Edge case: user typed 6309... instead of 639...
-            return '+63' . substr($digits, 3);
-        }
-        if (strlen($digits) === 10 && str_starts_with($digits, '9')) {
-            return '+63' . $digits;
-        }
+        return match (true) {
+            // 09XXXXXXXXX → +639XXXXXXXXX
+            strlen($digits) === 11 && str_starts_with($digits, '09')
+                => '+63' . substr($digits, 1),
 
-        return null;
+            // 639XXXXXXXXX → +639XXXXXXXXX
+            strlen($digits) === 12 && str_starts_with($digits, '639')
+                => '+' . $digits,
+
+            // 9XXXXXXXXX → +639XXXXXXXXX
+            strlen($digits) === 10 && str_starts_with($digits, '9')
+                => '+63' . $digits,
+
+            default => null,
+        };
     }
 
     /**
@@ -141,16 +135,5 @@ class PhilSmsService
         }
 
         return mb_substr($message, 0, self::MAX_LENGTH - 3) . '...';
-    }
-
-    private function toE164(string $number): string
-    {
-        $number = preg_replace('/\D/', '', $number); // strip non-digits
-
-        if (str_starts_with($number, '0')) {
-            $number = '63' . substr($number, 1); // 09... → 639...
-        }
-
-        return '+' . $number; // → +639...
     }
 }

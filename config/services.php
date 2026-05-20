@@ -51,6 +51,7 @@ return [
     // Dashboard: https://dashboard.philsms.com/developers
     // API Endpoint: https://dashboard.philsms.com/api/v3/
     'philsms' => [
+        'base_url'  => env('PHILSMS_BASE_URL', 'https://dashboard.philsms.com/api/v3'),
         'token'     => env('PHILSMS_TOKEN', ''),
         'sender_id' => env('PHILSMS_SENDER_ID', 'PhilSMS'),
         'enabled'   => env('PHILSMS_ENABLED', false),
