@@ -10,7 +10,17 @@ defineProps<{
 </script>
 
 <template>
-    <div class="flex min-h-screen flex-col items-center justify-center px-4 py-12 sm:px-6 lg:px-8" style="font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background-image: url('/images/login.png'); background-size: cover; background-position: center; background-repeat: no-repeat;">
+    <div
+        class="flex min-h-screen flex-col items-center justify-center px-4 py-12 sm:px-6 lg:px-8"
+        style="
+            font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+            background-image: url('/images/welcome.png');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        "
+    >
         <div :class="['w-full mx-auto', wide ? 'max-w-3xl' : 'max-w-md']">
             <!-- Logo -->
             <Link href="/" class="mb-8 flex justify-center">
@@ -30,7 +40,9 @@ defineProps<{
                 <slot />
             </div>
 
-            <p class="mt-6 text-center text-xs text-muted-foreground">© {{ new Date().getFullYear() }} CCDI Account Portal. All rights reserved.</p>
+            <p class="mt-6 text-center text-xs text-muted-foreground">
+                © {{ new Date().getFullYear() }} CCDI Account Portal. All rights reserved.
+            </p>
         </div>
     </div>
 </template>
