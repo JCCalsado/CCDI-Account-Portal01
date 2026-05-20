@@ -153,7 +153,7 @@ class FinancialReportsController extends Controller
                 'byCourse' => $byCourseSummary,
                 'byMonth'  => $byMonthSummary,
             ],
-            'paymentMethods'  => $paymentMethods,
+            'paymentMethods'   => $paymentMethods,
             'assessedStudents' => $assessedStudents,
             'filters' => [
                 'schoolYear' => $schoolYear,
@@ -161,6 +161,9 @@ class FinancialReportsController extends Controller
             ],
             'schoolYears' => $this->getSchoolYears(),
             'semesters'   => $this->semesterOptions(),
+            'userRole'    => auth()->user()?->role instanceof \App\Enums\UserRoleEnum
+                                ? auth()->user()->role->value
+                                : (string) auth()->user()?->role,
         ]);
     }
 
@@ -374,6 +377,129 @@ class FinancialReportsController extends Controller
             . $schoolYear . '-'
             . str_replace(' ', '-', $semester)
             . '.pdf';
+
+        return $pdf->download($filename);
+    }
+
+
+    // ─── Full Academic Year PDF export ────────────────────────────────────────
+    //
+    // Aggregates ALL semesters within a school_year into one PDF.
+    // Each student row shows per-semester breakdown + year totals.
+    //
+    public function exportYearly(Request $request)
+    {
+        $schoolYear = $request->get('school_year', $this->currentAcademicYear());
+        $startYear  = (int) explode('-', $schoolYear)[0];
+
+        // ── Collect all semesters present in the data for this school year ──
+        $semesters = StudentAssessment::where('school_year', $schoolYear)
+            ->distinct()
+            ->pluck('semester')
+            ->sortBy(fn ($s) => match ($s) { '1st' => 1, '2nd' => 2, 'Summer' => 3, default => 4 })
+            ->values()
+            ->all();
+
+        if (empty($semesters)) {
+            return response()->json(['error' => 'No assessments found for ' . $schoolYear], 404);
+        }
+
+        // ── Year-level summary totals ──────────────────────────────────────
+        $yearTotalAssessed = StudentAssessment::where('school_year', $schoolYear)
+            ->sum('total_assessment');
+
+        $yearTotalPaid = Transaction::where('kind', 'payment')
+            ->where('status', 'paid')
+            ->where('year', $startYear)
+            ->sum('amount');
+
+        $yearTotalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear) {
+            $q->where('school_year', $schoolYear);
+        })->where('balance', '>', 0)->sum('balance');
+
+        $yearStudentCount = StudentAssessment::where('school_year', $schoolYear)
+            ->distinct('user_id')
+            ->count('user_id');
+
+        $summary = [
+            'schoolYear'       => $schoolYear,
+            'studentCount'     => $yearStudentCount,
+            'totalAssessed'    => (float) $yearTotalAssessed,
+            'totalPaid'        => (float) $yearTotalPaid,
+            'totalOutstanding' => (float) $yearTotalOutstanding,
+            'semesters'        => $semesters,
+        ];
+
+        // ── Per-semester summary row (for summary cards in PDF) ───────────
+        $semesterSummaries = [];
+        foreach ($semesters as $sem) {
+            $semYear = $startYear;
+            $semesterSummaries[$sem] = [
+                'assessed'    => (float) StudentAssessment::where('school_year', $schoolYear)->where('semester', $sem)->sum('total_assessment'),
+                'paid'        => (float) Transaction::where('kind', 'payment')->where('status', 'paid')->where('year', $semYear)->where('semester', $sem)->sum('amount'),
+                'outstanding' => (float) StudentPaymentTerm::whereHas('assessment', fn ($q) => $q->where('school_year', $schoolYear)->where('semester', $sem))->where('balance', '>', 0)->sum('balance'),
+                'count'       => StudentAssessment::where('school_year', $schoolYear)->where('semester', $sem)->count(),
+            ];
+        }
+
+        // ── All assessments for this school year, grouped by user ─────────
+        $allAssessments = StudentAssessment::where('school_year', $schoolYear)
+            ->with(['user', 'paymentTerms'])
+            ->get();
+
+        // Group by user_id, build one row per student with per-semester columns
+        $studentMap = [];
+        foreach ($allAssessments as $assessment) {
+            $uid = $assessment->user_id;
+
+            if (!isset($studentMap[$uid])) {
+                $studentMap[$uid] = [
+                    'accountId'   => $assessment->user?->account_id ?? 'N/A',
+                    'studentName' => $assessment->user?->name ?? 'Unknown Student',
+                    'course'      => $assessment->course ?? $assessment->user?->course ?? 'N/A',
+                    'semesters'   => [],
+                    'yearTotal'   => 0.0,
+                    'yearPaid'    => 0.0,
+                    'yearBalance' => 0.0,
+                ];
+            }
+
+            $total   = (float) $assessment->total_assessment;
+            $balance = (float) $assessment->paymentTerms->where('balance', '>', 0)->sum('balance');
+            $paid    = $total - $balance;
+
+            $studentMap[$uid]['semesters'][$assessment->semester] = [
+                'total'   => $total,
+                'paid'    => $paid,
+                'balance' => $balance,
+                'status'  => $this->deriveStatus($balance, $total),
+            ];
+
+            $studentMap[$uid]['yearTotal']   += $total;
+            $studentMap[$uid]['yearPaid']    += $paid;
+            $studentMap[$uid]['yearBalance'] += $balance;
+        }
+
+        // Derive overall year status per student, sort by balance desc
+        $students = collect($studentMap)
+            ->map(function ($s) {
+                $s['yearStatus'] = $this->deriveStatus($s['yearBalance'], $s['yearTotal']);
+                return $s;
+            })
+            ->sortByDesc('yearBalance')
+            ->values()
+            ->all();
+
+        $pdf = Pdf::loadView('pdf.financial-report-yearly', [
+            'schoolYear'       => $schoolYear,
+            'summary'          => $summary,
+            'semesterSummaries'=> $semesterSummaries,
+            'semesters'        => $semesters,
+            'students'         => $students,
+            'generatedAt'      => now(),
+        ])->setPaper('a4', 'landscape');
+
+        $filename = 'financial-report-' . str_replace('/', '-', $schoolYear) . '-full-year.pdf';
 
         return $pdf->download($filename);
     }

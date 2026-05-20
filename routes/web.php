@@ -158,13 +158,14 @@ Route::middleware(['auth', 'verified', 'role:admin'])->group(function () {
 // ============================================
 // ACCOUNTING ROUTES
 // ============================================
-Route::middleware(['auth', 'verified', 'role:accounting'])->prefix('accounting')->group(function () {
+Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accounting')->group(function () {
     Route::get('/dashboard', [AccountingDashboardController::class, 'index'])->name('accounting.dashboard');
     Route::get('/transactions', [TransactionController::class, 'index'])->name('accounting.transactions.index');
     Route::get('/financial-reports', [FinancialReportsController::class, 'index'])->name('accounting.financial-reports');
     Route::get('/financial-reports/export', [FinancialReportsController::class, 'export'])->name('accounting.financial-reports.export');
     Route::get('/financial-reports/export-assessments', [FinancialReportsController::class, 'exportAssessments'])->name('accounting.financial-reports.export-assessments');
     Route::get('/financial-reports/export-receipts', [FinancialReportsController::class, 'exportReceipts'])->name('accounting.financial-reports.export-receipts');
+    Route::get('/financial-reports/export-yearly', [FinancialReportsController::class, 'exportYearly'])->name('accounting.financial-reports.export-yearly');
     Route::get('/financial-reports/student-history', [FinancialReportsController::class, 'studentTransactionHistory'])->name('accounting.financial-reports.student-history');
     Route::get('/financial-reports/student-receipt', [FinancialReportsController::class, 'downloadStudentReceipt'])->name('accounting.financial-reports.student-receipt');
 

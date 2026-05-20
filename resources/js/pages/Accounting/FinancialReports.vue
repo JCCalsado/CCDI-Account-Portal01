@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDataFormatting } from '@/composables/useDataFormatting'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { Head, router } from '@inertiajs/vue3'
-import { BarChart3, Download, Eye, TrendingUp, X } from 'lucide-vue-next'
+import { BarChart3, Download, Eye, FileText, TrendingUp, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -57,12 +57,16 @@ interface Props {
     }
     schoolYears: string[]
     semesters: string[]
+    userRole: string
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
 const props = defineProps<Props>()
 const { formatCurrency } = useDataFormatting()
+
+// ─── Role helpers ─────────────────────────────────────────────────────────────
+const isAdmin = computed(() => props.userRole === 'admin')
 
 const selectedSchoolYear = ref(props.filters.schoolYear)
 const selectedSemester   = ref(props.filters.semester)
@@ -75,11 +79,11 @@ const modalLoading     = ref(false)
 const modalError       = ref<string | null>(null)
 const modalTransactions = ref<StudentTransaction[]>([])
 
-const breadcrumbs = [
-    { title: 'Dashboard', href: route('dashboard') },
-    { title: 'Accounting', href: route('accounting.dashboard') },
+const breadcrumbs = computed(() => [
+    { title: 'Dashboard', href: isAdmin.value ? route('admin.dashboard') : route('accounting.dashboard') },
+    ...(isAdmin.value ? [] : [{ title: 'Accounting', href: route('accounting.dashboard') }]),
     { title: 'Financial Reports' },
-]
+])
 
 // ─── Computed ─────────────────────────────────────────────────────────────────
 
@@ -182,6 +186,7 @@ const applyFilters = () => {
 const exportPDF          = () => { window.location.href = route('accounting.financial-reports.export', { school_year: selectedSchoolYear.value, semester: selectedSemester.value }) }
 const exportAssessments  = () => { window.location.href = route('accounting.financial-reports.export-assessments', { school_year: selectedSchoolYear.value, semester: selectedSemester.value }) }
 const exportReceipts     = () => { window.location.href = route('accounting.financial-reports.export-receipts', { school_year: selectedSchoolYear.value, semester: selectedSemester.value }) }
+const exportYearly       = () => { window.location.href = route('accounting.financial-reports.export-yearly', { school_year: selectedSchoolYear.value }) }
 </script>
 
 <template>
@@ -209,6 +214,10 @@ const exportReceipts     = () => { window.location.href = route('accounting.fina
                     <Button @click="exportReceipts" variant="outline" class="gap-2">
                         <Download class="h-4 w-4" />
                         Payment Receipts
+                    </Button>
+                    <Button @click="exportYearly" variant="outline" class="gap-2 border-indigo-300 text-indigo-700 hover:bg-indigo-50">
+                        <FileText class="h-4 w-4" />
+                        Full Year Report
                     </Button>
                 </div>
             </div>

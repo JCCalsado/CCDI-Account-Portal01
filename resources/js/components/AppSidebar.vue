@@ -33,10 +33,11 @@ const mainNavItems = computed<NavItem[]>(() => {
         // ── Admin ──
         // Admin manages their own dashboard, the user list (where they manage Accounting staff),
         // and has read-only visibility into student data.
-        { title: 'Dashboard',  href: safeRoute('admin.dashboard'),    icon: LayoutGrid,    roles: ['admin'] },
-        { title: 'Users',      href: safeRoute('users.index'),        icon: Users,         roles: ['admin'] },
-        { title: 'Student Overview', href: safeRoute('student-fees.index'), icon: GraduationCap, roles: ['admin'] },
-        { title: 'Student Archive',  href: safeRoute('students.archive'),   icon: History,       roles: ['admin'] },
+        { title: 'Dashboard',        href: safeRoute('admin.dashboard'),                icon: LayoutGrid,    roles: ['admin'] },
+        { title: 'Users',            href: safeRoute('users.index'),                    icon: Users,         roles: ['admin'] },
+        { title: 'Student Overview', href: safeRoute('student-fees.index'),             icon: GraduationCap, roles: ['admin'] },
+        { title: 'Student Archive',  href: safeRoute('students.archive'),               icon: History,       roles: ['admin'] },
+        { title: 'Financial Reports', href: safeRoute('accounting.financial-reports'),  icon: BarChart3,     roles: ['admin'] },
 
         // ── Accounting ──
         { title: 'Accounting Dashboard',   href: safeRoute('accounting.dashboard'),             icon: Banknote,     roles: ['accounting'] },
