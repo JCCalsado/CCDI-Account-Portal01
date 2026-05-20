@@ -142,4 +142,15 @@ class PhilSmsService
 
         return mb_substr($message, 0, self::MAX_LENGTH - 3) . '...';
     }
+
+    private function toE164(string $number): string
+    {
+        $number = preg_replace('/\D/', '', $number); // strip non-digits
+
+        if (str_starts_with($number, '0')) {
+            $number = '63' . substr($number, 1); // 09... → 639...
+        }
+
+        return '+' . $number; // → +639...
+    }
 }

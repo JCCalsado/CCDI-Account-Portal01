@@ -1078,36 +1078,55 @@ class StudentFeeController extends Controller
         }
 
         // ── Receipt download branch ───────────────────────────────────────────────
+        // Generates a CONSOLIDATED receipt for ALL paid transactions under the
+        // selected assessment — not just the latest one.
         if ($request->query('type') === 'receipt') {
-            $latestPayment = $user->transactions()
+            $transactions = $user->transactions()
                 ->where('kind', 'payment')
                 ->where('status', 'paid')
                 ->whereJsonContains('meta->assessment_id', $assessment->id)
-                ->with('user.account', 'user.student')
-                ->latest('paid_at')
-                ->first();
+                ->orderBy('paid_at', 'asc')
+                ->get();
 
-            if (!$latestPayment) {
-                abort(404, 'No paid transaction found for this assessment.');
+            if ($transactions->isEmpty()) {
+                abort(404, 'No paid transactions found for this assessment.');
             }
 
-            $receiptUser      = $latestPayment->user->load('account', 'student');
-            $currentBalance   = (float) ($receiptUser->account->balance ?? 0);
-            $paymentAmount    = (float) $latestPayment->amount;
-            $balanceBefore    = round($currentBalance + $paymentAmount, 2);
-            $remainingBalance = round($currentBalance, 2);
+            $student = $user->load('account', 'student');
+
+            // Build academic term label: "2028-2029, 1st Sem"
+            $semLabels = [
+                '1st'     => '1st Sem',
+                '2nd'     => '2nd Sem',
+                'Summer'  => 'Summer',
+                '1st Sem' => '1st Sem',
+                '2nd Sem' => '2nd Sem',
+            ];
+            $semesterLabel = $semLabels[$assessment->semester] ?? $assessment->semester;
+            $academicTerm  = trim(($assessment->school_year ?? '') . ', ' . $semesterLabel);
+
+            // Financial summary scoped to this assessment.
+            // total_assessment: stored directly on the assessment record.
+            // outstanding_balance: sum of all paymentTerms.balance (authoritative per
+            //   AccountService::recalculate — never derived from transaction sums).
+            // totalPaid: derived as (total − remaining) so it stays consistent
+            //   with the recalculate chain even if transaction amounts diverge.
+            $totalAssessment  = (float) $assessment->total_assessment;
+            $remainingBalance = round((float) $assessment->outstanding_balance, 2);
+            $totalPaid        = round($totalAssessment - $remainingBalance, 2);
 
             $receiptPdf = Pdf::loadView('pdf.receipt', [
-                'transaction'      => $latestPayment,
-                'targetUser'       => $receiptUser,
-                'student'          => $receiptUser,
-                'paymentAmount'    => $paymentAmount,
-                'balanceBefore'    => $balanceBefore,
+                'transactions'     => $transactions,
+                'assessment'       => $assessment,
+                'student'          => $student,
+                'academicTerm'     => $academicTerm,
+                'totalAssessment'  => $totalAssessment,
+                'totalPaid'        => $totalPaid,
                 'remainingBalance' => $remainingBalance,
             ]);
             $receiptPdf->setPaper('A4', 'portrait');
             return $receiptPdf->download(
-                'receipt-' . ($user->account_id ?? 'student') . '-' . $latestPayment->reference . '.pdf'
+                'receipt-' . ($user->account_id ?? 'student') . '-' . ($assessment->assessment_number ?? $assessment->id) . '.pdf'
             );
         }
 
