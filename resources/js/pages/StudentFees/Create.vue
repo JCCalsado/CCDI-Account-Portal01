@@ -127,10 +127,6 @@ function computeNextSemesterAndYear(
 }
 
 // ─── Derive initial values BEFORE form is declared ───────────────────────────
-// This block runs once synchronously. We compute the initial semester /
-// school_year / year_level from paid history so we can pass them directly
-// into useForm() — eliminating the need to mutate form fields afterward and
-// avoiding any reference-before-initialization risk.
 
 const _currentYear = new Date().getFullYear()
 const _defaultYear = `${_currentYear}-${_currentYear + 1}`
@@ -143,11 +139,6 @@ const _initial = props.preselectedStudent
   : { semester: '1st' as const, school_year: _defaultYear, year_level: '' }
 
 // ─── Form ─────────────────────────────────────────────────────────────────────
-// CRITICAL: form must be declared BEFORE any function or watcher that
-// references it. isSemesterPaid(), getPaidRecord(), and loadCurriculum()
-// all close over `form`. The { immediate: true } watchers below fire
-// synchronously during setup — if form isn't initialized yet, Vue throws
-// "Cannot access 'form' before initialization" (TDZ error).
 
 const form = useForm({
   user_id:             props.preselectedStudent?.id ?? 0,
@@ -176,7 +167,6 @@ const hasRemainingBalance = computed(
 )
 
 // ─── Paid Semester Helpers ────────────────────────────────────────────────────
-// These functions reference `form` — safe now because form is declared above.
 
 function isSemesterPaid(semester: string): boolean {
   return paidSemesters.value.some(
@@ -294,7 +284,6 @@ async function loadCurriculum() {
   }
 }
 
-// Safe: form is initialized above, so these watchers can fire immediately.
 watch([selectedStudent, () => form.semester], () => {
   if (selectedStudent.value && !selectedStudent.value.is_irregular) loadCurriculum()
 }, { immediate: true })
@@ -303,7 +292,6 @@ watch([selectedStudent, () => form.semester], () => {
 
 const nstpLecUnits = computed(() => hasNstp.value ? NSTP_UNITS : 0)
 
-// Safe: form is initialized above.
 watch(nstpLecUnits, (val) => { form.nstp_lec_units = val }, { immediate: true })
 
 // ─── Live Fee Computation ─────────────────────────────────────────────────────
@@ -352,6 +340,21 @@ const displayLecUnits = computed({
   set(val: number) {
     form.lec_units = Math.max(0, Number(val) - nstpLecUnits.value)
   },
+})
+
+// ─── Academic totals (for display annotation — not used in billing) ───────────
+// The raw sum of lec_units from the subject records as stored in the DB.
+// This may differ from totalLecUnits when NSTP is present because
+// totalLecUnits uses the fixed 1.5 billing rate, not the DB value (e.g. 2 or 3).
+
+const academicTotalLecUnits = computed(() =>
+  curriculumSubjects.value.reduce((sum, s) => sum + (s.lec_units || 0), 0),
+)
+
+// The NSTP subject's raw DB lec_units — used to show "2 academic" annotation.
+const nstpAcademicUnits = computed(() => {
+  const nstpSubj = curriculumSubjects.value.find((s) => s.is_nstp)
+  return nstpSubj?.lec_units ?? 0
 })
 
 // ─── Payment Terms ────────────────────────────────────────────────────────────
@@ -690,9 +693,15 @@ function semLabel(s: string) {
                 <p class="text-xs text-gray-500">
                   {{ curriculumSubjects.length }} subject{{ curriculumSubjects.length !== 1 ? 's' : '' }}
                 </p>
+                <!-- ── FIX: label as "billing units" and show academic total when NSTP present ── -->
                 <p class="text-xs font-semibold text-blue-700">
-                  {{ totalLecUnits }} total units
+                  {{ totalLecUnits }} billing units
                 </p>
+                <p v-if="hasNstp && academicTotalLecUnits !== totalLecUnits"
+                   class="text-xs text-amber-600">
+                  {{ academicTotalLecUnits }} academic
+                </p>
+                <!-- ──────────────────────────────────────────────────────────────────────────── -->
               </div>
             </div>
 
@@ -705,7 +714,7 @@ function semLabel(s: string) {
                   <th class="text-center px-4 py-2 w-20">Lec</th>
                   <th class="text-center px-4 py-2 w-20">Lab</th>
                   <th class="text-center px-4 py-2 w-24">Total</th>
-                  <th class="text-center px-4 py-2 w-28">Status</th>
+                  <th class="text-center px-4 py-2 w-36">Status</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-100">
@@ -724,33 +733,67 @@ function semLabel(s: string) {
                     {{ subj.code }}
                   </td>
                   <td class="px-5 py-2.5 text-gray-800">{{ subj.name }}</td>
-                  <td class="px-4 py-2.5 text-center font-mono text-gray-700">
-                    {{ subj.lec_units || '—' }}
+
+                  <!-- ── FIX: Lec column — NSTP rows show billing unit (1.5) with academic annotation ── -->
+                  <td class="px-4 py-2.5 text-center font-mono">
+                    <template v-if="subj.is_nstp">
+                      <span class="font-semibold text-amber-700">1.5</span>
+                      <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
+                        {{ subj.lec_units }} acad.
+                      </span>
+                    </template>
+                    <template v-else>
+                      <span class="text-gray-700">{{ subj.lec_units || '—' }}</span>
+                    </template>
                   </td>
+                  <!-- ─────────────────────────────────────────────────────────────────────────────── -->
+
                   <td class="px-4 py-2.5 text-center font-mono text-gray-700">
                     {{ subj.lab_units || '—' }}
                   </td>
-                  <td class="px-4 py-2.5 text-center font-mono font-semibold text-gray-900">
-                    {{ subj.total_units }}
+
+                  <!-- ── FIX: Total column — NSTP rows show billing total (1.5) with academic annotation ── -->
+                  <td class="px-4 py-2.5 text-center font-mono font-semibold">
+                    <template v-if="subj.is_nstp">
+                      <span class="text-amber-700">1.5</span>
+                      <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
+                        {{ subj.total_units }} acad.
+                      </span>
+                    </template>
+                    <template v-else>
+                      <span class="text-gray-900">{{ subj.total_units }}</span>
+                    </template>
                   </td>
+                  <!-- ────────────────────────────────────────────────────────────────────────────────── -->
+
+                  <!-- ── FIX: NSTP status badge — shows billing context inline ── -->
                   <td class="px-4 py-2.5 text-center">
-                    <span v-if="subj.is_nstp"
-                      class="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-xs font-semibold text-amber-800">
-                      NSTP
-                    </span>
-                    <span v-else-if="subj.is_pathfit"
-                      class="inline-flex items-center gap-1 rounded-full bg-purple-100 border border-purple-300 px-2 py-0.5 text-xs font-semibold text-purple-800">
-                      PATHFIT
-                    </span>
-                    <span v-else-if="subj.is_billable"
-                      class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
-                      <CheckCircle2 class="h-3 w-3" /> Billable
-                    </span>
-                    <span v-else
-                      class="inline-flex rounded-full bg-gray-100 border border-gray-200 px-2 py-0.5 text-xs text-gray-500">
-                      Non-billable
-                    </span>
+                    <template v-if="subj.is_nstp">
+                      <span class="inline-flex flex-col items-center gap-0.5 rounded-lg bg-amber-100 border border-amber-300 px-2.5 py-1 text-amber-800">
+                        <span class="text-xs font-bold leading-tight">NSTP</span>
+                        <span class="text-xs font-normal text-amber-600 leading-tight whitespace-nowrap">
+                          billed: 1.5 units
+                        </span>
+                      </span>
+                    </template>
+                    <template v-else-if="subj.is_pathfit">
+                      <span class="inline-flex items-center gap-1 rounded-full bg-purple-100 border border-purple-300 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                        PATHFIT
+                      </span>
+                    </template>
+                    <template v-else-if="subj.is_billable">
+                      <span class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
+                        <CheckCircle2 class="h-3 w-3" /> Billable
+                      </span>
+                    </template>
+                    <template v-else>
+                      <span class="inline-flex rounded-full bg-gray-100 border border-gray-200 px-2 py-0.5 text-xs text-gray-500">
+                        Non-billable
+                      </span>
+                    </template>
                   </td>
+                  <!-- ──────────────────────────────────────────────────────────── -->
+
                 </tr>
               </tbody>
 
@@ -783,10 +826,13 @@ function semLabel(s: string) {
                         <span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
                         Billable lec units: <strong class="text-gray-700">{{ form.lec_units }}</strong>
                       </span>
+                      <!-- ── FIX: NSTP footer note explains the academic vs billing split ── -->
                       <span v-if="hasNstp" class="flex items-center gap-1">
                         <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
-                        NSTP: <strong class="text-amber-700">1.5 units (fixed)</strong>
+                        NSTP: <strong class="text-amber-700">1.5 units billed</strong>
+                        <span class="text-gray-400">({{ nstpAcademicUnits }} academic)</span>
                       </span>
+                      <!-- ──────────────────────────────────────────────────────────────── -->
                       <span class="flex items-center gap-1">
                         <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
                         Lab subjects: <strong class="text-gray-700">{{ form.lab_units }}</strong>
@@ -816,7 +862,6 @@ function semLabel(s: string) {
               </p>
             </div>
 
-            <!-- Aggregate row (preset / no subject data) -->
             <table class="w-full text-sm">
               <thead class="text-xs uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
                 <tr>
@@ -858,7 +903,6 @@ function semLabel(s: string) {
               </tbody>
             </table>
 
-            <!-- Preset notice -->
             <div v-if="curriculumMessage"
                  class="flex items-start gap-2 px-5 py-3 bg-blue-50 border-t border-blue-100 text-xs text-blue-800">
               <Info class="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" />

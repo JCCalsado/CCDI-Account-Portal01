@@ -186,7 +186,7 @@ class PresetSubjectController extends Controller
         // Update the preset's aggregate unit counts to match the linked subjects.
         $this->syncPresetAggregates($preset);
 
-        return back()->with('success', "Subject "{$subject->code} — {$subject->name}" added to preset.");
+        return back()->with('success', 'Subject "' . $subject->code . ' — ' . $subject->name . '" added to preset.');
     }
 
     // ─── Destroy ──────────────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ class PresetSubjectController extends Controller
         // Re-sync aggregates after removal.
         $this->syncPresetAggregates($preset);
 
-        return back()->with('success', "Subject "{$name}" removed from preset.");
+        return back()->with('success', 'Subject "' . $name . '" removed from preset.');
     }
 
     // ─── Sync ─────────────────────────────────────────────────────────────────
