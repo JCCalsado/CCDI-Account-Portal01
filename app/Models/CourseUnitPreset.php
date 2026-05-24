@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class CourseUnitPreset extends Model
 {
@@ -21,6 +22,22 @@ class CourseUnitPreset extends Model
         'has_nstp'          => 'boolean',
         'is_active'         => 'boolean',
     ];
+
+    // ─── Relationships ────────────────────────────────────────────────────────
+
+    /**
+     * The subjects that make up this preset's curriculum.
+     * One subject can only appear once per preset (unique constraint on table).
+     * Ordered by sort_order so the UI displays subjects in a consistent sequence.
+     */
+    public function presetSubjects(): HasMany
+    {
+        return $this->hasMany(CourseUnitPresetSubject::class, 'course_unit_preset_id')
+            ->orderBy('sort_order')
+            ->orderBy('id');
+    }
+
+    // ─── Static Methods ───────────────────────────────────────────────────────
 
     public static function supportedCourses(): array
     {

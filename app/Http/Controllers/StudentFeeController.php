@@ -808,8 +808,14 @@ class StudentFeeController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  UPDATE
+    //  UPDATE  (PATCH — replaces only this method in the controller)
     // ─────────────────────────────────────────────────────────────
+    //
+    // KEY CHANGE: After rebuilding payment terms, delete the existing
+    // assessment_subjects snapshot and write fresh rows using the new
+    // rates and the (potentially updated) semester/year_level.
+    // This keeps the snapshot in sync when accounting corrects an assessment
+    // before any payments have been recorded.
 
     public function update(Request $request, int $userId)
     {
@@ -834,6 +840,7 @@ class StudentFeeController extends Controller
         $paidTerms = $assessment->paymentTerms()
             ->whereNotIn('status', \App\Enums\PaymentStatus::unpaidValues())
             ->count();
+
         if ($paidTerms > 0) {
             return back()->withErrors([
                 'lec_units' => 'Cannot edit this assessment — payments have already been recorded.',
@@ -866,13 +873,37 @@ class StudentFeeController extends Controller
                 'total_assessment'    => $fees['total'],
             ]);
 
+            // Rebuild payment terms — same approach as store().
             $assessment->paymentTerms()->delete();
-            // Pass $fees['misc_fee'] and the tuition+lab base explicitly.
-            // See store() for the reasoning — same fix applied here.
             $tuitionAndLabBase = $fees['total'] - $fees['misc_fee'];
             foreach (AssessmentService::buildPaymentTerms($fees['total'], $rates, $fees['misc_fee'], $tuitionAndLabBase) as $term) {
                 $assessment->paymentTerms()->create($term);
             }
+
+            // ─── Rebuild subject snapshot ──────────────────────────────────
+            // Delete and re-insert. Safe here because update() is only allowed
+            // when zero paid terms exist (guard above). Rates are re-locked at
+            // the current fee_settings values for this update operation.
+            \Illuminate\Support\Facades\DB::table('assessment_subjects')
+                ->where('student_assessment_id', $assessment->id)
+                ->delete();
+
+            $student          = User::findOrFail($userId);
+            $semesterNorm     = AssessmentService::normalizeSemester($validated['semester']);
+            $yearLevelForSnap = $assessment->year_level ?? $student->year_level;
+
+            $snapshotRows = AssessmentService::buildSubjectSnapshot(
+                $student->course,
+                $yearLevelForSnap,
+                $semesterNorm,
+                $rates,
+                $assessment->id,
+            );
+
+            if (! empty($snapshotRows)) {
+                \Illuminate\Support\Facades\DB::table('assessment_subjects')->insert($snapshotRows);
+            }
+            // ──────────────────────────────────────────────────────────────
 
             Transaction::where('user_id', $userId)
                 ->where('kind', 'charge')

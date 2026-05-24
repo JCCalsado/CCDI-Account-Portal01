@@ -7,7 +7,11 @@
 // TYPE DEFINITIONS
 // ============================================================================
 
-export type PaymentTermStatus = 'pending' | 'partial' | 'paid' | 'overdue' | 'awaiting_approval';
+// 'processed' = term received a partial payment; remaining balance was carried
+// forward to the next term. The term balance is 0 but the student has NOT paid
+// in full. Visually distinct from 'paid' (fully settled) and 'partial' (balance
+// remains on this term). Mirrors PaymentStatus::PROCESSED in the PHP backend.
+export type PaymentTermStatus = 'pending' | 'partial' | 'paid' | 'overdue' | 'awaiting_approval' | 'processed';
 export type TransactionStatus = 'pending' | 'awaiting_approval' | 'paid' | 'failed' | 'cancelled';
 export type AssessmentStatus = 'active' | 'graduated' | 'archived' | 'pending';
 export type TransactionType = 'payment' | 'charge' | 'refund' | 'adjustment';
@@ -117,7 +121,20 @@ export function formatDateTime(date: string | Date | null | undefined, timeForma
 // ============================================================================
 
 /**
- * Get formatted label and color classes for payment term status
+ * Get formatted label and color classes for payment term status.
+ *
+ * Status values and their meanings:
+ *   pending           — Term has not received any payment yet.
+ *   partial           — Term received a partial payment; remaining balance
+ *                       stays on this term (student pays later).
+ *   paid              — Term is fully settled.
+ *   overdue           — Past due date with unpaid balance.
+ *   awaiting_approval — A student-submitted payment is pending accounting review.
+ *   processed         — Term received a partial payment that was carried forward
+ *                       to the next term via the one-time processing rule.
+ *                       Balance is 0 but NOT fully paid — the remaining amount
+ *                       was added to the next term. Use sky/teal to distinguish
+ *                       from green (paid) and blue (partial/awaiting).
  */
 export function getPaymentTermStatusConfig(status: PaymentTermStatus | string | null | undefined): StatusConfig {
     const statusMap: Record<string, StatusConfig> = {
@@ -150,6 +167,14 @@ export function getPaymentTermStatusConfig(status: PaymentTermStatus | string | 
             color: 'info',
             bgClass: 'bg-blue-100',
             textClass: 'text-blue-800',
+        },
+        // processed: balance was carried forward to the next term.
+        // Sky distinguishes it from green (paid) and blue (partial/awaiting).
+        processed: {
+            label: 'Carried Forward',
+            color: 'info',
+            bgClass: 'bg-sky-100',
+            textClass: 'text-sky-800',
         },
     };
 

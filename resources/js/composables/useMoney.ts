@@ -77,74 +77,56 @@ export function toCents(amount: number | string | null | undefined): number {
  *
  * ⚠️  USE ONLY FOR DISPLAY OR FORM SUBMISSION. Never pipe back into arithmetic.
  *
- * The result is a JavaScript number (float) for use with Intl.NumberFormat,
- * or for JSON serialization to the backend. Do not subtract, add, or compare
- * this value — go through toCents() again if you need to recalculate.
+ * The result is a JavaScript number (float) for use with Intl.NumberFormat.
  *
  * Examples:
- *   fromCents(500000) === 5000
- *   fromCents(407820) === 4078.2  (use formatCurrency() for display)
- *   fromCents(92180)  === 921.8   (use formatCurrency() for display)
+ *   fromCents(500000) === 5000.00
+ *   fromCents(92180)  === 921.80
+ *   fromCents(1)      === 0.01
  */
 export function fromCents(cents: number): number {
     return cents / 100;
 }
 
-/**
- * Convert integer cents to a peso string suitable for JSON submission.
- *
- * Returns "5000.00" not 5000.0 — always 2 decimal places.
- * Use this when submitting amounts to the backend API.
- */
-export function centsToDecimalString(cents: number): string {
-    const abs     = Math.abs(cents);
-    const whole   = Math.floor(abs / 100);
-    const decimal = abs % 100;
-    const str     = `${whole}.${String(decimal).padStart(2, '0')}`;
-    return cents < 0 ? `-${str}` : str;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// ARITHMETIC (all in integer cents)
+// PAYMENT ALLOCATION
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Sum an array of cent values.
- */
-export function sumCents(centValues: number[]): number {
-    return centValues.reduce((acc, c) => acc + c, 0);
-}
-
-/**
- * Apply a percentage to a cents amount, returning integer cents.
+ * One entry in the payment allocation result.
  *
- * Examples:
- *   percentCents(1230200, 30) === 369060   (₱3,690.60)
- *   percentCents(1230200, 25) === 307550   (₱3,075.50)
- */
-export function percentCents(cents: number, percentage: number): number {
-    return Math.round(cents * (percentage / 100));
-}
-
-/**
- * Payment allocation engine — distributes an amount across term balances.
+ * Step 1 fields (always populated):
+ *   - term_id, term_name, term_order, balance_before, applied, applied_cents
+ *   - balance_after: remaining balance after Step 1 application
+ *   - fully_paid: true when the term was exactly or over-paid
  *
- * All arithmetic is integer-cents. Returns an allocation ledger identical
- * to what the PHP backend will compute.
+ * Step 2 fields (populated for terms that trigger the close-and-carry rule):
+ *   - processed:       true = this term is closed by the carry rule (balance → 0)
+ *   - carried_forward: peso amount moved to the next term (display only)
+ *   - carried_to_term: name of the receiving term (null for the final term)
  *
- * @param amountCents   Total payment in integer cents.
- * @param terms         Array of { id, term_name, term_order, balance } sorted by term_order.
- * @returns AllocationEntry[] — one per affected term.
+ * NOTE: `processed` is distinct from `fully_paid`:
+ *   - fully_paid  = term balance was exactly covered by this payment
+ *   - processed   = term had remaining balance that was carried forward to the
+ *                   next term (one-time term processing rule). balance_after = 0
+ *                   but the student has NOT paid this term in full.
  */
 export interface AllocationEntry {
-    term_id:        number;
-    term_name:      string;
-    term_order:     number;
-    balance_before: number;  // in pesos (for display)
-    applied:        number;  // in pesos (for display)
-    balance_after:  number;  // in pesos (for display)
-    applied_cents:  number;  // raw cents (for calculations)
-    fully_paid:     boolean;
+    term_id:         number;
+    term_name:       string;
+    term_order:      number;
+    balance_before:  number;   // in pesos (for display)
+    applied:         number;   // in pesos (for display)
+    balance_after:   number;   // in pesos (for display — 0 when fully_paid OR processed)
+    applied_cents:   number;   // raw cents (for calculations)
+    fully_paid:      boolean;  // true when term is exactly settled by this payment
+    // ── Step 2: Close-and-carry fields ────────────────────────────────────────
+    // Populated only when a partial payment triggers the one-time processing rule.
+    // A term is NOT processed if it is the last term in the assessment (no next
+    // term to receive the carry). That case stays as PARTIAL on the server.
+    processed:       boolean;       // true = term closed; remaining balance carried forward
+    carried_forward: number;        // pesos moved to next term (display only)
+    carried_to_term: string | null; // name of the receiving term
 }
 
 export interface AllocatableTerm {
@@ -154,6 +136,33 @@ export interface AllocatableTerm {
     balance:    number;  // in pesos
 }
 
+/**
+ * Allocate a payment amount across an ordered list of unpaid terms.
+ *
+ * Mirrors PHP StudentPaymentService::allocatePaymentAcrossTerms() exactly,
+ * including the Step 2 close-and-carry rule. Used for the payment preview
+ * in Create.vue (accounting) and the allocation breakdown in Approvals.
+ *
+ * STEP 1: Sequential allocation
+ *   Distribute the payment amount across terms in term_order sequence.
+ *   Each term receives as much as its balance allows, up to the remaining
+ *   payment amount.
+ *
+ * STEP 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE)
+ *   For any term that ended Step 1 with balance remaining (partial payment):
+ *     a. Find the next term in the ORIGINAL list with balance > 0.
+ *     b. Close this term (set balance_after = 0, mark processed = true).
+ *     c. Record carry metadata for the UI (carried_forward, carried_to_term).
+ *   Exception: if this is the LAST term (highest term_order), do NOT apply
+ *   the carry rule. Leave it as partial — the student pays the remainder
+ *   in a future transaction.
+ *
+ * @param amountCents  Total payment in integer cents.
+ * @param terms        Array of { id, term_name, term_order, balance } — all
+ *                     outstanding terms for the assessment, not just the ones
+ *                     in the payment's scope. The full list is required for
+ *                     Step 2 to correctly identify the last term.
+ */
 export function allocatePayment(
     amountCents: number,
     terms: AllocatableTerm[],
@@ -163,6 +172,7 @@ export function allocatePayment(
 
     const sorted = [...terms].sort((a, b) => a.term_order - b.term_order);
 
+    // ── Step 1: Sequential allocation ────────────────────────────────────────
     for (const term of sorted) {
         if (remainingCents <= 0) break;
 
@@ -171,17 +181,70 @@ export function allocatePayment(
         const balanceAfterCents  = balanceBeforeCents - appliedCents;
 
         result.push({
-            term_id:        term.id,
-            term_name:      term.term_name,
-            term_order:     term.term_order,
-            balance_before: fromCents(balanceBeforeCents),
-            applied:        fromCents(appliedCents),
-            balance_after:  fromCents(balanceAfterCents),
-            applied_cents:  appliedCents,
-            fully_paid:     balanceAfterCents === 0,
+            term_id:         term.id,
+            term_name:       term.term_name,
+            term_order:      term.term_order,
+            balance_before:  fromCents(balanceBeforeCents),
+            applied:         fromCents(appliedCents),
+            balance_after:   fromCents(balanceAfterCents),
+            applied_cents:   appliedCents,
+            fully_paid:      balanceAfterCents === 0,
+            // Step 2 fields — populated below
+            processed:       false,
+            carried_forward: 0,
+            carried_to_term: null,
         });
 
         remainingCents -= appliedCents;
+    }
+
+    // ── Step 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE) ──────────────
+    // Mirrors PHP allocatePaymentAcrossTerms() Step 2 exactly.
+    //
+    // LAST-TERM EXCEPTION:
+    //   The term with the highest term_order across ALL terms in the assessment
+    //   (not just Step 1 results) is NEVER closed and carried. This matches
+    //   the backend's maxTermOrder guard. The student must pay the remainder
+    //   in a future payment.
+    //
+    //   We derive maxTermOrder from the full `sorted` array, not from `result`
+    //   (which only contains terms that received money in Step 1).
+    const maxTermOrder = sorted.length > 0
+        ? Math.max(...sorted.map((t) => t.term_order))
+        : 0;
+
+    for (let i = 0; i < result.length; i++) {
+        const entry = result[i];
+
+        // Only process entries with remaining balance after Step 1.
+        if (entry.fully_paid || entry.balance_after <= 0) continue;
+
+        // LAST TERM EXCEPTION: do not apply carry rule to the final term.
+        // Leave it as partial — the student pays the remainder next time.
+        if (entry.term_order >= maxTermOrder) continue;
+
+        const carryoverCents = toCents(entry.balance_after);
+        if (carryoverCents <= 0) continue;
+
+        // Find the first term in the ORIGINAL sorted list AFTER this one
+        // that still has balance > 0 (may be outside the Step 1 allocation scope —
+        // e.g. Midterm was not reached because the payment ran out on Prelim).
+        const nextTerm = sorted.find(
+            (t) => t.term_order > entry.term_order && toCents(t.balance) > 0,
+        ) ?? null;
+
+        if (!nextTerm) {
+            // No eligible next term with balance (can happen when subsequent terms
+            // were fully paid in Step 1 of this same payment). Skip.
+            continue;
+        }
+
+        // Close this term and annotate the carry.
+        entry.processed       = true;
+        entry.carried_forward = fromCents(carryoverCents);
+        entry.carried_to_term = nextTerm.term_name;
+        entry.balance_after   = 0;    // server will zero this term's balance
+        entry.fully_paid      = false; // processed ≠ paid
     }
 
     return result;
@@ -218,37 +281,13 @@ export function formatCurrency(amount: number | null | undefined, showSymbol = t
 }
 
 /**
- * Format integer cents for display.
- *
- * Examples:
- *   formatCents(500000)  === "₱5,000.00"
- *   formatCents(92180)   === "₱921.80"
+ * useMoney composable — exposes all money utilities in a single import.
  */
-export function formatCents(cents: number, showSymbol = true): string {
-    return formatCurrency(fromCents(cents), showSymbol);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COMPOSABLE EXPORT
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function useMoney() {
     return {
-        // Input conversion
         toCents,
-        roundToCents: toCents, // alias for clarity
-
-        // Output conversion
         fromCents,
-        centsToDecimalString,
-
-        // Arithmetic
-        sumCents,
-        percentCents,
-        allocatePayment,
-
-        // Display
         formatCurrency,
-        formatCents,
+        allocatePayment,
     };
 }

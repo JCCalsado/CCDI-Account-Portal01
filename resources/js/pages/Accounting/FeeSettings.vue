@@ -551,6 +551,11 @@ function livePresetTotal(id: number): number {
                       <!-- Normal / edit mode -->
                       <div v-else-if="editingPreset !== p.id"
                            class="flex items-center justify-end gap-3">
+                        <a
+                          :href="route('accounting.fee-settings.preset-subjects.index', p.id)"
+                          class="text-purple-600 hover:text-purple-800 text-xs font-medium"
+                          title="View and manage subjects linked to this preset"
+                        >Subjects</a>
                         <button @click="startEditPreset(p)"
                                 class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
                         <button @click="confirmDeletePreset(p.id)"

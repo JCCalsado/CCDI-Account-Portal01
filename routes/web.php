@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Accounting\FinancialReportsController;
 use App\Http\Controllers\Accounting\FeeSettingsController;
+use App\Http\Controllers\Accounting\PresetSubjectController;
 use App\Http\Controllers\AccountingDashboardController;
 use App\Http\Controllers\AccountingTransactionController;
 use App\Http\Controllers\AdminController;
@@ -177,6 +178,16 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
     Route::post('/fee-settings/presets', [FeeSettingsController::class, 'storePreset'])->name('accounting.fee-settings.presets.store');
     Route::patch('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'updatePreset'])->name('accounting.fee-settings.presets.update');
     Route::delete('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'destroyPreset'])->name('accounting.fee-settings.presets.destroy');
+
+    // ── Preset Subject Management ────────────────────────────────────
+    Route::prefix('fee-settings/presets/{preset}/subjects')
+        ->name('accounting.fee-settings.preset-subjects.')
+        ->group(function () {
+            Route::get('/',                   [PresetSubjectController::class, 'index'])  ->name('index');
+            Route::post('/',                  [PresetSubjectController::class, 'store'])  ->name('store');
+            Route::delete('/{presetSubject}', [PresetSubjectController::class, 'destroy'])->name('destroy');
+            Route::post('/sync',              [PresetSubjectController::class, 'sync'])  ->name('sync');
+        });
 
     // Notification Management — accounting owns all operations
     Route::get('notifications', [NotificationController::class, 'index'])->name('accounting.notifications.index');
