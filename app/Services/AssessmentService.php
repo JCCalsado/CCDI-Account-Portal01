@@ -149,6 +149,7 @@ class AssessmentService
     public static function getCurriculumUnits(string $course, string $yearLevel, string $semester): array
     {
         $semesterDb = self::normalizeSemester($semester);
+        $rates      = self::loadRates();
 
         $subjects = Subject::where('course', $course)
             ->where('year_level', $yearLevel)
@@ -165,33 +166,42 @@ class AssessmentService
         foreach ($subjects as $subj) {
             $isNstp    = self::isNstpSubject($subj->code, $subj->name);
             $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
+            $lecUnits  = (int) ($subj->lec_units ?? 0);
+            $labUnits  = (int) ($subj->lab_units ?? 0);
 
             if ($isNstp) {
                 // Mark NSTP presence only — billing units are fixed at 1.5, NOT the DB value (3)
-                // Applies to: CS-NSTP1/2, IT-NSTP1/2, ACT-NSTP1/2,
-                //             EET-NSTP1/2, ECE-NSTP1/2, IS-NSTP1/2
                 $hasNstp = true;
             } elseif ($isPathfit) {
                 // PATHFIT/PE: excluded from billing per CHED
-                $pathfitUnits += (int) ($subj->lec_units ?? 0);
+                $pathfitUnits += $lecUnits;
             } else {
-                // Normal billable subject
-                $billableLecUnits += (int) ($subj->lec_units ?? 0);
-                if ((int) ($subj->lab_units ?? 0) > 0) {
+                $billableLecUnits += $lecUnits;
+                if ($labUnits > 0) {
                     $labSubjectCount++;
                 }
             }
 
+            // ── Per-subject fee preview (at current rates) ────────────────────
+            // These are for display only in getCurriculumUnits(). The authoritative
+            // billing snapshot is written by buildSubjectSnapshot() inside store().
+            $subjectFees = self::computeSubjectFees($isNstp, $isPathfit, $lecUnits, $labUnits, $rates);
+
             $subjectList[] = [
-                'id'          => $subj->id,
-                'code'        => $subj->code,
-                'name'        => $subj->name,
-                'lec_units'   => (int) ($subj->lec_units ?? 0),
-                'lab_units'   => (int) ($subj->lab_units ?? 0),
-                'total_units' => ((int) ($subj->lec_units ?? 0)) + ((int) ($subj->lab_units ?? 0)),
-                'is_nstp'     => $isNstp,
-                'is_pathfit'  => $isPathfit,
-                'is_billable' => ! $isNstp && ! $isPathfit,
+                'id'                 => $subj->id,
+                'code'               => $subj->code,
+                'name'               => $subj->name,
+                'lec_units'          => $lecUnits,
+                'lab_units'          => $labUnits,
+                'total_units'        => $lecUnits + $labUnits,
+                'is_nstp'            => $isNstp,
+                'is_pathfit'         => $isPathfit,
+                'is_billable'        => ! $isNstp && ! $isPathfit,
+                'nstp_billing_units' => $isNstp ? self::NSTP_MINIMUM_UNITS : 0,
+                // Per-subject fee preview
+                'tuition_fee'        => $subjectFees['tuition_fee'],
+                'lab_fee'            => $subjectFees['lab_fee'],
+                'total_fee'          => $subjectFees['total_fee'],
             ];
         }
 
@@ -201,12 +211,142 @@ class AssessmentService
         return [
             'subjects'           => $subjectList,
             'billable_lec_units' => $billableLecUnits,
-            'nstp_lec_units'     => $nstpBillingUnits, // always 1.5, never 3
+            'nstp_lec_units'     => $nstpBillingUnits,
             'has_nstp'           => $hasNstp,
             'lab_subject_count'  => $labSubjectCount,
             'pathfit_units'      => $pathfitUnits,
             'total_units'        => $billableLecUnits + (int) $nstpBillingUnits + $pathfitUnits,
         ];
+    }
+
+    // ─── Per-Subject Fee Computation ──────────────────────────────────────────
+
+    /**
+     * Compute the fee contribution of a single subject.
+     *
+     * Rules:
+     *   Regular subject: tuition = lec_units × rate
+     *                    lab_fee = lab_fee_per_subject if lab_units > 0
+     *   NSTP:            tuition = 1.5 × rate (fixed, regardless of lec_units stored)
+     *                    lab_fee = 0 (NSTP has no lab component)
+     *   PATHFIT:         tuition = 0 (excluded from billing per CHED)
+     *                    lab_fee = 0
+     *
+     * Note: entrepreneurship_fee is charged ONCE at the assessment level (not per subject).
+     * It is NOT included in the per-subject total here.
+     *
+     * @param  bool   $isNstp
+     * @param  bool   $isPathfit
+     * @param  int    $lecUnits   Stored lec_units from subjects table
+     * @param  int    $labUnits   Stored lab_units from subjects table
+     * @param  array  $rates      Output of loadRates()
+     * @return array{tuition_fee: float, lab_fee: float, total_fee: float}
+     */
+    public static function computeSubjectFees(
+        bool  $isNstp,
+        bool  $isPathfit,
+        int   $lecUnits,
+        int   $labUnits,
+        array $rates
+    ): array {
+        $rate             = $rates['tuition_per_unit'];
+        $labFeePerSubject = $rates['lab_fee_per_subject'];
+
+        if ($isPathfit) {
+            return ['tuition_fee' => 0.0, 'lab_fee' => 0.0, 'total_fee' => 0.0];
+        }
+
+        if ($isNstp) {
+            // NSTP always billed at 1.5 units — never the DB value
+            $tuition = round(self::NSTP_MINIMUM_UNITS * $rate, 2);
+            return ['tuition_fee' => $tuition, 'lab_fee' => 0.0, 'total_fee' => $tuition];
+        }
+
+        $tuition = round($lecUnits * $rate, 2);
+        $labFee  = $labUnits > 0 ? round($labFeePerSubject, 2) : 0.0;
+
+        return [
+            'tuition_fee' => $tuition,
+            'lab_fee'     => $labFee,
+            'total_fee'   => round($tuition + $labFee, 2),
+        ];
+    }
+
+    // ─── Assessment Subject Snapshot ──────────────────────────────────────────
+
+    /**
+     * Build the assessment_subjects snapshot rows for a new assessment.
+     *
+     * Called inside StudentFeeController::store() after the StudentAssessment
+     * row is created. Rates are locked at the values passed in $rates (which
+     * should be the same $rates used to compute the assessment totals).
+     *
+     * Returns an array of row arrays ready for DB::table('assessment_subjects')->insert().
+     *
+     * For irregular students (or when subjects can't be determined), returns [].
+     * The caller checks the return value and handles the empty case gracefully.
+     *
+     * @param  string $course
+     * @param  string $yearLevel
+     * @param  string $semester      Normalised DB format: '1st Sem', '2nd Sem', 'Summer'
+     * @param  array  $rates         Output of loadRates() — rates locked at creation time
+     * @param  int    $assessmentId  student_assessments.id for the FK
+     * @return array<int, array>
+     */
+    public static function buildSubjectSnapshot(
+        string $course,
+        string $yearLevel,
+        string $semester,
+        array  $rates,
+        int    $assessmentId
+    ): array {
+        $semesterDb = self::normalizeSemester($semester);
+
+        $subjects = Subject::where('course', $course)
+            ->where('year_level', $yearLevel)
+            ->where('semester', $semesterDb)
+            ->where('is_active', true)
+            ->orderBy('id')
+            ->get();
+
+        if ($subjects->isEmpty()) {
+            return [];
+        }
+
+        $rows      = [];
+        $sortOrder = 1;
+        $now       = now();
+
+        foreach ($subjects as $subj) {
+            $isNstp    = self::isNstpSubject($subj->code, $subj->name);
+            $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
+            $lecUnits  = (int) ($subj->lec_units ?? 0);
+            $labUnits  = (int) ($subj->lab_units ?? 0);
+            $isBillable = ! $isNstp && ! $isPathfit;
+
+            $fees = self::computeSubjectFees($isNstp, $isPathfit, $lecUnits, $labUnits, $rates);
+
+            $rows[] = [
+                'student_assessment_id' => $assessmentId,
+                'subject_id'            => $subj->id,
+                'code'                  => $subj->code,
+                'name'                  => $subj->name,
+                'lec_units'             => $lecUnits,
+                'lab_units'             => $labUnits,
+                'is_nstp'               => $isNstp,
+                'is_pathfit'            => $isPathfit,
+                'is_billable'           => $isBillable,
+                'tuition_fee'           => $fees['tuition_fee'],
+                'lab_fee'               => $fees['lab_fee'],
+                'total_fee'             => $fees['total_fee'],
+                'nstp_billing_units'    => $isNstp ? self::NSTP_MINIMUM_UNITS : 0.0,
+                'sort_order'            => $sortOrder++,
+                'created_at'            => $now,
+                'updated_at'            => $now,
+            ];
+        }
+
+        return $rows;
     }
 
     // ─── Fee Computation ──────────────────────────────────────────────────────

@@ -31,6 +31,21 @@ import { computed, onMounted, ref, watch } from 'vue';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
+interface AssessmentSubjectRow {
+    subject_id: number | null;
+    code: string;
+    name: string;
+    lec_units: number;
+    lab_units: number;
+    is_nstp: boolean;
+    is_pathfit: boolean;
+    is_billable: boolean;
+    tuition_fee: number;
+    lab_fee: number;
+    total_fee: number;
+    nstp_billing_units: number;
+}
+
 interface PaymentTerm {
     id: number;
     term_name: string;
@@ -74,7 +89,7 @@ interface Props {
     payments?: any[];
     feeBreakdown?: Array<{ category: string; total: number; items: number }>;
     backUrl?: string;
-    enrolledSubjectsByAssessment?: Record<number, number[]>;
+    enrolledSubjectsByAssessment?: Record<number, AssessmentSubjectRow[] | number[]>;
     // ✅ FIX: was missing from Props interface, causing TS error
     miscItems?: Array<{ label?: string; name?: string; amount: number }>;
 }
@@ -555,9 +570,74 @@ function toggleTxSubjectPanel(key: string) {
 }
 
 function buildSubjectPanel(a: Assessment) {
+    const rawData = (props.enrolledSubjectsByAssessment ?? {})[a.id] ?? [];
+
+    // ── Determine data source ──────────────────────────────────────────────────
+    // New assessments: rawData is AssessmentSubjectRow[] (objects with fee fields)
+    // Legacy assessments: rawData is number[] (subject IDs from student_enrollments)
+    const isSnapshotData =
+        rawData.length > 0 && typeof rawData[0] === 'object' && rawData[0] !== null;
+
+    if (isSnapshotData) {
+        // ── New path: assessment_subjects snapshot ────────────────────────────
+        const snapshotRows = rawData as AssessmentSubjectRow[];
+
+        const subjects = snapshotRows.map((s) => ({
+            subject_id:    s.subject_id,
+            code:          s.code,
+            name:          s.name,
+            lecUnits:      s.lec_units,
+            labUnits:      s.lab_units,
+            tuitionAmount: s.tuition_fee,
+            labAmount:     s.lab_fee,
+            totalFee:      s.total_fee,
+            hasLab:        s.lab_units > 0,
+            isNstp:        s.is_nstp,
+            isPathfit:     s.is_pathfit,
+            isBillable:    s.is_billable,
+            nstpUnits:     s.nstp_billing_units,
+            // Snapshot subjects are always considered "enrolled" (they were
+            // active at assessment creation time)
+            isEnrolled:    true,
+        }));
+
+        const billable   = subjects.filter((s) => s.isBillable);
+        const nstpRows   = subjects.filter((s) => s.isNstp);
+        const pathfitRows = subjects.filter((s) => s.isPathfit);
+
+        const totalLecUnits   = billable.reduce((acc, s) => acc + s.lecUnits, 0);
+        const totalLabUnits   = billable.reduce((acc, s) => acc + s.labUnits, 0);
+        const totalUnits      = subjects.reduce((acc, s) => acc + s.lecUnits + s.labUnits, 0);
+        const totalTuitionVal = subjects.reduce((acc, s) => acc + s.tuitionAmount, 0);
+        const totalLabVal     = subjects.reduce((acc, s) => acc + s.labAmount, 0);
+
+        return {
+            assessmentId: a.id,
+            label:        `${a.year_level} — ${a.semester}`,
+            schoolYear:   a.school_year,
+            course:       a.course ?? '—',
+            source:       'snapshot' as const,
+            totalLecUnits,
+            totalLabUnits,
+            totalUnits,
+            totalTuition:  Math.round(totalTuitionVal * 100) / 100,
+            totalLab:      Math.round(totalLabVal * 100) / 100,
+            subjectCount:  subjects.length,
+            enrolledCount: subjects.length,
+            subjects,
+            nstpCount:    nstpRows.length,
+            pathfitCount: pathfitRows.length,
+        };
+    }
+
+    // ── Legacy path: student_enrollments IDs only ─────────────────────────────
+    // Pre-snapshot assessments have no per-subject fee data. Reconstruct a
+    // minimal display from fee_breakdown aggregate rows.
     const subjectRows = (a.fee_breakdown ?? []).filter(
         (item) => item.category === 'Tuition' || item.category === 'Laboratory',
     );
+
+    const enrolledIds = new Set(rawData as number[]);
 
     const subjectMap: Record<
         number,
@@ -569,14 +649,15 @@ function buildSubjectPanel(a: Assessment) {
             labUnits: number;
             tuitionAmount: number;
             labAmount: number;
+            totalFee: number;
             hasLab: boolean;
+            isNstp: boolean;
+            isPathfit: boolean;
+            isBillable: boolean;
+            nstpUnits: number;
             isEnrolled: boolean;
         }
     > = {};
-
-    const enrolledIds = new Set(
-        (props.enrolledSubjectsByAssessment ?? {})[a.id] ?? [],
-    );
 
     for (const row of subjectRows) {
         const sid = row.subject_id;
@@ -584,15 +665,20 @@ function buildSubjectPanel(a: Assessment) {
 
         if (!subjectMap[sid]) {
             subjectMap[sid] = {
-                subject_id: sid,
-                code: row.code ?? '—',
-                name: row.name,
-                lecUnits: 0,
-                labUnits: 0,
+                subject_id:    sid,
+                code:          row.code ?? '—',
+                name:          row.name,
+                lecUnits:      0,
+                labUnits:      0,
                 tuitionAmount: 0,
-                labAmount: 0,
-                hasLab: false,
-                isEnrolled: enrolledIds.has(sid),
+                labAmount:     0,
+                totalFee:      0,
+                hasLab:        false,
+                isNstp:        false,
+                isPathfit:     false,
+                isBillable:    true,
+                nstpUnits:     0,
+                isEnrolled:    enrolledIds.has(sid),
             };
         }
 
@@ -607,29 +693,33 @@ function buildSubjectPanel(a: Assessment) {
             subjectMap[sid].labUnits = row.units ?? 0;
             subjectMap[sid].hasLab = true;
         }
+        subjectMap[sid].totalFee = subjectMap[sid].tuitionAmount + subjectMap[sid].labAmount;
     }
 
-    const subjects = Object.values(subjectMap);
-    const totalLecUnits = subjects.reduce((s, sub) => s + sub.lecUnits, 0);
-    const totalLabUnits = subjects.reduce((s, sub) => s + sub.labUnits, 0);
-    const totalUnits = totalLecUnits + totalLabUnits;
+    const subjects       = Object.values(subjectMap);
+    const totalLecUnits  = subjects.reduce((s, sub) => s + sub.lecUnits, 0);
+    const totalLabUnits  = subjects.reduce((s, sub) => s + sub.labUnits, 0);
+    const totalUnits     = totalLecUnits + totalLabUnits;
     const totalTuitionVal = subjects.reduce((s, sub) => s + sub.tuitionAmount, 0);
-    const totalLabVal = subjects.reduce((s, sub) => s + sub.labAmount, 0);
-    const enrolledCount = subjects.filter((sub) => sub.isEnrolled).length;
+    const totalLabVal    = subjects.reduce((s, sub) => s + sub.labAmount, 0);
+    const enrolledCount  = subjects.filter((sub) => sub.isEnrolled).length;
 
     return {
         assessmentId: a.id,
-        label: `${a.year_level} — ${a.semester}`,
-        schoolYear: a.school_year,
-        course: a.course ?? '—',
+        label:        `${a.year_level} — ${a.semester}`,
+        schoolYear:   a.school_year,
+        course:       a.course ?? '—',
+        source:       'legacy' as const,
         totalLecUnits,
         totalLabUnits,
         totalUnits,
-        totalTuition: totalTuitionVal,
-        totalLab: totalLabVal,
-        subjectCount: subjects.length,
+        totalTuition:  totalTuitionVal,
+        totalLab:      totalLabVal,
+        subjectCount:  subjects.length,
         enrolledCount,
         subjects,
+        nstpCount:    0,
+        pathfitCount: 0,
     };
 }
 
@@ -1811,7 +1901,7 @@ const paymentMethodBadgeClass = (method: string): string => {
                                 <div class="flex items-center gap-2">
                                     <BookOpen class="h-4 w-4 text-indigo-500" />
                                     <span class="text-sm font-semibold text-indigo-800">
-                                        Enrolled Subjects — {{ group.key }}
+                                        Subject Billing Snapshot — {{ group.key }}
                                     </span>
                                     <span
                                         class="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700"
@@ -1822,6 +1912,12 @@ const paymentMethodBadgeClass = (method: string): string => {
                                                 : ''
                                         }}
                                         · {{ txSubjectPanels[group.key]!.totalUnits }} units
+                                    </span>
+                                    <span
+                                        v-if="txSubjectPanels[group.key]!.source === 'snapshot'"
+                                        class="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700"
+                                    >
+                                        Live snapshot
                                     </span>
                                 </div>
                                 <ChevronDown
@@ -1841,10 +1937,11 @@ const paymentMethodBadgeClass = (method: string): string => {
                                         <tr
                                             class="border-b border-gray-200 bg-gray-100 text-xs font-semibold tracking-wide text-gray-500 uppercase"
                                         >
-                                            <th class="px-5 py-2.5 text-left">Status</th>
+                                            <th class="px-5 py-2.5 text-left">Type</th>
                                             <th class="px-5 py-2.5 text-left">Code</th>
                                             <th class="px-5 py-2.5 text-left">Subject Name</th>
-                                            <th class="px-5 py-2.5 text-center">Units</th>
+                                            <th class="px-5 py-2.5 text-center">LEC</th>
+                                            <th class="px-5 py-2.5 text-center">LAB</th>
                                             <th class="px-5 py-2.5 text-right">Tuition</th>
                                             <th class="px-5 py-2.5 text-right">Lab Fee</th>
                                             <th class="px-5 py-2.5 text-right">Total</th>
@@ -1854,27 +1951,30 @@ const paymentMethodBadgeClass = (method: string): string => {
                                         <tr
                                             v-for="subject in txSubjectPanels[group.key]!
                                                 .subjects"
-                                            :key="subject.subject_id"
+                                            :key="subject.subject_id ?? subject.code"
                                             :class="[
                                                 'transition-colors',
-                                                subject.isEnrolled
-                                                    ? 'hover:bg-green-50/50'
-                                                    : 'hover:bg-gray-50',
+                                                subject.isNstp
+                                                    ? 'bg-amber-50/50 hover:bg-amber-50'
+                                                    : subject.isPathfit
+                                                    ? 'bg-purple-50/30 hover:bg-purple-50'
+                                                    : 'hover:bg-green-50/40',
                                             ]"
                                         >
-                                            <td class="px-5 py-3 text-center">
+                                            <!-- Type badge -->
+                                            <td class="px-5 py-3">
                                                 <span
-                                                    v-if="subject.isEnrolled"
-                                                    class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-green-100 text-xs font-bold text-green-700"
-                                                    title="Enrolled"
-                                                    >✓</span
-                                                >
+                                                    v-if="subject.isNstp"
+                                                    class="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700"
+                                                >NSTP</span>
+                                                <span
+                                                    v-else-if="subject.isPathfit"
+                                                    class="inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-700"
+                                                >PATHFIT</span>
                                                 <span
                                                     v-else
-                                                    class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-100 text-xs text-gray-400"
-                                                    title="Assessment only"
-                                                    >○</span
-                                                >
+                                                    class="inline-block rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700"
+                                                >Regular</span>
                                             </td>
                                             <td class="px-5 py-3">
                                                 <span
@@ -1888,45 +1988,45 @@ const paymentMethodBadgeClass = (method: string): string => {
                                                         subject.name
                                                     }}</span>
                                                     <FlaskConical
-                                                        v-if="subject.hasLab"
+                                                        v-if="subject.hasLab || subject.labUnits > 0"
                                                         class="h-3.5 w-3.5 flex-shrink-0 text-purple-500"
                                                     />
                                                 </div>
+                                                <span
+                                                    v-if="subject.isNstp"
+                                                    class="text-xs text-amber-600"
+                                                >Billed at {{ subject.nstpUnits ?? 1.5 }} units fixed</span>
                                             </td>
                                             <td class="px-5 py-3 text-center">
                                                 <span
                                                     class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700"
-                                                >
-                                                    {{ subject.lecUnits }} unit{{
-                                                        subject.lecUnits !== 1 ? 's' : ''
-                                                    }}
-                                                </span>
+                                                >{{ subject.lecUnits }}</span>
+                                            </td>
+                                            <td class="px-5 py-3 text-center">
+                                                <span
+                                                    v-if="(subject.labUnits ?? 0) > 0"
+                                                    class="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-600"
+                                                >{{ subject.labUnits }}</span>
+                                                <span v-else class="text-xs text-gray-300">—</span>
                                             </td>
                                             <td
                                                 class="px-5 py-3 text-right font-medium text-gray-900"
+                                                :class="{ 'text-amber-700': subject.isNstp, 'text-gray-400': subject.isPathfit }"
                                             >
-                                                {{ formatCurrency(subject.tuitionAmount) }}
+                                                {{ subject.isPathfit ? '—' : formatCurrency(subject.tuitionAmount) }}
                                             </td>
                                             <td class="px-5 py-3 text-right">
                                                 <span
-                                                    v-if="subject.hasLab"
+                                                    v-if="(subject.labUnits ?? 0) > 0 && subject.labAmount > 0"
                                                     class="font-medium text-purple-700"
-                                                    >{{
-                                                        formatCurrency(subject.labAmount)
-                                                    }}</span
-                                                >
-                                                <span v-else class="text-xs text-gray-300"
-                                                    >—</span
-                                                >
+                                                    >{{ formatCurrency(subject.labAmount) }}</span>
+                                                <span v-else class="text-xs text-gray-300">—</span>
                                             </td>
                                             <td
                                                 class="px-5 py-3 text-right font-semibold text-gray-900"
+                                                :class="{ 'text-gray-400': subject.isPathfit }"
                                             >
-                                                {{
-                                                    formatCurrency(
-                                                        subject.tuitionAmount + subject.labAmount,
-                                                    )
-                                                }}
+                                                {{ subject.isPathfit ? '—' : formatCurrency(subject.totalFee) }}
                                             </td>
                                         </tr>
                                     </tbody>
@@ -1944,8 +2044,9 @@ const paymentMethodBadgeClass = (method: string): string => {
                                             <td
                                                 class="px-5 py-3 text-center font-bold text-blue-700"
                                             >
-                                                {{ txSubjectPanels[group.key]!.totalUnits }}
-                                            </td>
+                                                {{ txSubjectPanels[group.key]!.totalLecUnits }}</td>
+                                            <td class="px-5 py-3 text-center text-orange-600 font-bold">
+                                                {{ txSubjectPanels[group.key]!.totalLabUnits || '—' }}</td>
                                             <td class="px-5 py-3 text-right text-gray-900">
                                                 {{
                                                     formatCurrency(

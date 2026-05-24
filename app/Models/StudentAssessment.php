@@ -12,14 +12,14 @@ class StudentAssessment extends Model
     protected $fillable = [
         'assessment_number',
         'user_id',
-        'course',           // added by 2026_03_17 migration
+        'course',
         'year_level',
         'semester',
         'school_year',
-        'lec_units',        // added by 2026_04_11 refactor migration
+        'lec_units',
         'lab_units',
         'lab_subjects',
-        'discount_type',    // added by 2026_04_17 migration
+        'discount_type',
         'discount_percentage',
         'is_taking_nstp',
         'tuition_fee',
@@ -57,6 +57,16 @@ class StudentAssessment extends Model
     {
         return $this->hasMany(StudentPaymentTerm::class, 'student_assessment_id')
             ->orderBy('term_order');
+    }
+
+    /**
+     * Immutable per-subject billing snapshot written at assessment creation time.
+     * Empty for irregular students (no curriculum subjects).
+     */
+    public function assessmentSubjects(): HasMany
+    {
+        return $this->hasMany(AssessmentSubject::class, 'student_assessment_id')
+            ->orderBy('sort_order');
     }
 
     // ─── Computed Attributes ──────────────────────────────────────────────────

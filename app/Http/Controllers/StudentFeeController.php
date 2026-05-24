@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Account;
+use App\Models\AssessmentSubject;
 use App\Models\CourseUnitPreset;
 use App\Models\Student;
 use App\Models\Subject;
@@ -362,6 +363,24 @@ class StudentFeeController extends Controller
                     $assessment->paymentTerms()->create($term);
                 }
 
+                // ─── Subject snapshot ─────────────────────────────────────
+                // Write per-subject billing rows using the same $rates that
+                // produced the assessment totals. Rates are locked at creation
+                // time — snapshot is immutable after this point.
+                // Skip for irregular students (getCurriculumUnits returns []).
+                $semesterNorm = AssessmentService::normalizeSemester($validated['semester']);
+                $snapshotRows = AssessmentService::buildSubjectSnapshot(
+                    $student->course,
+                    $yearLevelForAssessment,
+                    $semesterNorm,
+                    $rates,
+                    $assessment->id
+                );
+                if (! empty($snapshotRows)) {
+                    \Illuminate\Support\Facades\DB::table('assessment_subjects')->insert($snapshotRows);
+                }
+                // ─────────────────────────────────────────────────────────
+
                 // FIX: Guard against duplicate charge transactions.
                 $chargeYear = (int) explode('-', $validated['school_year'])[0];
                 $chargeMeta = json_encode([
@@ -652,14 +671,42 @@ class StudentFeeController extends Controller
 
         $enrolledSubjectsByAssessment = [];
         foreach ($allAssessmentsRaw as $a) {
-            $ids = \DB::table('student_enrollments')
-                ->where('user_id', $userId)
-                ->where('school_year', $a->school_year)
-                ->where('semester', $a->semester)
-                ->where('status', 'enrolled')
-                ->pluck('subject_id')
+            // Load per-subject billing snapshot if it exists (new assessments created
+            // after the assessment_subjects table migration). Fall back to the old
+            // student_enrollments lookup for legacy assessments that pre-date the snapshot.
+            $snapshotRows = AssessmentSubject::where('student_assessment_id', $a->id)
+                ->orderBy('sort_order')
+                ->get()
+                ->map(fn ($s) => [
+                    'subject_id'         => $s->subject_id,
+                    'code'               => $s->code,
+                    'name'               => $s->name,
+                    'lec_units'          => $s->lec_units,
+                    'lab_units'          => $s->lab_units,
+                    'is_nstp'            => $s->is_nstp,
+                    'is_pathfit'         => $s->is_pathfit,
+                    'is_billable'        => $s->is_billable,
+                    'tuition_fee'        => (float) $s->tuition_fee,
+                    'lab_fee'            => (float) $s->lab_fee,
+                    'total_fee'          => (float) $s->total_fee,
+                    'nstp_billing_units' => (float) $s->nstp_billing_units,
+                ])
+                ->values()
                 ->toArray();
-            $enrolledSubjectsByAssessment[$a->id] = $ids;
+
+            if (! empty($snapshotRows)) {
+                $enrolledSubjectsByAssessment[$a->id] = $snapshotRows;
+            } else {
+                // Legacy fallback: look up via student_enrollments (pre-snapshot assessments)
+                $ids = \DB::table('student_enrollments')
+                    ->where('user_id', $userId)
+                    ->where('school_year', $a->school_year)
+                    ->where('semester', $a->semester)
+                    ->where('status', 'enrolled')
+                    ->pluck('subject_id')
+                    ->toArray();
+                $enrolledSubjectsByAssessment[$a->id] = $ids;
+            }
         }
 
         return Inertia::render('StudentFees/Show', [
