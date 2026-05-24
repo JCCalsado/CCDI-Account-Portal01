@@ -240,13 +240,36 @@ const selectedTerm = computed(() =>
 // ── Payment allocation preview ────────────────────────────────────────────────
 
 type AllocationLine = {
-    term_name: string;
-    balance_before: number;
-    applied: number;
-    balance_after: number;
-    fully_paid: boolean;
+    term_name:       string;
+    balance_before:  number;
+    applied:         number;
+    balance_after:   number;
+    fully_paid:      boolean;
+    // ── Carry-forward fields (Scenario 1: partial payment on a term) ──────────
+    // When a payment is less than the current term balance:
+    //   processed       = true   → this term is closed; remaining balance carried forward
+    //   carried_forward = amount → the peso amount moved to the next term
+    //   carried_to_term = name   → which term receives the carry
+    processed:       boolean;
+    carried_forward: number;
+    carried_to_term: string | null;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ALLOCATION PREVIEW — mirrors backend allocatePaymentAcrossTerms() exactly.
+//
+// STEP 1: Sequential allocation loop.
+//   Apply payment to each term starting from selectedTerm, in term_order order.
+//   Each term receives min(remaining, term.balance).
+//
+// STEP 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE).
+//   For each term that ended Step 1 with balance > 0 (partial):
+//     - Close the term (set balance_after = 0, processed = true)
+//     - Record what was carried and to where
+//   This simulates what the PHP backend will do on the server.
+//
+// All arithmetic uses integer cents (via toCents / fromCents from useMoney).
+// ─────────────────────────────────────────────────────────────────────────────
 const allocationPreview = computed<AllocationLine[]>(() => {
     if (!selectedTerm.value || !form.amount || form.amount <= 0) return [];
 
@@ -256,29 +279,73 @@ const allocationPreview = computed<AllocationLine[]>(() => {
     const lines: AllocationLine[] = [];
     let remainingCents = amountCents;
 
+    // All terms eligible for this payment: balance > 0 AND term_order >= selected.
     const terms = props.paymentTerms
         .filter((t) => t.balance > 0 && t.term_order >= selectedTerm.value!.term_order)
         .sort((a, b) => a.term_order - b.term_order);
 
+    // ── STEP 1: Apply payment sequentially ───────────────────────────────────
     for (const term of terms) {
         if (remainingCents <= 0) break;
         const balanceBeforeCents = toCents(term.balance);
         const appliedCents       = Math.min(remainingCents, balanceBeforeCents);
-        const balanceAfterCents  = Math.max(0, balanceBeforeCents - appliedCents);
+        const balanceAfterCents  = balanceBeforeCents - appliedCents; // exact integer
         lines.push({
-            term_name:      term.term_name,
-            balance_before: fromCents(balanceBeforeCents),
-            applied:        fromCents(appliedCents),
-            balance_after:  fromCents(balanceAfterCents),
-            fully_paid:     balanceAfterCents === 0,
+            term_name:       term.term_name,
+            balance_before:  fromCents(balanceBeforeCents),
+            applied:         fromCents(appliedCents),
+            balance_after:   fromCents(balanceAfterCents),
+            fully_paid:      balanceAfterCents === 0,
+            processed:       false,   // populated in Step 2
+            carried_forward: 0,
+            carried_to_term: null,
         });
         remainingCents -= appliedCents;
+    }
+
+    // ── STEP 2: Close-and-carry ───────────────────────────────────────────────
+    // For every line that ended Step 1 with balance remaining, simulate
+    // the backend's close-and-carry behaviour:
+    //   - Find the next term in the full paymentTerms list (beyond this one).
+    //   - Record the carry-forward details on the allocation line.
+    //   - Zero the current line's balance_after (it will be 0 on the server).
+    //
+    // NOTE: We do NOT mutate nextTerm's balance in this preview — that would
+    // require a cascade that re-triggers the loop. The receipt and server will
+    // handle the actual next-term balance update. The preview just annotates
+    // the processed line to explain what will happen.
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.fully_paid || line.balance_after <= 0) continue;
+
+        // This line has remaining balance — it will be processed (closed + carried).
+        const carryoverCents = toCents(line.balance_after);
+
+        // Find the next term in the full list (may be outside the current loop's scope).
+        const currentTermObj = terms.find((t) => t.term_name === line.term_name);
+        const nextTermObj = currentTermObj
+            ? props.paymentTerms
+                .filter((t) => t.balance > 0 && t.term_order > (currentTermObj.term_order ?? 0))
+                .sort((a, b) => a.term_order - b.term_order)[0] ?? null
+            : null;
+
+        // Update the allocation line with Step 2 metadata.
+        line.processed       = true;
+        line.carried_forward = fromCents(carryoverCents);
+        line.carried_to_term = nextTermObj?.term_name ?? null;
+        line.balance_after   = 0;   // the server will zero this term
+        line.fully_paid      = false; // processed ≠ paid
     }
 
     return lines;
 });
 
-const allocationCoversMultipleTerms = computed(() => allocationPreview.value.length > 1);
+// allocationCoversMultipleTerms: true when the payment touches more than one term
+// OR when a single term is being processed with carry-forward.
+const allocationCoversMultipleTerms = computed(() =>
+    allocationPreview.value.length > 1 ||
+    (allocationPreview.value.length === 1 && allocationPreview.value[0].processed)
+);
 
 // ── Bank transfer specific state ──────────────────────────────────────────────
 
@@ -710,10 +777,16 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                             </p>
                         </div>
 
-                        <!-- Allocation Preview (multi-term) -->
+                        <!-- ── Payment Allocation Preview ─────────────────────────────── -->
+                        <!--
+                            Shows whenever the payment touches one or more terms.
+                            The 'processed' flag on a line means the one-time term
+                            processing rule fired: the term is closed and its remaining
+                            balance is carried forward to the next term.
+                        -->
                         <Transition name="fade">
                             <div
-                                v-if="allocationPreview.length > 0 && allocationCoversMultipleTerms"
+                                v-if="allocationPreview.length > 0"
                                 class="rounded-lg border border-indigo-200 bg-indigo-50 p-4"
                             >
                                 <div class="flex items-center gap-2 mb-3">
@@ -722,48 +795,71 @@ const dueDateUrgency = (dueDate: string | null): 'red' | 'amber' | 'green' | nul
                                         How your payment will be applied
                                     </p>
                                 </div>
+
                                 <div class="space-y-2">
                                     <div
                                         v-for="line in allocationPreview"
                                         :key="line.term_name"
-                                        class="flex items-center justify-between text-sm"
+                                        class="rounded-md px-3 py-2 text-sm"
+                                        :class="{
+                                            'bg-green-100':  line.fully_paid,
+                                            'bg-blue-100':   line.processed,
+                                            'bg-amber-50 border border-amber-100': !line.fully_paid && !line.processed,
+                                        }"
                                     >
-                                        <div class="flex items-center gap-2">
-                                            <span
-                                                :class="[
-                                                    'inline-block h-2 w-2 rounded-full flex-shrink-0',
-                                                    line.fully_paid ? 'bg-green-500' : 'bg-amber-400',
-                                                ]"
-                                            />
-                                            <span class="font-medium text-gray-800">{{ line.term_name }}</span>
-                                        </div>
-                                        <div class="text-right">
+                                        <!-- Term row: name + applied amount -->
+                                        <div class="flex items-center justify-between">
+                                            <div class="flex items-center gap-2">
+                                                <!-- Status dot -->
+                                                <span
+                                                    :class="[
+                                                        'inline-block h-2 w-2 rounded-full flex-shrink-0',
+                                                        line.fully_paid  ? 'bg-green-500' :
+                                                        line.processed   ? 'bg-blue-500'  : 'bg-amber-400',
+                                                    ]"
+                                                />
+                                                <span class="font-medium text-gray-800">{{ line.term_name }}</span>
+                                                <!-- Status badge -->
+                                                <span
+                                                    v-if="line.fully_paid"
+                                                    class="rounded-full bg-green-200 px-1.5 py-0.5 text-xs font-semibold text-green-800"
+                                                >
+                                                    Paid
+                                                </span>
+                                                <span
+                                                    v-else-if="line.processed"
+                                                    class="rounded-full bg-blue-200 px-1.5 py-0.5 text-xs font-semibold text-blue-800"
+                                                >
+                                                    Carried Forward
+                                                </span>
+                                            </div>
                                             <span class="font-semibold text-indigo-700">
                                                 −{{ formatCurrency(line.applied) }}
                                             </span>
-                                            <span class="ml-2 text-xs text-gray-400">
-                                                <span v-if="line.fully_paid" class="text-green-600 font-medium">✓ Fully paid</span>
-                                                <span v-else>{{ formatCurrency(line.balance_after) }} remaining</span>
+                                        </div>
+
+                                        <!-- Carry-forward note (one-time processing rule) -->
+                                        <div
+                                            v-if="line.processed && line.carried_forward > 0"
+                                            class="mt-1 flex items-start gap-1.5 text-xs text-blue-700"
+                                        >
+                                            <span class="flex-shrink-0 mt-0.5">↪</span>
+                                            <span>
+                                                {{ formatCurrency(line.carried_forward) }} remaining balance
+                                                will carry forward to
+                                                <strong>{{ line.carried_to_term ?? 'the next term' }}</strong>.
+                                                This term is now closed.
                                             </span>
                                         </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </Transition>
 
-                        <!-- Partial payment notice (single term) -->
-                        <Transition name="fade">
-                            <div
-                                v-if="allocationPreview.length === 1 && selectedTerm && safeAmount < selectedTerm.balance && safeAmount > 0"
-                                class="rounded-lg border border-amber-200 bg-amber-50 p-3"
-                            >
-                                <div class="flex items-center gap-2 text-sm text-amber-800">
-                                    <Info :size="14" class="flex-shrink-0 text-amber-500" />
-                                    <span>
-                                        Partial payment — <strong>{{ formatCurrency(safeAmount) }}</strong> will be
-                                        applied to <strong>{{ selectedTerm.term_name }}</strong>, leaving
-                                        <strong>{{ formatCurrency(selectedTerm.balance - safeAmount) }}</strong> still due.
-                                    </span>
+                                        <!-- Simple remaining note for non-processed partial (last active term) -->
+                                        <div
+                                            v-else-if="!line.fully_paid && !line.processed && line.balance_after > 0"
+                                            class="mt-1 text-xs text-amber-700"
+                                        >
+                                            {{ formatCurrency(line.balance_after) }} remaining after this payment
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </Transition>

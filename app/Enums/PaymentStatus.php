@@ -13,12 +13,17 @@ namespace App\Enums;
  *
  * STATUS VOCABULARY (student_payment_terms.status)
  * ------------------------------------------------
- * 'unpaid'  → term created, no payment ever attempted (legacy/initial value
- *             produced by AssessmentService::buildPaymentTerms). Treated as
- *             fully unpaid — equivalent to 'pending' for all balance queries.
- * 'pending' → same as above; the normalised form going forward.
- * 'partial' → payment applied but balance > 0 remains.
- * 'paid'    → balance = 0, fully settled.
+ * 'unpaid'    → term created, no payment ever attempted (legacy/initial value
+ *               produced by AssessmentService::buildPaymentTerms). Treated as
+ *               fully unpaid — equivalent to 'pending' for all balance queries.
+ * 'pending'   → same as above; the normalised form going forward.
+ * 'partial'   → LEGACY: payment applied but balance > 0 remains on this term
+ *               (only appears on the final active term in a payment chain).
+ *               New code produces 'processed' instead for intermediate terms.
+ * 'paid'      → balance = 0, fully settled by an exact or excess payment.
+ * 'processed' → balance = 0, a partial payment was applied and the remaining
+ *               balance was carried forward to the next term. Term is closed.
+ *               This is the one-time term processing rule in action.
  */
 enum PaymentStatus: string
 {
@@ -39,7 +44,11 @@ enum PaymentStatus: string
     /** Payment was rejected by accounting and will not be applied. */
     case CANCELLED = 'cancelled';
 
-    /** A partial payment has been applied; some balance still remains on the term. */
+    /**
+     * Legacy: partial payment applied, balance > 0 remains on this specific term.
+     * In new flows, intermediate terms become PROCESSED and only the final
+     * active term in a chain uses PARTIAL.
+     */
     case PARTIAL = 'partial';
 
     /** Payment gateway returned an error and payment was not processed. */
@@ -49,6 +58,16 @@ enum PaymentStatus: string
 
     /** Payment record has been created and reconciled (used in payments table). */
     case COMPLETED = 'completed';
+
+    /**
+     * Term received a partial payment; remaining balance carried forward to
+     * the next term. The term balance is now ₱0.00 and this term is closed.
+     *
+     * ONE-TIME TERM PROCESSING RULE: once a term is PROCESSED it never
+     * re-appears as the payable term. All subsequent payments target the
+     * next term in sequence.
+     */
+    case PROCESSED = 'processed';
 
     // =========================================================================
     // HELPERS
@@ -68,6 +87,7 @@ enum PaymentStatus: string
             self::FAILED            => 'Failed',
             self::COMPLETED         => 'Completed',
             self::AWAITING_PROOF    => 'Awaiting Proof',
+            self::PROCESSED         => 'Processed',
         };
     }
 
@@ -83,6 +103,8 @@ enum PaymentStatus: string
             self::AWAITING_PROOF               => 'text-purple-600 bg-purple-50',
             self::CANCELLED, self::FAILED      => 'text-red-600 bg-red-50',
             self::PARTIAL                      => 'text-orange-600 bg-orange-50',
+            // PROCESSED = blue — closed & carried forward; not a failure, not a success
+            self::PROCESSED                    => 'text-blue-700 bg-blue-50',
         };
     }
 
@@ -93,23 +115,31 @@ enum PaymentStatus: string
      * for newly created terms. This is the legacy initial value. All balance queries
      * MUST include 'unpaid' or they will return ₱0 for fresh assessments.
      *
-     * Used in whereIn() queries for outstanding balance calculations.
+     * ✅ INCLUDES 'partial': legacy terms where balance > 0 remains.
+     *
+     * ❌ EXCLUDES 'processed': processed terms have balance = 0.
+     *    They are closed. Querying for them would return no balance.
+     *
+     * ⚠️  NOTE: Do not use this to filter term balance queries. Use
+     *    ->where('balance', '>', 0) instead — balance is the authoritative
+     *    field. Status can be stale. This method is for display/UI logic only.
      *
      * @return string[]
      */
     public static function unpaidValues(): array
     {
         return [
-            'unpaid',          // initial status from AssessmentService::buildPaymentTerms()
+            'unpaid',                // initial status from AssessmentService::buildPaymentTerms()
             self::PENDING->value,
             self::PARTIAL->value,
+            // PROCESSED is NOT here — processed terms have balance = 0
         ];
     }
 
     /**
      * Returns all raw string values (useful for validation rule `in:` lists).
      *
-     * @return string[]\
+     * @return string[]
      */
     public static function values(): array
     {

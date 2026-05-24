@@ -151,7 +151,8 @@ class PaymentController extends Controller
                 return response()->json(['error' => 'Invalid payment term.'], 403);
             }
 
-            if (round((float) $termInfo->balance, 2) <= 0) {
+            // Use MoneyService to avoid float precision errors on balance comparison.
+            if (\App\Services\MoneyService::toCents($termInfo->balance) <= 0) {
                 return response()->json(['error' => "The selected term ({$termInfo->term_name}) has already been fully paid."], 422);
             }
         }
@@ -163,27 +164,35 @@ class PaymentController extends Controller
         }
 
         if ($termInfo) {
-            $totalOutstanding = round(
+            // ── Integer-cents outstanding balance check ────────────────────────────
+            // Use MoneyService::sumFromDb() to safely convert the MySQL decimal
+            // aggregate to integer cents — avoids float-cast precision loss.
+            // Filter by balance > 0 (not by status) — balance is authoritative;
+            // status can be stale after carryover operations.
+            $outstandingCents    = \App\Services\MoneyService::sumFromDb(
                 StudentPaymentTerm::where('student_assessment_id', $termInfo->student_assessment_id)
-                    ->whereIn('status', \App\Enums\PaymentStatus::unpaidValues())
-                    ->sum('balance'),
-                2
+                    ->where('balance', '>', 0)
+                    ->sum('balance')
             );
+            $requestAmountCents  = \App\Services\MoneyService::roundToCents($requestAmount);
 
-            if ($requestAmount > $totalOutstanding) {
-                return response()->json([
-                    'error' => sprintf(
-                        'Payment amount (₱%s) exceeds your total outstanding balance (₱%s). ' .
-                        'You cannot pay more than what you owe.',
-                        number_format($requestAmount, 2),
-                        number_format($totalOutstanding, 2)
-                    ),
-                ], 422);
+            // Snap guard: if the request is within 1 cent of the outstanding total,
+            // normalise to exact. Prevents false-positive rejections from float drift.
+            if (abs($requestAmountCents - $outstandingCents) <= 1) {
+                $requestAmountCents  = $outstandingCents;
+                $requestAmount       = \App\Services\MoneyService::toFloat($outstandingCents);
+                $validated['amount'] = $requestAmount;
             }
 
-            if (abs($requestAmount - $totalOutstanding) < 0.01) {
-                $requestAmount       = $totalOutstanding;
-                $validated['amount'] = $totalOutstanding;
+            if ($requestAmountCents > $outstandingCents) {
+                return response()->json([
+                    'error' => sprintf(
+                        'Payment amount (%s) exceeds your total outstanding balance (%s). ' .
+                        'You cannot pay more than what you owe.',
+                        \App\Services\MoneyService::formatFromCents($requestAmountCents),
+                        \App\Services\MoneyService::formatFromCents($outstandingCents)
+                    ),
+                ], 422);
             }
         }
 
@@ -456,27 +465,28 @@ class PaymentController extends Controller
             }
 
             if ($termInfo) {
-                $totalOutstanding = round(
+                // ── Integer-cents outstanding balance check ────────────────────────
+                // Same fix as createCheckout: use MoneyService::sumFromDb() for
+                // precision-safe aggregation. Filter by balance > 0 (authoritative).
+                $outstandingCents   = \App\Services\MoneyService::sumFromDb(
                     StudentPaymentTerm::where('student_assessment_id', $termInfo->student_assessment_id)
-                        ->whereIn('status', \App\Enums\PaymentStatus::unpaidValues())
-                        ->sum('balance'),
-                    2
+                        ->where('balance', '>', 0)
+                        ->sum('balance')
                 );
+                $requestAmountCents = \App\Services\MoneyService::roundToCents($requestAmount);
 
-                // ── SNAP GUARD ─────────────────────────────────────────────
-                // If the requested amount is within rounding error (< 0.01) of the
-                // total outstanding, snap it to exact total. This prevents 419
-                // "slight overage" rejections due to floating-point arithmetic.
-                if (abs($requestAmount - $totalOutstanding) < 0.01) {
-                    $requestAmount = $totalOutstanding;
+                // Snap guard: normalise within 1 cent of exact total.
+                if (abs($requestAmountCents - $outstandingCents) <= 1) {
+                    $requestAmountCents = $outstandingCents;
+                    $requestAmount      = \App\Services\MoneyService::toFloat($outstandingCents);
                 }
 
-                if ($requestAmount > $totalOutstanding) {
+                if ($requestAmountCents > $outstandingCents) {
                     return response()->json([
                         'error' => sprintf(
-                            'Payment amount (₱%s) exceeds your total outstanding balance (₱%s).',
-                            number_format($requestAmount, 2),
-                            number_format($totalOutstanding, 2)
+                            'Payment amount (%s) exceeds your total outstanding balance (%s).',
+                            \App\Services\MoneyService::formatFromCents($requestAmountCents),
+                            \App\Services\MoneyService::formatFromCents($outstandingCents)
                         ),
                     ], 422);
                 }

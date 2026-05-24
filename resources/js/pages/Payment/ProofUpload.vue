@@ -108,63 +108,33 @@ const validateWithAI = async (file: File): Promise<void> => {
         const base64 = await fileToBase64(file);
         const mediaType = file.type as 'image/jpeg' | 'image/png' | 'image/webp';
 
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
+        // ── Proxy call to Laravel backend ────────────────────────────────────
+        // The Anthropic API is called server-side via AiProxyController to:
+        //   1. Prevent CORS errors (api.anthropic.com blocks browser origins)
+        //   2. Keep the API key out of client-side JavaScript
+        //   3. Apply server-side rate limiting per authenticated user
+        //
+        // Route: POST /ai/verify-proof  (requires auth)
+        const csrfToken = (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content ?? '';
+
+        const response = await fetch('/ai/verify-proof', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken,
+                'Accept': 'application/json',
+            },
             body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 1000,
-                messages: [
-                    {
-                        role: 'user',
-                        content: [
-                            {
-                                type: 'image',
-                                source: { type: 'base64', media_type: mediaType, data: base64 },
-                            },
-                            {
-                                type: 'text',
-                                text: `You are a payment verification assistant for a school payment system.
-
-Analyze this image and determine if it is a legitimate proof of payment or payment receipt.
-
-A valid proof of payment typically shows one or more of:
-- Bank transfer confirmation or transaction receipt
-- GCash / Maya / e-wallet transfer confirmation
-- Official OR (Official Receipt) from a school or business
-- Payment slip with amount, date, and reference number
-- Bank deposit slip
-- Credit/debit card transaction receipt
-
-An INVALID submission would be:
-- Anime or cartoon characters
-- Memes, screenshots of social media, or unrelated photos
-- Selfies, food photos, or any non-payment image
-- Blank images or test images
-
-Respond ONLY in this JSON format with no extra text:
-{"result": "valid" | "invalid" | "uncertain", "reason": "brief one-sentence explanation"}
-
-- "valid" = clearly a payment receipt/proof
-- "invalid" = clearly NOT a payment receipt (e.g. anime, meme, random photo)  
-- "uncertain" = could be a receipt but hard to tell (blurry, partial, etc.)`,
-                            },
-                        ],
-                    },
-                ],
+                image:      base64,
+                media_type: mediaType,
             }),
         });
 
-        const data = await response.json();
-        const raw = data.content?.find((b: any) => b.type === 'text')?.text ?? '';
-
-        let parsed: { result: string; reason: string } | null = null;
-        try {
-            const clean = raw.replace(/```json|```/g, '').trim();
-            parsed = JSON.parse(clean);
-        } catch {
-            // fallthrough to uncertain
-        }
+        // The proxy returns { result, reason } directly — no need to parse
+        // raw model content; the controller handles that server-side.
+        const parsed: { result: string; reason: string } | null = response.ok
+            ? await response.json().catch(() => null)
+            : null;
 
         if (parsed?.result === 'valid') {
             aiResult.value = 'valid';

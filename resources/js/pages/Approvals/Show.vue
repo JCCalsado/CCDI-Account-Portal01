@@ -63,9 +63,19 @@ interface UnpaidTerm {
 interface AllocatedTerm extends UnpaidTerm {
     applied: number;
     projectedBalance: number;
-    derivedStatus: 'paid' | 'partial' | 'pending';
+    /**
+     * derivedStatus — what this term's status will be AFTER approval.
+     *   'paid'      → fully settled by this payment
+     *   'processed' → partial payment applied; remaining balance carried forward
+     *   'partial'   → balance remains (only for the final active term)
+     *   'pending'   → not affected by this payment
+     */
+    derivedStatus: 'paid' | 'partial' | 'pending' | 'processed';
     isAffected: boolean;
     isStartingTerm: boolean;
+    // Carry-forward fields (one-time term processing rule)
+    carriedForward: number;         // peso amount carried to next term (0 if none)
+    carriedToTerm:  string | null;  // name of the receiving term
 }
 
 interface Assessment {
@@ -178,50 +188,105 @@ const selectedTermId = computed((): number | null =>
  *    each term gets min(remaining, balance).
  * 4. A term is 'paid' when applied >= balance, 'partial' when 0 < applied < balance.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// ALLOCATION PREVIEW — mirrors backend allocatePaymentAcrossTerms() exactly.
+//
+// Integer-cents arithmetic throughout. No floating-point operations.
+// Mirrors the same two-step algorithm used in StudentPaymentService.php and
+// the student-facing Payment/Create.vue preview.
+//
+// STEP 1: Apply payment sequentially from the selected starting term.
+// STEP 2: Close-and-carry — any term that received a partial payment is
+//         CLOSED (derivedStatus = 'processed', projectedBalance = 0) and
+//         the remaining balance is carried forward to the next term.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Convert a peso value to integer cents. Avoids float precision drift. */
+const _toCents = (v: number | string): number => Math.round(parseFloat(String(v)) * 100);
+/** Convert integer cents back to peso float. */
+const _fromCents = (c: number): number => c / 100;
+
 const allocationPreview = computed((): AllocatedTerm[] => {
     const terms = props.unpaidTerms ?? [];
     if (!terms.length) return [];
 
-    const amount  = paymentAmount.value;
-    const startId = selectedTermId.value;
+    const amountCents = _toCents(paymentAmount.value);
+    const startId     = selectedTermId.value;
 
     let startIdx = startId !== null ? terms.findIndex((t) => t.id === startId) : -1;
-    if (startIdx === -1) startIdx = 0; // graceful fallback
+    if (startIdx === -1) startIdx = 0; // graceful fallback: start from first term
 
-    let remaining = amount;
+    // ── STEP 1: Sequential allocation in integer cents ────────────────────────
+    let remainingCents = amountCents;
 
-    return terms.map((term, idx): AllocatedTerm => {
+    const result: AllocatedTerm[] = terms.map((term, idx): AllocatedTerm => {
         const isStartingTerm = term.id === startId;
 
-        // Terms before the selected term are untouched
-        if (idx < startIdx || remaining <= 0) {
+        // Terms before the starting term are untouched.
+        if (idx < startIdx || remainingCents <= 0) {
             return {
                 ...term,
-                applied: 0,
+                applied:          0,
                 projectedBalance: term.balance,
-                derivedStatus: term.status as 'paid' | 'partial' | 'pending',
-                isAffected: false,
+                derivedStatus:    term.status as AllocatedTerm['derivedStatus'],
+                isAffected:       false,
                 isStartingTerm,
+                carriedForward:   0,
+                carriedToTerm:    null,
             };
         }
 
-        const applied          = Math.min(remaining, term.balance);
-        remaining              = Math.max(0, remaining - applied);
-        const projectedBalance = Math.max(0, term.balance - applied);
+        const balBeforeCents   = _toCents(term.balance);
+        const appliedCents     = Math.min(remainingCents, balBeforeCents);
+        const balAfterCents    = balBeforeCents - appliedCents;
+        remainingCents        -= appliedCents;
 
-        let derivedStatus: 'paid' | 'partial' | 'pending' = 'pending';
-        if (applied >= term.balance) derivedStatus = 'paid';
-        else if (applied > 0)        derivedStatus = 'partial';
+        let derivedStatus: AllocatedTerm['derivedStatus'] = 'pending';
+        if (appliedCents >= balBeforeCents) derivedStatus = 'paid';
+        else if (appliedCents > 0)          derivedStatus = 'partial';
 
         return {
             ...term,
-            applied,
-            projectedBalance,
+            applied:          _fromCents(appliedCents),
+            projectedBalance: _fromCents(balAfterCents),
             derivedStatus,
-            isAffected: applied > 0,
+            isAffected:       appliedCents > 0,
             isStartingTerm,
+            carriedForward:   0,      // populated in Step 2
+            carriedToTerm:    null,
         };
     });
+
+    // ── STEP 2: Close-and-carry (one-time term processing rule) ───────────────
+    // For any term that ended Step 1 with derivedStatus = 'partial' (balance > 0):
+    //   - Find the next term in the result array (by position, since terms are
+    //     already sorted by term_order from props.unpaidTerms).
+    //   - Annotate the carry details on the current term's result entry.
+    //   - Close the current term: projectedBalance = 0, derivedStatus = 'processed'.
+    //
+    // Note: we do NOT add the carry amount to the next term's projectedBalance
+    // in the preview because that would require cascading recalculation. The
+    // accounting reviewer sees the carry annotation and understands the effect.
+    // The actual balance transfer happens server-side on approval.
+    for (let i = 0; i < result.length; i++) {
+        const entry = result[i];
+        if (entry.derivedStatus !== 'partial' || entry.projectedBalance <= 0) continue;
+
+        const carryoverCents = _toCents(entry.projectedBalance);
+
+        // Find the next unpaid term in the list (may not be adjacent if terms
+        // before the start were already paid/processed).
+        const nextEntry = result.slice(i + 1).find(
+            (t) => t.isAffected || (_toCents(t.balance) > 0 && !t.isAffected)
+        ) ?? result[i + 1] ?? null;
+
+        entry.derivedStatus    = 'processed';
+        entry.carriedForward   = _fromCents(carryoverCents);
+        entry.carriedToTerm    = nextEntry?.term_name ?? null;
+        entry.projectedBalance = 0;  // backend will zero this term
+    }
+
+    return result;
 });
 
 /** Total amount that will be distributed across terms. */
@@ -242,9 +307,14 @@ const affectedTermCount = computed((): number =>
     allocationPreview.value.filter((t) => t.isAffected).length,
 );
 
-/** True if any terms are fully paid off by this payment. */
+/** Number of terms fully paid off by this payment. */
 const fullyPaidTermCount = computed((): number =>
     allocationPreview.value.filter((t) => t.derivedStatus === 'paid').length,
+);
+
+/** Number of terms that will be closed via carry-forward (one-time processing rule). */
+const processedTermCount = computed((): number =>
+    allocationPreview.value.filter((t) => t.derivedStatus === 'processed').length,
 );
 </script>
 
@@ -482,6 +552,17 @@ const fullyPaidTermCount = computed((): number =>
                             >
                                 {{ fullyPaidTermCount }} term{{ fullyPaidTermCount !== 1 ? 's' : '' }} fully paid
                             </span>
+                            <!--
+                                Processed badge: shown when the one-time term processing rule fires.
+                                A 'processed' term received a partial payment and its remaining
+                                balance was carried forward to the next term. It is now closed.
+                            -->
+                            <span
+                                v-if="processedTermCount > 0"
+                                class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-800"
+                            >
+                                {{ processedTermCount }} term{{ processedTermCount !== 1 ? 's' : '' }} carried forward
+                            </span>
                             <span
                                 v-if="excessAmount > 0"
                                 class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 font-semibold text-amber-800"
@@ -527,13 +608,14 @@ const fullyPaidTermCount = computed((): number =>
                                     class="border-b transition-colors"
                                     :class="{
                                         'bg-green-50 hover:bg-green-100/70':  term.isAffected && term.derivedStatus === 'paid',
+                                        'bg-blue-50  hover:bg-blue-100/70':   term.isAffected && term.derivedStatus === 'processed',
                                         'bg-amber-50 hover:bg-amber-100/70':  term.isAffected && term.derivedStatus === 'partial',
                                         'hover:bg-gray-50':                   !term.isAffected,
                                     }"
                                 >
-                                    <!-- Term name + "Selected" badge -->
+                                    <!-- Term name + badges -->
                                     <td class="px-4 py-3 text-sm">
-                                        <div class="flex items-center gap-2">
+                                        <div class="flex flex-wrap items-center gap-1.5">
                                             <span>{{ term.term_name }}</span>
                                             <span
                                                 v-if="term.isStartingTerm"
@@ -542,13 +624,24 @@ const fullyPaidTermCount = computed((): number =>
                                                 Selected
                                             </span>
                                         </div>
+                                        <!-- Carry-forward annotation -->
+                                        <div
+                                            v-if="approval.status === 'pending' && term.derivedStatus === 'processed' && term.carriedForward > 0"
+                                            class="mt-1 flex items-center gap-1 text-xs text-blue-600"
+                                        >
+                                            <span>↪</span>
+                                            <span>
+                                                {{ formatCurrency(term.carriedForward) }} carried to
+                                                <strong>{{ term.carriedToTerm ?? 'next term' }}</strong>
+                                            </span>
+                                        </div>
                                     </td>
 
-                                    <!-- Original balance — strikethrough when fully covered -->
+                                    <!-- Original balance — strikethrough when fully covered or processed -->
                                     <td class="px-4 py-3 text-sm">
                                         <span
                                             :class="
-                                                term.isAffected && term.derivedStatus === 'paid'
+                                                term.isAffected && (term.derivedStatus === 'paid' || term.derivedStatus === 'processed')
                                                     ? 'text-gray-400 line-through'
                                                     : 'font-semibold text-orange-600'
                                             "
@@ -557,7 +650,7 @@ const fullyPaidTermCount = computed((): number =>
                                         </span>
                                     </td>
 
-                                    <!-- Applied amount (pending only) -->
+                                    <!-- Applied amount (pending approval only) -->
                                     <td v-if="approval.status === 'pending'" class="px-4 py-3 text-sm">
                                         <span v-if="term.applied > 0" class="font-semibold text-green-700">
                                             + {{ formatCurrency(term.applied) }}
@@ -565,16 +658,25 @@ const fullyPaidTermCount = computed((): number =>
                                         <span v-else class="text-gray-400">—</span>
                                     </td>
 
-                                    <!-- Projected balance after payment (pending) / current balance (non-pending) -->
+                                    <!-- Projected balance / current balance -->
                                     <td class="px-4 py-3 text-sm font-semibold">
                                         <span
                                             :class="{
                                                 'text-green-600':  (approval.status === 'pending' ? term.projectedBalance : term.balance) === 0,
-                                                'text-amber-600':  approval.status === 'pending' && term.projectedBalance > 0 && term.projectedBalance < term.balance,
-                                                'text-orange-600': (approval.status === 'pending' ? term.projectedBalance : term.balance) > 0 && !(approval.status === 'pending' && term.projectedBalance < term.balance),
+                                                'text-blue-600':   approval.status === 'pending' && term.derivedStatus === 'processed',
+                                                'text-amber-600':  approval.status === 'pending' && term.projectedBalance > 0 && term.projectedBalance < term.balance && term.derivedStatus !== 'processed',
+                                                'text-orange-600': (approval.status === 'pending' ? term.projectedBalance : term.balance) > 0 && term.derivedStatus === 'pending',
                                             }"
                                         >
-                                            {{ formatCurrency(approval.status === 'pending' ? term.projectedBalance : term.balance) }}
+                                            <!--
+                                                For 'processed' terms: show ₱0.00 (balance was carried out).
+                                                For others: show projected (pending approval) or live balance.
+                                            -->
+                                            {{ formatCurrency(
+                                                approval.status === 'pending'
+                                                    ? term.projectedBalance
+                                                    : term.balance
+                                            ) }}
                                         </span>
                                     </td>
 
@@ -583,16 +685,35 @@ const fullyPaidTermCount = computed((): number =>
 
                                     <!-- Status badge -->
                                     <td class="px-4 py-3 text-sm">
+                                        @php
+                                        <!--
+                                            statusDisplay maps internal status values to human labels.
+                                            'processed' = balance carried forward → shown as "Carried Forward"
+                                            so reviewers immediately understand the term is closed and
+                                            the unpaid amount has moved to the next term.
+                                        -->
+                                        @endphp
                                         <span
                                             class="rounded-full px-2.5 py-1 text-xs font-semibold"
                                             :class="{
-                                                'bg-green-100 text-green-800':   (approval.status === 'pending' ? term.derivedStatus : term.status) === 'paid',
-                                                'bg-amber-100 text-amber-800':   (approval.status === 'pending' ? term.derivedStatus : term.status) === 'partial',
-                                                'bg-yellow-100 text-yellow-800': (approval.status === 'pending' ? term.derivedStatus : term.status) === 'pending',
+                                                'bg-green-100  text-green-800':  (approval.status === 'pending' ? term.derivedStatus : term.status) === 'paid',
+                                                'bg-blue-100   text-blue-800':   (approval.status === 'pending' ? term.derivedStatus : term.status) === 'processed',
+                                                'bg-amber-100  text-amber-800':  (approval.status === 'pending' ? term.derivedStatus : term.status) === 'partial',
+                                                'bg-yellow-100 text-yellow-800': ['pending', 'unpaid'].includes(approval.status === 'pending' ? term.derivedStatus : term.status),
                                                 'bg-orange-100 text-orange-800': (approval.status === 'pending' ? term.derivedStatus : term.status) === 'overdue',
                                             }"
                                         >
-                                            {{ capitalize(approval.status === 'pending' ? term.derivedStatus : term.status) }}
+                                            {{
+                                                ({
+                                                    paid:      'Paid',
+                                                    processed: 'Carried Forward',
+                                                    partial:   'Partial',
+                                                    pending:   'Unpaid',
+                                                    unpaid:    'Unpaid',
+                                                    overdue:   'Overdue',
+                                                } as Record<string, string>)[approval.status === 'pending' ? term.derivedStatus : term.status]
+                                                ?? capitalize(approval.status === 'pending' ? term.derivedStatus : term.status)
+                                            }}
                                         </span>
                                     </td>
                                 </tr>

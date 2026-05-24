@@ -1352,31 +1352,57 @@ class StudentFeeController extends Controller
                 abort(403, 'Assessment does not belong to this student.');
             }
 
+            // Select the first payable term (balance > 0, not already processed).
+            // PROCESSED terms have balance = 0 and are closed — skip them.
+            // We filter by balance > 0 which already excludes processed terms,
+            // but the explicit status exclusion makes the intent clear.
             $term = StudentPaymentTerm::where('student_assessment_id', $assessment->id)
                 ->where('balance', '>', 0)
+                ->whereNotIn('status', [PaymentStatus::PROCESSED->value, PaymentStatus::PAID->value])
                 ->orderBy('term_order')
                 ->first();
 
+            // Fallback: if the status filter excluded something incorrectly
+            // (stale status with balance > 0), use balance as the authoritative filter.
             if (! $term) {
-                return back()->withErrors(['payment' => 'No outstanding payment terms found for this assessment.']);
+                $term = StudentPaymentTerm::where('student_assessment_id', $assessment->id)
+                    ->where('balance', '>', 0)
+                    ->orderBy('term_order')
+                    ->first();
             }
+
+            if (! $term) {
+                return back()->withErrors(['payment' => 'No outstanding payment terms found for this assessment. All terms may have been fully paid.']);
+            }
+
+            // ── Duplicate guard ────────────────────────────────────────────────
+            // Check for a recent PAID or AWAITING_APPROVAL transaction for the same
+            // starting term AND the same amount (integer-cents comparison to avoid float issues).
+            // The time window is 5 minutes — not midnight-bounded — to prevent
+            // accidental double-clicks during a session without midnight-reset false negatives.
+            $requestCents = \App\Services\MoneyService::roundToCents($validated['amount']);
 
             $duplicateExists = Transaction::where('user_id', $student->id)
                 ->where('kind', 'payment')
                 ->whereIn('status', [PaymentStatus::PAID->value, PaymentStatus::AWAITING_APPROVAL->value])
                 ->whereJsonContains('meta->selected_term_id', $term->id)
-                ->whereDate('created_at', now()->toDateString())
-                ->where('amount', round((float) $validated['amount'], 2))
-                ->exists();
+                ->where('created_at', '>=', now()->subMinutes(5))
+                ->get()
+                ->contains(function ($txn) use ($requestCents) {
+                    // Integer-cents comparison — avoids float comparison issues.
+                    return \App\Services\MoneyService::roundToCents($txn->amount) === $requestCents;
+                });
 
             if ($duplicateExists) {
                 return back()->withErrors([
-                    'payment' => 'A payment of that amount for this term was already recorded today.',
+                    'payment' => 'A payment of that amount for this term was already recorded in the last 5 minutes. Please verify before resubmitting.',
                 ]);
             }
 
             $paymentService = new StudentPaymentService();
-            $paidAmount     = round((float) $validated['amount'], 2);
+            // Use MoneyService::roundToCents for input parsing, then back to float for the service call.
+            // The service converts to cents internally — this is just the entry boundary.
+            $paidAmount = \App\Services\MoneyService::toFloat(\App\Services\MoneyService::roundToCents($validated['amount']));
 
             $paymentService->processPayment($student, $paidAmount, [
                 'payment_method'   => $validated['payment_method'],

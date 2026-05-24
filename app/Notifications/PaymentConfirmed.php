@@ -2,6 +2,7 @@
 
 namespace App\Notifications;
 
+use App\Models\StudentPaymentTerm;
 use App\Models\Transaction;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Bus\Queueable;
@@ -28,8 +29,12 @@ class PaymentConfirmed extends Notification
     {
         $transaction   = Transaction::with(['user', 'account', 'fee'])->find($this->transactionId);
         $studentName   = $notifiable->name ?? 'Student';
-        $paymentMethod = $transaction ? ucwords(str_replace('_', ' ', $transaction->payment_channel ?? '')) : 'N/A';
-        $datePaid      = $transaction ? $transaction->created_at->format('F d, Y') : now()->format('F d, Y');
+        $paymentMethod = $transaction
+            ? ucwords(str_replace('_', ' ', $transaction->payment_channel ?? ''))
+            : 'N/A';
+        $datePaid = $transaction
+            ? $transaction->created_at->format('F d, Y')
+            : now()->format('F d, Y');
 
         $mail = (new MailMessage)
             ->subject('Payment Receipt - CCDI Portal')
@@ -46,17 +51,85 @@ class PaymentConfirmed extends Notification
             ->action('View Account', route('student.account', ['tab' => 'history']));
 
         if ($transaction) {
-            $pdf = Pdf::loadView('pdf.receipt', [
-                'transaction'      => $transaction,
-                'student'          => $notifiable,
-                'balanceBefore'    => (float) ($notifiable->account->total_balance ?? 0) + (float) $this->amount,
-                'currentBalance'   => (float) ($notifiable->account->total_balance ?? 0),
-                'remainingBalance' => (float) ($notifiable->account->total_balance ?? 0),
-            ])->setPaper('A4', 'portrait');
+            // ── Resolve the assessment for the receipt PDF ────────────────────
+            // The receipt.blade.php requires $assessment. Resolve it from the
+            // transaction meta (assessment_id written by StudentPaymentService),
+            // or fall back to the student's most recent assessment.
+            //
+            // The notification runs after finalization, so the transaction meta
+            // should always contain assessment_id at this point.
+            $assessment = null;
 
-            $mail->attachData($pdf->output(), 'receipt-' . $this->reference . '.pdf', [
-                'mime' => 'application/pdf',
-            ]);
+            $assessmentId = $transaction->meta['assessment_id'] ?? null;
+
+            if ($assessmentId) {
+                $assessment = \App\Models\StudentAssessment::find($assessmentId);
+            }
+
+            // Fallback: find via the starting term stored in meta.
+            if (! $assessment) {
+                $termId = $transaction->meta['selected_term_id'] ?? null;
+                if ($termId) {
+                    $term = StudentPaymentTerm::with('assessment')->find($termId);
+                    $assessment = $term?->assessment;
+                }
+            }
+
+            // Last resort: use the student's most recent assessment.
+            if (! $assessment) {
+                $assessment = \App\Models\StudentAssessment::where('user_id', $notifiable->id)
+                    ->orderByDesc('created_at')
+                    ->first();
+            }
+
+            if ($assessment) {
+                // Build academic term label for the receipt header.
+                $semLabels = [
+                    '1st'     => '1st Sem',
+                    '2nd'     => '2nd Sem',
+                    'Summer'  => 'Summer',
+                    '1st Sem' => '1st Sem',
+                    '2nd Sem' => '2nd Sem',
+                ];
+                $semesterLabel = $semLabels[$assessment->semester] ?? $assessment->semester;
+                $academicTerm  = trim(($assessment->school_year ?? '') . ', ' . $semesterLabel);
+
+                $totalAssessment  = (float) $assessment->total_assessment;
+                $remainingBalance = round((float) $assessment->outstanding_balance, 2);
+                $totalPaid        = round($totalAssessment - $remainingBalance, 2);
+
+                // Collect all paid transactions for this assessment for the receipt.
+                $allTransactions = \App\Models\Transaction::where('user_id', $notifiable->id)
+                    ->where('kind', 'payment')
+                    ->where('status', 'paid')
+                    ->whereJsonContains('meta->assessment_id', $assessment->id)
+                    ->orderBy('paid_at', 'asc')
+                    ->get();
+
+                try {
+                    $pdf = Pdf::loadView('pdf.receipt', [
+                        'transactions'     => $allTransactions->isNotEmpty() ? $allTransactions : collect([$transaction]),
+                        'assessment'       => $assessment,
+                        'student'          => $notifiable,
+                        'academicTerm'     => $academicTerm,
+                        'totalAssessment'  => $totalAssessment,
+                        'totalPaid'        => $totalPaid,
+                        'remainingBalance' => $remainingBalance,
+                    ])->setPaper('A4', 'portrait');
+
+                    $mail->attachData($pdf->output(), 'receipt-' . $this->reference . '.pdf', [
+                        'mime' => 'application/pdf',
+                    ]);
+                } catch (\Throwable $e) {
+                    // PDF generation failure must NOT break the email delivery.
+                    // Log the error and send the email without attachment.
+                    \Illuminate\Support\Facades\Log::error('PaymentConfirmed: PDF attachment failed', [
+                        'transaction_id' => $this->transactionId,
+                        'reference'      => $this->reference,
+                        'error'          => $e->getMessage(),
+                    ]);
+                }
+            }
         }
 
         return $mail;

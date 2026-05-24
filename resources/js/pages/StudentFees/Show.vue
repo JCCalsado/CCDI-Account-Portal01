@@ -705,7 +705,39 @@ const projectedRemainingBalance = computed(() =>
     Math.max(0, remainingBalance.value - (parseFloat(paymentForm.amount) || 0)),
 );
 
-const allocationPreview = computed(() => {
+// ─────────────────────────────────────────────────────────────────────────────
+// ALLOCATION PREVIEW — mirrors backend allocatePaymentAcrossTerms() exactly.
+//
+// Uses integer-cents arithmetic throughout (multiply by 100, floor, never float).
+// All rounding happens at toCents() boundary only.
+//
+// STEP 1: Sequential allocation — apply payment to each term, oldest first.
+// STEP 2: Close-and-carry — for any term left with balance after Step 1,
+//         close it (balance → 0, processed = true) and record the carry details.
+//
+// This means: a partial payment on Prelim closes Prelim and the remaining
+// balance shows up as a carry annotation, not as a persistent Prelim debt.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Convert a peso float/string to integer cents. Mirrors PHP MoneyService::roundToCents(). */
+const _toCents = (value: number | string): number =>
+    Math.round(parseFloat(String(value)) * 100);
+
+/** Convert integer cents back to a peso float. */
+const _fromCents = (cents: number): number => cents / 100;
+
+type OtcAllocationRow = {
+    name:            string;
+    applied:         number;
+    balanceAfter:    number;
+    willBePaid:      boolean;
+    // Carry-forward fields (one-time term processing rule)
+    processed:       boolean;        // true = term closed, balance carried forward
+    carriedForward:  number;         // peso amount carried to next term
+    carriedToTerm:   string | null;  // name of the receiving term
+};
+
+const allocationPreview = computed((): OtcAllocationRow[] => {
     const entered = parseFloat(paymentForm.amount) || 0;
     if (entered <= 0) return [];
 
@@ -713,26 +745,49 @@ const allocationPreview = computed(() => {
         .filter((t) => parseFloat(String(t.balance)) > 0)
         .sort((a, b) => a.term_order - b.term_order);
 
-    let remaining = entered;
-    const rows: Array<{
-        name: string;
-        applied: number;
-        balanceAfter: number;
-        willBePaid: boolean;
-    }> = [];
+    // ── STEP 1: Sequential allocation in integer cents ────────────────────────
+    let remainingCents = _toCents(entered);
+    const rows: OtcAllocationRow[] = [];
 
     for (const term of unpaid) {
-        if (remaining <= 0) break;
-        const bal = parseFloat(String(term.balance));
-        const applied = Math.min(remaining, bal);
+        if (remainingCents <= 0) break;
+        const balBeforeCents = _toCents(term.balance);
+        const appliedCents   = Math.min(remainingCents, balBeforeCents);
+        const balAfterCents  = balBeforeCents - appliedCents;
         rows.push({
-            name: term.term_name,
-            applied,
-            balanceAfter: Math.max(0, bal - applied),
-            willBePaid: applied >= bal,
+            name:           term.term_name,
+            applied:        _fromCents(appliedCents),
+            balanceAfter:   _fromCents(balAfterCents),
+            willBePaid:     balAfterCents === 0,
+            processed:      false,
+            carriedForward: 0,
+            carriedToTerm:  null,
         });
-        remaining -= applied;
+        remainingCents -= appliedCents;
     }
+
+    // ── STEP 2: Close-and-carry ───────────────────────────────────────────────
+    // Any row that still has balance after Step 1 gets closed.
+    // The remaining balance is annotated as "carried to next term".
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.willBePaid || row.balanceAfter <= 0) continue;
+
+        const carryoverCents = _toCents(row.balanceAfter);
+
+        // Find the next term in the full sorted list (beyond this row's term).
+        const currentTermObj = unpaid.find((t) => t.term_name === row.name);
+        const nextTermObj = currentTermObj
+            ? unpaid.find((t) => t.term_order > (currentTermObj.term_order ?? 0))
+            : null;
+
+        row.processed      = true;
+        row.carriedForward = _fromCents(carryoverCents);
+        row.carriedToTerm  = nextTermObj?.term_name ?? null;
+        row.balanceAfter   = 0;   // the server will zero this
+        row.willBePaid     = false; // processed ≠ paid
+    }
+
     return rows;
 });
 
@@ -747,10 +802,15 @@ const canSubmitPayment = computed(
 
 const getTermStatusConfig = (status: string) => {
     const map: Record<string, { bg: string; text: string; label: string }> = {
-        pending: { bg: 'bg-yellow-100', text: 'text-yellow-800', label: 'Unpaid' },
-        partial: { bg: 'bg-orange-100', text: 'text-orange-800', label: 'Partial' },
-        paid: { bg: 'bg-green-100', text: 'text-green-800', label: 'Paid' },
-        overdue: { bg: 'bg-red-100', text: 'text-red-800', label: 'Overdue' },
+        unpaid:    { bg: 'bg-yellow-100',  text: 'text-yellow-800',  label: 'Unpaid' },
+        pending:   { bg: 'bg-yellow-100',  text: 'text-yellow-800',  label: 'Unpaid' },
+        partial:   { bg: 'bg-orange-100',  text: 'text-orange-800',  label: 'Partial' },
+        paid:      { bg: 'bg-green-100',   text: 'text-green-800',   label: 'Paid' },
+        overdue:   { bg: 'bg-red-100',     text: 'text-red-800',     label: 'Overdue' },
+        // processed = term closed; balance was carried forward to the next term.
+        // Label shown as "Carried Forward" so students/accounting immediately
+        // understand what happened without needing to know the internal status name.
+        processed: { bg: 'bg-blue-100',    text: 'text-blue-800',    label: 'Carried Forward' },
     };
     return map[status] ?? { bg: 'bg-gray-100', text: 'text-gray-800', label: status };
 };
@@ -1035,42 +1095,63 @@ const paymentMethodBadgeClass = (method: string): string => {
                                         <div
                                             v-for="row in allocationPreview"
                                             :key="row.name"
-                                            class="flex items-center justify-between px-4 py-2.5"
+                                            class="px-4 py-2.5"
+                                            :class="{
+                                                'bg-green-50': row.willBePaid,
+                                                'bg-blue-50':  row.processed,
+                                            }"
                                         >
-                                            <div class="flex items-center gap-2">
-                                                <span
-                                                    :class="[
-                                                        'inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold',
-                                                        row.willBePaid
-                                                            ? 'bg-green-100 text-green-700'
-                                                            : 'bg-amber-100 text-amber-700',
-                                                    ]"
-                                                >
-                                                    {{ row.willBePaid ? '✓' : '~' }}
-                                                </span>
-                                                <div>
-                                                    <p class="font-medium text-gray-900">
-                                                        {{ row.name }}
-                                                    </p>
-                                                    <p class="text-xs text-gray-500">
-                                                        Balance after:
-                                                        {{ formatCurrency(row.balanceAfter) }}
-                                                        <span
-                                                            v-if="row.willBePaid"
-                                                            class="ml-1 font-semibold text-green-600"
-                                                            >· Fully paid</span
-                                                        >
-                                                        <span
-                                                            v-else
-                                                            class="ml-1 text-amber-600"
-                                                            >· Partial</span
-                                                        >
-                                                    </p>
+                                            <!-- Main row: icon + name + applied amount -->
+                                            <div class="flex items-center justify-between">
+                                                <div class="flex items-center gap-2">
+                                                    <span
+                                                        :class="[
+                                                            'inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold',
+                                                            row.willBePaid
+                                                                ? 'bg-green-100 text-green-700'
+                                                                : row.processed
+                                                                  ? 'bg-blue-100 text-blue-700'
+                                                                  : 'bg-amber-100 text-amber-700',
+                                                        ]"
+                                                    >
+                                                        {{ row.willBePaid ? '✓' : row.processed ? '→' : '~' }}
+                                                    </span>
+                                                    <div>
+                                                        <p class="font-medium text-gray-900">
+                                                            {{ row.name }}
+                                                        </p>
+                                                        <p class="text-xs text-gray-500">
+                                                            <!-- Fully paid: balance zeroed -->
+                                                            <span v-if="row.willBePaid" class="font-semibold text-green-600">
+                                                                Fully paid · ₱0.00 remaining
+                                                            </span>
+                                                            <!-- Processed: closed via one-time rule, carry forward -->
+                                                            <span v-else-if="row.processed" class="text-blue-600">
+                                                                Processed · balance carried to
+                                                                <strong>{{ row.carriedToTerm ?? 'next term' }}</strong>
+                                                            </span>
+                                                            <!-- Still has balance remaining (last active term) -->
+                                                            <span v-else class="text-amber-600">
+                                                                Balance after: {{ formatCurrency(row.balanceAfter) }}
+                                                            </span>
+                                                        </p>
+                                                    </div>
                                                 </div>
+                                                <span class="font-semibold text-indigo-700">
+                                                    {{ formatCurrency(row.applied) }}
+                                                </span>
                                             </div>
-                                            <span class="font-semibold text-indigo-700">
-                                                {{ formatCurrency(row.applied) }}
-                                            </span>
+                                            <!-- Carry-forward detail line -->
+                                            <div
+                                                v-if="row.processed && row.carriedForward > 0"
+                                                class="mt-1.5 ml-7 flex items-center gap-1 text-xs text-blue-600"
+                                            >
+                                                <span>↪</span>
+                                                <span>
+                                                    {{ formatCurrency(row.carriedForward) }} moved to
+                                                    <strong>{{ row.carriedToTerm ?? 'next term' }}</strong>
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
                                     <div
@@ -1384,8 +1465,10 @@ const paymentMethodBadgeClass = (method: string): string => {
                                     {{ formatCurrency(parseFloat(String(term.amount))) }}
                                 </p>
                                 <!-- Remaining balance for this term — shown only when not fully paid -->
+                                <!-- Balance shown only when the term is not closed (paid or processed).     -->
+                                <!-- processed terms have balance = 0 — showing "Balance: ₱0.00" is redundant. -->
                                 <p
-                                    v-if="term.status !== 'paid'"
+                                    v-if="term.status !== 'paid' && term.status !== 'processed'"
                                     class="mt-0.5 tabular-nums"
                                     :class="
                                         term.status === 'overdue'
@@ -1396,6 +1479,20 @@ const paymentMethodBadgeClass = (method: string): string => {
                                     "
                                 >
                                     Balance: {{ formatCurrency(parseFloat(String(term.balance))) }}
+                                </p>
+                                <!-- Carry-over annotation: shown on processed terms (source) ─────────── -->
+                                <p
+                                    v-if="term.status === 'processed' && term.remarks"
+                                    class="mt-0.5 text-xs text-blue-600"
+                                >
+                                    ↪ {{ term.remarks }}
+                                </p>
+                                <!-- Carry-over annotation: shown on receiving terms ──────────────────── -->
+                                <p
+                                    v-if="term.carryover_amount && parseFloat(String(term.carryover_amount)) > 0"
+                                    class="mt-0.5 text-xs text-blue-500"
+                                >
+                                    Includes {{ formatCurrency(parseFloat(String(term.carryover_amount))) }} carry-over
                                 </p>
                                 <span
                                     :class="[

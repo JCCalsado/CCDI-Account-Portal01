@@ -24,7 +24,11 @@ class StudentPaymentService
      *   1. Apply payment to selected term first.
      *   2. If payment > selected term balance, excess flows to next terms
      *      sequentially by term_order (ascending).
-     *   3. Payment MUST NOT exceed total outstanding balance across all terms.
+     *   3. If payment < selected term balance, the remaining unpaid balance is
+     *      carried forward to the next term. The current term is CLOSED
+     *      (status = 'processed', balance = 0). This is the one-time term
+     *      processing rule.
+     *   4. Payment MUST NOT exceed total outstanding balance across all terms.
      *
      * PRECISION: All arithmetic is performed in integer cents via MoneyService.
      * No floating-point arithmetic occurs in this method or its callees.
@@ -38,6 +42,23 @@ class StudentPaymentService
         }
 
         $term = StudentPaymentTerm::findOrFail($termId);
+
+        // Validate that the selected term is actually payable.
+        // PROCESSED terms have balance = 0 and are closed — they cannot receive payment.
+        if ($term->status === PaymentStatus::PROCESSED->value) {
+            $nextTerm = StudentPaymentTerm::where('student_assessment_id', $term->student_assessment_id)
+                ->where('balance', '>', 0)
+                ->orderBy('term_order')
+                ->first();
+
+            throw new \Exception(sprintf(
+                'The %s term has already been processed. %s',
+                $term->term_name,
+                $nextTerm
+                    ? 'Your next payable term is: ' . $nextTerm->term_name . '.'
+                    : 'All terms have been settled.'
+            ));
+        }
 
         // Convert to integer cents at the input boundary — all further arithmetic is exact.
         $amountCents = MoneyService::roundToCents($amount);
@@ -102,6 +123,7 @@ class StudentPaymentService
             ]);
 
             if (! $requiresApproval) {
+                // Direct OTC payment — apply allocation immediately.
                 $allocation = $this->allocatePaymentAcrossTerms($term, $amountCents);
 
                 foreach ($allocation as $alloc) {
@@ -119,6 +141,17 @@ class StudentPaymentService
                         ]);
                     }
                 }
+
+                // Write the full allocation breakdown to the transaction meta.
+                // This is used by the receipt PDF and audit logs.
+                $transaction->update([
+                    'meta' => array_merge($transaction->meta ?? [], [
+                        'allocation'    => $allocation,
+                        'terms_covered' => count($allocation),
+                        'total_applied' => $amountDecimal,
+                        'finalized_at'  => now()->toIso8601String(),
+                    ]),
+                ]);
 
                 AccountService::recalculate($user);
                 $this->checkAndNotifyProgressionReady($user, $term->student_assessment_id);
@@ -194,7 +227,7 @@ class StudentPaymentService
                         $q->where('user_id', $user->id);
                     })
                     ->where('term_name', $termName)
-                    ->whereIn('status', PaymentStatus::unpaidValues())
+                    ->where('balance', '>', 0)  // authoritative — status can be stale
                     ->orderBy('due_date', 'desc')
                     ->lockForUpdate()
                     ->first();
@@ -313,7 +346,6 @@ class StudentPaymentService
     public function getTotalOutstandingBalance(User $user): float
     {
         // Filter by balance > 0 (not by status) — balance is authoritative.
-        // status can be stale (e.g. paid status with remaining balance from old bugs).
         $cents = MoneyService::sumFromDb(
             StudentPaymentTerm::whereHas('assessment', function ($q) use ($user) {
                 $q->where('user_id', $user->id);
@@ -341,6 +373,20 @@ class StudentPaymentService
      * Allocate a payment amount starting at $startTerm, then flowing into
      * subsequent terms ordered by term_order ASC.
      *
+     * ── STEP 1: Sequential allocation loop ──────────────────────────────────
+     * Apply payment to $startTerm first. If payment exceeds the term balance,
+     * the excess continues to the next unpaid term, and so on.
+     *
+     * ── STEP 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE) ─────────────
+     * After the loop, any term that received a partial payment (balance > 0 remains)
+     * is CLOSED: its remaining balance is carried forward to the next term,
+     * and the current term's balance is set to ₱0.00 with status = 'processed'.
+     *
+     * INVARIANT: SUM(all term balances) is unchanged by Step 2.
+     * We zero one term and add the same amount to the next term — no money
+     * is created or destroyed. AccountService::recalculate() will see the
+     * same total outstanding before and after the carry.
+     *
      * ALL ARITHMETIC IS INTEGER-CENTS. Zero float error possible.
      *
      * @param  StudentPaymentTerm  $startTerm    First term to apply payment to.
@@ -351,6 +397,17 @@ class StudentPaymentService
     {
         $allocation     = [];
         $remainingCents = $amountCents;
+
+        // ── STEP 1: Sequential allocation loop ──────────────────────────────
+        //
+        // Terms eligible for payment:
+        //   - The selected starting term (by ID), even if term_order puts it
+        //     behind others (admin override path).
+        //   - All terms with term_order > startTerm.term_order and balance > 0.
+        //
+        // We explicitly EXCLUDE processed terms (balance = 0 via carryover).
+        // The balance > 0 filter handles this automatically since processed
+        // terms always have balance = 0 after Step 2.
 
         $terms = StudentPaymentTerm::where('student_assessment_id', $startTerm->student_assessment_id)
             ->where('balance', '>', 0)  // authoritative filter — status can be stale
@@ -372,35 +429,165 @@ class StudentPaymentService
             $appliedCents       = min($remainingCents, $balanceBeforeCents);
             $balanceAfterCents  = $balanceBeforeCents - $appliedCents; // exact integer subtraction
 
-            $newStatus = $balanceAfterCents === 0
+            // Determine status after Step 1.
+            // PARTIAL here means "balance remains on this term after payment."
+            // Step 2 will convert PARTIAL → PROCESSED by carrying the balance forward.
+            $statusAfterStep1 = $balanceAfterCents === 0
                 ? PaymentStatus::PAID->value
                 : PaymentStatus::PARTIAL->value;
 
             $term->update([
                 'balance'   => MoneyService::toPesos($balanceAfterCents),
-                'status'    => $newStatus,
-                'paid_date' => $newStatus === PaymentStatus::PAID->value ? now() : $term->paid_date,
+                'status'    => $statusAfterStep1,
+                'paid_date' => $statusAfterStep1 === PaymentStatus::PAID->value ? now() : $term->paid_date,
             ]);
 
             $allocation[] = [
-                'term_id'              => $term->id,
-                'term_name'            => $term->term_name,
-                'term_order'           => $term->term_order,
-                'applied_cents'        => $appliedCents,
-                'applied_decimal'      => MoneyService::toPesos($appliedCents),
-                'balance_before_cents' => $balanceBeforeCents,
-                'balance_after_cents'  => $balanceAfterCents,
-                'balance_before'       => MoneyService::toPesos($balanceBeforeCents),
-                'balance_after'        => MoneyService::toPesos($balanceAfterCents),
-                // Legacy float aliases for any callers that still use them.
-                'applied'              => MoneyService::toFloat($appliedCents),
-                'balance_before_float' => MoneyService::toFloat($balanceBeforeCents),
-                'balance_after_float'  => MoneyService::toFloat($balanceAfterCents),
-                'status_after'         => $newStatus,
+                'term_id'               => $term->id,
+                'term_name'             => $term->term_name,
+                'term_order'            => $term->term_order,
+                'applied_cents'         => $appliedCents,
+                'applied_decimal'       => MoneyService::toPesos($appliedCents),
+                'balance_before_cents'  => $balanceBeforeCents,
+                'balance_after_cents'   => $balanceAfterCents,
+                'balance_before'        => MoneyService::toPesos($balanceBeforeCents),
+                'balance_after'         => MoneyService::toPesos($balanceAfterCents),
+                // Legacy float aliases for callers that still read these keys.
+                'applied'               => MoneyService::toFloat($appliedCents),
+                'balance_before_float'  => MoneyService::toFloat($balanceBeforeCents),
+                'balance_after_float'   => MoneyService::toFloat($balanceAfterCents),
+                // Step 2 will populate these fields for PARTIAL terms.
+                'status_after'          => $statusAfterStep1,
+                'carried_forward_cents' => 0,
+                'carried_to_term_name'  => null,
             ];
 
             $remainingCents -= $appliedCents; // exact integer subtraction
         }
+
+        // ── STEP 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE) ─────────
+        //
+        // For each allocation entry that ended Step 1 with PARTIAL status:
+        //   a. Find the next term in the sequence with balance > 0 (including
+        //      terms that did NOT appear in the Step 1 loop — they already had
+        //      their own balance from previous carries or the original assessment).
+        //   b. Add the carry amount to that next term's balance.
+        //   c. Zero the current term's balance and set status = 'processed'.
+        //
+        // Processing order: we iterate allocation entries in the order they
+        // were created (term_order ASC), so chain carries work correctly:
+        //   Prelim → PARTIAL → carries to Midterm
+        //   Midterm already in allocation → PARTIAL → carries to Semi-Final
+        // In a single payment, multiple terms can be chain-carried.
+        //
+        // After Step 2, the allocation entry is updated to reflect the final
+        // status ('processed') and the carry details, so receipt PDFs and
+        // audit logs have the complete picture.
+
+        foreach ($allocation as &$alloc) {
+            // Only process entries that ended Step 1 with remaining balance.
+            if ($alloc['status_after'] !== PaymentStatus::PARTIAL->value) {
+                continue;
+            }
+
+            $carryoverCents = $alloc['balance_after_cents'];
+
+            if ($carryoverCents <= 0) {
+                // Defensive guard — should be unreachable given the filter above.
+                Log::warning('allocatePaymentAcrossTerms: PARTIAL entry has zero carry', [
+                    'term_id'   => $alloc['term_id'],
+                    'term_name' => $alloc['term_name'],
+                ]);
+                continue;
+            }
+
+            // Find the next term AFTER this one that has (or will have) a balance.
+            // We must look beyond the Step 1 scope — the next term may not have
+            // been in the Step 1 query (e.g., Midterm was not reached because
+            // the payment ran out on Prelim).
+            $nextTerm = StudentPaymentTerm::where('student_assessment_id', $startTerm->student_assessment_id)
+                ->where('term_order', '>', $alloc['term_order'])
+                ->where(function ($q) {
+                    // The next term either:
+                    //   (a) already has balance > 0 (not yet reached by payment), OR
+                    //   (b) was paid in Step 1 (balance now 0, status = 'paid') but
+                    //       we SKIP those — they were fully settled.
+                    // We intentionally DO NOT carry into a PAID term.
+                    // We also do not carry into a PROCESSED term (they have balance = 0).
+                    $q->where('balance', '>', 0);
+                })
+                ->orderBy('term_order', 'asc')
+                ->lockForUpdate()
+                ->first();
+
+            // ── Edge case: no next term with balance ──────────────────────────
+            // This happens only when the carry target would be a term that was
+            // also fully paid in this same payment (excess scenario). In that case,
+            // the excess has already been applied in Step 1. No carry needed.
+            // We still close the current term below.
+            if ($nextTerm) {
+                $nextBalanceBefore = MoneyService::toCents($nextTerm->balance);
+                $nextBalanceAfter  = $nextBalanceBefore + $carryoverCents;
+
+                $nextTerm->update([
+                    'balance'                => MoneyService::toPesos($nextBalanceAfter),
+                    'remarks'                => 'Carry-over of ' . MoneyService::formatFromCents($carryoverCents)
+                                               . ' from ' . $alloc['term_name'],
+                    // status stays as-is (pending/unpaid) — the term still owes money
+                    'carryover_from_term_id' => $alloc['term_id'],
+                    'carryover_amount'       => MoneyService::toPesos($carryoverCents),
+                ]);
+
+                Log::info('allocatePaymentAcrossTerms: carry-forward applied', [
+                    'from_term'          => $alloc['term_name'],
+                    'to_term'            => $nextTerm->term_name,
+                    'carryover_cents'    => $carryoverCents,
+                    'next_balance_after' => MoneyService::toPesos($nextBalanceAfter),
+                ]);
+            } else {
+                // No eligible next term found. This is expected when the very last
+                // term in the assessment receives a partial payment. The balance
+                // cannot be carried forward — log it for accounting review.
+                Log::warning('allocatePaymentAcrossTerms: no next term for carry-forward', [
+                    'from_term'       => $alloc['term_name'],
+                    'term_order'      => $alloc['term_order'],
+                    'carryover_cents' => $carryoverCents,
+                    'assessment_id'   => $startTerm->student_assessment_id,
+                    'note'            => 'Carry amount is on the last term; balance is final.',
+                ]);
+            }
+
+            // ── Close the partially-paid term ─────────────────────────────────
+            // Regardless of whether a next term was found, zero this term and
+            // set status = 'processed'. This enforces the one-time rule.
+            //
+            // IMPORTANT: Do NOT set paid_date. This term was not "paid" —
+            // it received a partial payment that was carried forward.
+            $closedTerm = StudentPaymentTerm::lockForUpdate()->find($alloc['term_id']);
+            if ($closedTerm) {
+                $closedTerm->update([
+                    'balance'   => '0.00',
+                    'status'    => PaymentStatus::PROCESSED->value,
+                    'paid_date' => null,  // not fully paid — do not stamp paid_date
+                    'remarks'   => $nextTerm
+                        ? MoneyService::formatFromCents($carryoverCents)
+                          . ' carried to ' . $nextTerm->term_name
+                        : MoneyService::formatFromCents($carryoverCents)
+                          . ' — final term, no further carry (contact accounting)',
+                ]);
+            }
+
+            // ── Update the allocation ledger entry with Step 2 results ────────
+            // These fields are written to transaction.meta.allocation and used
+            // by receipt PDFs and accounting audit views.
+            $alloc['status_after']          = PaymentStatus::PROCESSED->value;
+            $alloc['balance_after_cents']   = 0;
+            $alloc['balance_after']         = '0.00';
+            $alloc['balance_after_float']   = 0.0;
+            $alloc['carried_forward_cents'] = $carryoverCents;
+            $alloc['carried_to_term_name']  = $nextTerm?->term_name;
+        }
+        unset($alloc); // break the reference to avoid accidental mutation
 
         if ($remainingCents > 1) {
             Log::error('allocatePaymentAcrossTerms: unallocated remainder after exhausting all terms', [
@@ -496,8 +683,6 @@ class StudentPaymentService
 
     private function resolveNextSemesterLabel(string $yearLevel, string $semester): string
     {
-        // Keys use the short form stored in student_assessments.semester: '1st', '2nd'
-        // NOT the legacy '1st Sem', '2nd Sem' format.
         $progression = [
             '1st Year|1st' => '1st Year 2nd Semester',
             '1st Year|2nd' => '2nd Year 1st Semester',

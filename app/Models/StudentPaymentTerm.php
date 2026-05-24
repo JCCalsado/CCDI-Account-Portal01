@@ -32,14 +32,15 @@ class StudentPaymentTerm extends Model
         'paid_date'        => 'datetime',
     ];
 
-    // ── Payment term statuses — use PaymentStatus enum values ─────────────────
-    // These constants are kept as string aliases so any existing code that
-    // references StudentPaymentTerm::STATUS_* continues to work without
-    // a mass find-and-replace. New code should use PaymentStatus::* directly.
-    const STATUS_PENDING = PaymentStatus::PENDING->value;   // 'pending'
-    const STATUS_PARTIAL = PaymentStatus::PARTIAL->value;   // 'partial'
-    const STATUS_PAID    = PaymentStatus::PAID->value;      // 'paid'
-    const STATUS_OVERDUE = 'overdue';                       // not in PaymentStatus (display-only flag)
+    // ── Status constants — string aliases for PaymentStatus enum values ────────
+    // These constants exist for backward compatibility with any code that uses
+    // StudentPaymentTerm::STATUS_*. New code should use PaymentStatus::* directly.
+
+    const STATUS_PENDING   = PaymentStatus::PENDING->value;    // 'pending'
+    const STATUS_PARTIAL   = PaymentStatus::PARTIAL->value;    // 'partial'
+    const STATUS_PAID      = PaymentStatus::PAID->value;       // 'paid'
+    const STATUS_PROCESSED = PaymentStatus::PROCESSED->value;  // 'processed'
+    const STATUS_OVERDUE   = 'overdue';                        // display-only flag
 
     /**
      * ⚠️ DEPRECATED: StudentPaymentTerm::TERMS is OUT OF SYNC with config/fees.php
@@ -74,7 +75,7 @@ class StudentPaymentTerm extends Model
     }
 
     /**
-     * Source term if this carries over balance.
+     * Source term that carried balance into this term, if any.
      */
     public function carryoverFromTerm(): BelongsTo
     {
@@ -87,14 +88,21 @@ class StudentPaymentTerm extends Model
 
     /**
      * Check if this term is overdue.
+     * A PROCESSED term is never overdue — it is closed.
      */
     public function isOverdue(): bool
     {
-        return $this->status === self::STATUS_PENDING && now()->isAfter($this->due_date);
+        if ($this->status === self::STATUS_PROCESSED || $this->status === self::STATUS_PAID) {
+            return false;
+        }
+        return $this->status === self::STATUS_PENDING
+            && $this->due_date !== null
+            && now()->isAfter($this->due_date);
     }
 
     /**
      * Get total accumulated balance (including carryover).
+     * Always reads the live DB value — never cached.
      */
     public function getAccumulatedBalanceAttribute(): float
     {
@@ -102,10 +110,47 @@ class StudentPaymentTerm extends Model
     }
 
     /**
-     * Check if balance carries to next term.
+     * Check if this term received a carry-over from a previous term.
+     *
+     * FIX: the previous implementation used str_contains($remarks, 'carries')
+     * which never matched because remarks use 'Carry-over' or 'carried to'.
+     * This version checks both patterns correctly.
      */
     public function hasCarryover(): bool
     {
-        return $this->remarks && str_contains($this->remarks, 'carries');
+        if (empty($this->remarks)) {
+            return false;
+        }
+
+        return str_contains($this->remarks, 'Carry-over')
+            || str_contains($this->remarks, 'carried to')
+            || $this->carryover_from_term_id !== null;
+    }
+
+    /**
+     * Whether this term is closed — either fully paid or processed (carried forward).
+     */
+    public function isClosed(): bool
+    {
+        return $this->status === self::STATUS_PAID
+            || $this->status === self::STATUS_PROCESSED;
+    }
+
+    /**
+     * Human-readable display status.
+     * PROCESSED shows as "Processed" not "Partial" — they are semantically different:
+     *   PARTIAL  → balance remains on THIS term; it is still payable
+     *   PROCESSED → balance was moved to the NEXT term; this term is closed
+     */
+    public function getDisplayStatusAttribute(): string
+    {
+        return match ($this->status) {
+            self::STATUS_PAID      => 'Paid',
+            self::STATUS_PROCESSED => 'Processed',
+            self::STATUS_PARTIAL   => 'Partial',
+            self::STATUS_PENDING   => $this->isOverdue() ? 'Overdue' : 'Pending',
+            'unpaid'               => 'Pending',
+            default                => ucfirst($this->status),
+        };
     }
 }

@@ -73,12 +73,6 @@
         }
 
         /* ── Student Info Table ── */
-        /*
-         * Tightened label column: width reduced from 30% → 18%
-         * and white-space: nowrap keeps labels on one line.
-         * Padding reduced from 4px 6px → 3px 4px to close the
-         * horizontal gap between the label and its value.
-         */
         .info-table { width: 100%; border-collapse: collapse; }
         .info-table td { padding: 3px 4px; vertical-align: top; }
         .info-table .lbl {
@@ -107,6 +101,53 @@
         }
         .payment-box .pay-meta { font-size: 10px; color: #555; line-height: 1.9; }
         .payment-box .pay-meta span { font-weight: bold; color: #222; }
+
+        /* ── Allocation Breakdown Table (inside payment box) ── */
+        /*
+         * Shows the per-term allocation when a payment spans multiple terms or
+         * uses the carry-forward rule (Scenario 1: partial payment on a term).
+         */
+        .allocation-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 9.5px;
+        }
+        .allocation-table th {
+            background: #d1fae5;
+            color: #065f46;
+            font-weight: bold;
+            text-align: left;
+            padding: 4px 6px;
+            border-bottom: 1px solid #a7f3d0;
+        }
+        .allocation-table td {
+            padding: 4px 6px;
+            border-bottom: 1px solid #e5e7eb;
+            vertical-align: top;
+        }
+        .allocation-table tr:last-child td { border-bottom: none; }
+        .allocation-table .amount-col { text-align: right; font-family: monospace; }
+
+        /* Status badge inside allocation table */
+        .alloc-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-size: 8px;
+            font-weight: bold;
+        }
+        .alloc-badge-paid      { background: #d1fae5; color: #065f46; }
+        .alloc-badge-processed { background: #dbeafe; color: #1e40af; }
+        .alloc-badge-partial   { background: #fef3c7; color: #92400e; }
+
+        /* Carry-forward note */
+        .carry-note {
+            font-size: 8.5px;
+            color: #1d4ed8;
+            font-style: italic;
+            margin-top: 2px;
+        }
 
         /* ── Account Balance Box ── */
         .balance-box {
@@ -183,23 +224,12 @@
     </table>
 
     <p class="doc-title">Official Payment Receipt</p>
-    {{--
-        Reference No. removed from header per requirement.
-        Each transaction's OR/Ref No. is shown inside its own payment box below.
-    --}}
     <div><span class="paid-stamp">PAID</span></div>
 </div>
 
 {{-- ══ Student Information ══ --}}
 <div class="section">
     <div class="section-title">Student Information</div>
-    {{--
-        Removed: Student No. row.
-        Remaining fields: Account ID, Full Name, Course, Year Level, Email.
-        Restructured into 3 rows to keep the 2-column layout balanced.
-        Label width tightened to 18% + nowrap; padding reduced to close
-        the horizontal gap between label and value.
-    --}}
     <table class="info-table">
         <tr>
             <td class="lbl">Account ID:</td>
@@ -226,7 +256,6 @@
 <div class="section">
     <div class="section-title">Payment Details</div>
 
-    {{-- Academic Term shown once at section level, not repeated per transaction --}}
     <p class="section-subtitle">Academic Term: <strong>{{ $academicTerm }}</strong></p>
 
     @php
@@ -244,10 +273,23 @@
 
     @foreach ($transactions as $txn)
         @php
-            $paymentFor  = $txn->meta['term_name']
-                ?? $txn->meta['description']
-                ?? $txn->type
-                ?? 'General Payment';
+            /*
+             * Determine the top-level label for this payment.
+             * Multi-term payments use the allocation table below instead of
+             * a single term name — so show a generic "Payment" label.
+             */
+            $allocation  = $txn->meta['allocation'] ?? [];
+            $termsCount  = count($allocation);
+            $isMultiTerm = $termsCount > 1;
+
+            // For single-term payments, show the term name as usual.
+            // For multi-term, the breakdown table tells the full story.
+            $paymentFor = $isMultiTerm
+                ? 'Payment — Multiple Terms'
+                : ($txn->meta['term_name']
+                    ?? $txn->meta['description']
+                    ?? $txn->type
+                    ?? 'General Payment');
 
             $paymentDesc = $txn->meta['description'] ?? null;
 
@@ -256,11 +298,6 @@
                 ?? strtoupper(str_replace('_', ' ', $methodRaw))
                 ?: 'N/A';
 
-            /*
-             * OR / Ref No. logic (mirrors Show.vue lines 1646–1650):
-             *   cash → or_number  → label "OR No."
-             *   other → reference → label "Ref No."
-             */
             $isCash     = $methodRaw === 'cash';
             $orRefValue = $isCash
                 ? ($txn->or_number ?? '—')
@@ -282,10 +319,84 @@
                 Date Paid: <span>{{ $paidDate }}</span>
             </p>
 
-            @if ($paymentDesc && $paymentDesc !== $paymentFor)
+            @if ($paymentDesc && $paymentDesc !== $paymentFor && !$isMultiTerm)
                 <p class="pay-meta" style="margin-top:6px; border-top:1px solid #a7f3d0; padding-top:6px;">
                     Note: <span>{{ $paymentDesc }}</span>
                 </p>
+            @endif
+
+            {{--
+                ── Per-term Allocation Breakdown ──────────────────────────────────
+                Render when the transaction.meta.allocation array is present.
+                This appears on:
+                  • Multi-term excess payments (Scenario 2: payment > term balance)
+                  • Carry-forward payments (Scenario 1: payment < term balance,
+                    remaining balance moved to next term, status = 'processed')
+                  • Any payment recorded after the close-and-carry implementation.
+
+                The 'status_after' field drives the badge and carry note:
+                  'paid'      → term fully settled by this payment
+                  'processed' → partial payment; remaining balance carried forward
+                  'partial'   → balance remains (final active term in the chain)
+            --}}
+            @if (!empty($allocation))
+                <table class="allocation-table" style="margin-top: 10px;">
+                    <thead>
+                        <tr>
+                            <th style="width:30%;">Term</th>
+                            <th class="amount-col" style="width:20%;">Applied</th>
+                            <th class="amount-col" style="width:20%;">Balance After</th>
+                            <th style="width:30%;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach ($allocation as $alloc)
+                            @php
+                                $statusAfter    = $alloc['status_after'] ?? 'unknown';
+                                $carriedCents   = $alloc['carried_forward_cents'] ?? 0;
+                                $carriedToTerm  = $alloc['carried_to_term_name'] ?? null;
+                                $appliedAmount  = $alloc['applied_decimal'] ?? number_format($alloc['applied'] ?? 0, 2);
+                                $balanceAfter   = $alloc['balance_after'] ?? '0.00';
+                            @endphp
+                            <tr>
+                                <td>{{ $alloc['term_name'] }}</td>
+                                <td class="amount-col">&#8369;{{ number_format($appliedAmount, 2) }}</td>
+                                <td class="amount-col">
+                                    @if ($statusAfter === 'processed' || $statusAfter === 'paid')
+                                        <span style="color:#065f46; font-weight:bold;">&#8369;0.00</span>
+                                    @else
+                                        <span style="color:#b45309;">&#8369;{{ number_format($balanceAfter, 2) }}</span>
+                                    @endif
+                                </td>
+                                <td>
+                                    @if ($statusAfter === 'paid')
+                                        <span class="alloc-badge alloc-badge-paid">Fully Paid</span>
+                                    @elseif ($statusAfter === 'processed')
+                                        <span class="alloc-badge alloc-badge-processed">Processed</span>
+                                        @if ($carriedCents > 0 && $carriedToTerm)
+                                            <div class="carry-note">
+                                                &#8369;{{ number_format($carriedCents / 100, 2) }}
+                                                carried to {{ $carriedToTerm }}
+                                            </div>
+                                        @endif
+                                    @elseif ($statusAfter === 'partial')
+                                        <span class="alloc-badge alloc-badge-partial">Partial</span>
+                                    @else
+                                        <span style="color:#6b7280;">{{ ucfirst($statusAfter) }}</span>
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+
+                {{-- Explanatory note for processed terms --}}
+                @if (collect($allocation)->where('status_after', 'processed')->isNotEmpty())
+                    <p style="font-size:8.5px; color:#1d4ed8; margin-top:6px; font-style:italic;">
+                        * "Processed" terms have been closed. The remaining balance has been
+                        automatically carried forward to the next payment term.
+                    </p>
+                @endif
             @endif
         </div>
     @endforeach
