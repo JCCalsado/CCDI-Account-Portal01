@@ -33,7 +33,6 @@ class TransactionController extends Controller
     {
         $user = $request->user();
 
-        // BUG FIX #2: Remove non-existent 'super_admin' role
         if (in_array($user->role->value, ['admin', 'accounting'])) {
             $transactions = Transaction::with('user')
                 ->where('kind', 'payment')
@@ -61,9 +60,6 @@ class TransactionController extends Controller
             $allAssessments = [];
             $enrolledSubjectsByAssessment = [];
         } else {
-            // FIX: Students only see payment-kind transactions in Transaction History.
-            // Charge rows (kind='charge', ref='ASMT-*') are internal ledger entries,
-            // not cashier payments. Per Claude.md: excluded from this view.
             $transactions = $user->transactions()
                 ->with('user')
                 ->where('kind', 'payment')
@@ -87,10 +83,7 @@ class TransactionController extends Controller
                 ])
                 ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
 
-            // For students, resolve currentTerm from their latest assessment so the
-            // correct term group is auto-expanded even when server-time semester
-            // differs from the assessment semester.
-            $latestAssessment = \App\Models\StudentAssessment::where('user_id', $user->id)
+            $latestAssessment = StudentAssessment::where('user_id', $user->id)
                 ->where('status', 'active')
                 ->latest()
                 ->first();
@@ -101,11 +94,9 @@ class TransactionController extends Controller
                 $currentTerm = $this->getCurrentTerm();
             }
 
-            // ── Load all assessments for the student ──
-            $allAssessments = \App\Models\StudentAssessment::where('user_id', $user->id)
+            $allAssessments = StudentAssessment::where('user_id', $user->id)
                 ->where('status', '!=', 'cancelled')
                 ->orderByDesc('created_at')
-                // FIX #5: 'fee_breakdown' is not a real column. Build it from stored units.
                 ->get(['id', 'school_year', 'semester', 'year_level', 'lec_units', 'lab_units', 'total_assessment'])
                 ->map(fn ($a) => [
                     'id'               => $a->id,
@@ -113,7 +104,6 @@ class TransactionController extends Controller
                     'semester'         => $a->semester,
                     'year_level'       => $a->year_level,
                     'total_assessment' => (float) $a->total_assessment,
-                    // Build fee_breakdown inline from stored unit values + live config rates
                     'fee_breakdown'    => [
                         [
                             'category' => 'Tuition',
@@ -137,13 +127,11 @@ class TransactionController extends Controller
                 ])
                 ->toArray();
 
-            // ── Build enrolledSubjectsByAssessment lookup ──
-            // Maps each assessment ID to an array of subject IDs confirmed in student_enrollments
             $assessmentTermIndex = collect($allAssessments)->keyBy(
                 fn ($a) => $a['school_year'] . '||' . $a['semester']
             );
 
-            $enrollmentRows = \App\Models\StudentEnrollment::where('user_id', $user->id)
+            $enrollmentRows = StudentEnrollment::where('user_id', $user->id)
                 ->where('status', 'enrolled')
                 ->get(['subject_id', 'school_year', 'semester']);
 
@@ -163,11 +151,10 @@ class TransactionController extends Controller
         }
 
         return Inertia::render('Transactions/Index', [
-            // BUG FIX #7: Remove redundant 'auth' prop — already in shared data via HandleInertiaRequests
-            'transactionsByTerm' => $transactions,
-            'account'            => $user->account,
-            'currentTerm'        => $currentTerm,
-            'allAssessments'     => $allAssessments,
+            'transactionsByTerm'           => $transactions,
+            'account'                      => $user->account,
+            'currentTerm'                  => $currentTerm,
+            'allAssessments'               => $allAssessments,
             'enrolledSubjectsByAssessment' => $enrolledSubjectsByAssessment,
             'backUrl' => in_array($user->role->value, ['admin', 'accounting'])
                 ? route('accounting.dashboard')
@@ -188,7 +175,6 @@ class TransactionController extends Controller
 
     public function store(Request $request)
     {
-        // BUG FIX #2: Remove non-existent 'super_admin' role
         if (!in_array($request->user()->role->value, ['admin', 'accounting'])) {
             abort(403, 'Unauthorized action.');
         }
@@ -230,7 +216,6 @@ class TransactionController extends Controller
         $user    = auth()->user();
         $isStaff = in_array($user->role->value, ['admin', 'accounting']);
 
-        // Students may only view their own transactions
         if (!$isStaff && $transaction->user_id !== $user->id) {
             return redirect()->route('student.dashboard')
                 ->with('flash.warning', 'You do not have permission to view that transaction.');
@@ -247,14 +232,12 @@ class TransactionController extends Controller
     public function receipt(Request $request, Transaction $transaction)
     {
         $authUser = $request->user();
-        // BUG FIX #2: Remove non-existent 'super_admin' role
         $isStaff  = in_array($authUser->role->value, ['admin', 'accounting']);
 
         if (!$isStaff && $transaction->user_id !== $authUser->id) {
             abort(403, 'You do not have permission to view this receipt.');
         }
 
-        // Only fully paid transactions may generate a receipt PDF.
         if ($transaction->status === PaymentStatus::AWAITING_APPROVAL->value) {
             abort(403, 'Receipt is not available yet. Your payment is still awaiting accounting verification.');
         }
@@ -265,21 +248,59 @@ class TransactionController extends Controller
 
         $targetUser = $transaction->user->load('account', 'student');
 
-        $currentBalance = (float) ($targetUser->account->balance ?? 0);
-        $paymentAmount  = (float) $transaction->amount;
+        // ── Resolve the linked StudentAssessment ──────────────────────────────
+        // Primary: use assessment_id stored in transaction meta (set by payment flow).
+        // Fallback: match by user + year + semester from the transaction itself.
+        $assessmentId = $transaction->meta['assessment_id'] ?? null;
 
-        if ($transaction->status === PaymentStatus::PAID->value) {
-            $balanceBefore    = round($currentBalance + $paymentAmount, 2);
-            $remainingBalance = round($currentBalance, 2);
+        $assessment = $assessmentId
+            ? StudentAssessment::find((int) $assessmentId)
+            : StudentAssessment::where('user_id', $targetUser->id)
+                ->where('school_year', 'like', $transaction->year . '%')
+                ->where('semester', $transaction->semester)
+                ->where('status', 'active')
+                ->first();
+
+        // ── Build academic term label ─────────────────────────────────────────
+        // Prefer assessment data (school_year is '2026-2027'); fall back to
+        // transaction year (e.g. '2026') formatted as a school year.
+        if ($assessment) {
+            $academicTerm = trim("{$assessment->school_year} {$assessment->semester}");
         } else {
-            $balanceBefore    = round($currentBalance, 2);
-            $remainingBalance = round($currentBalance - $paymentAmount, 2);
+            $schoolYear   = $this->formatSchoolYear($transaction->year ?? now()->year);
+            $academicTerm = trim("{$schoolYear} {$transaction->semester}");
         }
 
+        // ── Financial totals scoped to this assessment ────────────────────────
+        // Total charged = assessment amount (what the student owes this term).
+        // Total paid    = sum of all confirmed paid transactions for the same
+        //                 assessment so the receipt reflects the running balance,
+        //                 not just this one payment in isolation.
+        $totalAssessment = $assessment
+            ? round((float) $assessment->total_assessment, 2)
+            : round((float) $transaction->amount, 2);
+
+        if ($assessment) {
+            $totalPaid = (float) Transaction::where('user_id', $targetUser->id)
+                ->where('kind', 'payment')
+                ->where('status', PaymentStatus::PAID->value)
+                ->whereJsonContains('meta->assessment_id', (int) $assessment->id)
+                ->sum('amount');
+        } else {
+            // No assessment linked — show just this transaction's amount as paid.
+            $totalPaid = round((float) $transaction->amount, 2);
+        }
+
+        $totalPaid        = round($totalPaid, 2);
+        $remainingBalance = round($totalAssessment - $totalPaid, 2);
+
         $pdf = Pdf::loadView('pdf.receipt', [
-            'transaction'      => $transaction,
+            'assessment'       => $assessment,          // may be null — blade uses ?? guards
+            'transactions'     => collect([$transaction]), // blade loops over this
             'student'          => $targetUser,
-            'balanceBefore'    => $balanceBefore,
+            'academicTerm'     => $academicTerm,
+            'totalAssessment'  => $totalAssessment,
+            'totalPaid'        => $totalPaid,
             'remainingBalance' => $remainingBalance,
         ]);
 
@@ -297,7 +318,6 @@ class TransactionController extends Controller
     public function download(Request $request)
     {
         $authUser = $request->user();
-        // BUG FIX #2: Remove non-existent 'super_admin' role
         $isStaff  = in_array($authUser->role->value, ['admin', 'accounting']);
 
         if ($isStaff && $request->filled('user_id')) {
@@ -313,30 +333,19 @@ class TransactionController extends Controller
 
         $termKey = $request->input('term');
 
-        // ── Parse termKey ─────────────────────────────────────────────────────
-        // termKey format sent by the Vue frontend is built by getTransactionGroupKey():
-        //   formatSchoolYear(txn->year) + ' ' + txn->semester
-        //   e.g. '2026-2027 2nd Sem'  or  '2026-2027 2nd'  (legacy data)
-        //
-        // IMPORTANT: transactions.year stores ONLY the start year ('2026'),
-        // NOT the full school_year format ('2026-2027').  We must extract
-        // just the start year to query the transactions table correctly.
-        // The student_assessments table stores school_year as '2026-2027' — correct.
-        $termStartYear = null; // e.g. '2026'   → for transactions.year
-        $termSchoolYear = null; // e.g. '2026-2027' → for student_assessments.school_year
-        $termSem = null;        // e.g. '2nd Sem' or '2nd' → verbatim from the key
+        $termStartYear  = null;
+        $termSchoolYear = null;
+        $termSem        = null;
 
         if ($termKey && $termKey !== 'All Terms') {
-            $parts = explode(' ', $termKey, 2);
-            $rawYear = $parts[0] ?? null;    // e.g. '2026-2027'
-            $termSem = $parts[1] ?? null;    // e.g. '2nd Sem' or '2nd'
+            $parts   = explode(' ', $termKey, 2);
+            $rawYear = $parts[0] ?? null;
+            $termSem = $parts[1] ?? null;
 
             if ($rawYear) {
-                // The year segment is always school_year format (e.g. '2026-2027').
-                // Extract only the start year for the transactions.year column.
                 $yearParts      = explode('-', $rawYear, 2);
-                $termStartYear  = $yearParts[0];                         // '2026'
-                $termSchoolYear = $rawYear;                              // '2026-2027'
+                $termStartYear  = $yearParts[0];
+                $termSchoolYear = $rawYear;
             }
 
             if ($termStartYear && $termSem) {
@@ -345,8 +354,6 @@ class TransactionController extends Controller
             }
         }
 
-        // Only include confirmed paid payments in the PDF.
-        // kind='charge' rows no longer exist — assessment totals come from StudentAssessment.
         $transactions = $query->get()->filter(
             fn ($txn) => $txn->kind === 'payment' && $txn->status === PaymentStatus::PAID->value
         );
@@ -355,14 +362,10 @@ class TransactionController extends Controller
             abort(403, 'No confirmed payments available for this term. Awaiting-approval payments cannot be downloaded yet.');
         }
 
-        // Derive total assessed from StudentAssessment for the requested term.
         $assessmentQuery = StudentAssessment::where('user_id', $targetUser->id)
             ->where('status', 'active');
 
         if ($termKey && $termKey !== 'All Terms' && $termSchoolYear && $termSem) {
-            // student_assessments.school_year stores '2026-2027' — use directly.
-            // student_assessments.semester stores the same format as transactions.semester
-            // (e.g. '2nd Sem' or '2nd') so $termSem is correct for both tables.
             $assessmentQuery->where('school_year', $termSchoolYear)
                             ->where('semester', $termSem);
         }
@@ -391,16 +394,6 @@ class TransactionController extends Controller
 
     // ─── payNow ───────────────────────────────────────────────────────────────
 
-    /**
-     * Process a payment submission from a student or staff.
-     *
-     * Students' payments require accounting approval:
-     *   1. Transaction created with status = 'awaiting_approval'
-     *   2. WorkflowInstance + WorkflowApproval records are created
-     *   3. Accounting users see the pending approval in /approvals
-     *
-     * Staff (admin/accounting) bypass approval and are marked 'paid' immediately.
-     */
     public function payNow(Request $request)
     {
         $user      = $request->user();
@@ -421,8 +414,6 @@ class TransactionController extends Controller
         try {
             $term = StudentPaymentTerm::findOrFail((int) $data['selected_term_id']);
 
-            // Security: prevent cross-user payment — term must belong to this user
-            // Access user_id through assessment relationship
             $termUserId = $term->assessment?->user_id;
             if (!$termUserId || (int) $termUserId !== (int) $user->id) {
                 throw ValidationException::withMessages(['payment' => 'Invalid payment term selected.']);
@@ -435,14 +426,6 @@ class TransactionController extends Controller
                 throw ValidationException::withMessages(['payment' => 'This payment term has already been fully paid.']);
             }
 
-            // No upper-limit on payment amount — payments that exceed the selected term's balance
-            // are allocated sequentially across all unpaid terms with any excess documented.
-            // This aligns with StudentFeeController pattern for admin/accounting side.
-            //
-            // if ($paidAmount > $termBalance) { ... } ← REMOVED
-            // Overpayment is allowed and handled by StudentPaymentService::processPayment()
-
-            // Prevent duplicate awaiting_approval submissions for the same term
             if ($isStudent) {
                 $alreadyPending = Transaction::where('user_id', $user->id)
                     ->where('status', PaymentStatus::AWAITING_APPROVAL->value)
@@ -458,27 +441,24 @@ class TransactionController extends Controller
             $paymentService   = new StudentPaymentService();
             $requiresApproval = $isStudent;
 
-            // Always derive year and semester from the term's own assessment so
-            // the transaction is grouped under the correct term in history.
             $assessment      = $term->assessment;
             $transactionYear = $assessment
                 ? explode('-', $assessment->school_year)[0]
                 : (string) now()->year;
             $transactionSem  = $assessment?->semester ?? $this->getCurrentSemesterLabel();
 
-            // For students: create pending transaction and redirect to proof upload
             if ($isStudent) {
                 $transaction = Transaction::create([
-                    'user_id'          => $user->id,
-                    'kind'             => 'payment',
-                    'type'             => 'payment_submission',
-                    'amount'           => $paidAmount,
-                    'status'           => PaymentStatus::PENDING->value,
-                    'payment_channel'  => $data['payment_method'],
-                    'paid_at'          => $data['paid_at'],
-                    'year'             => $transactionYear,
-                    'semester'         => $transactionSem,
-                    'meta'             => [
+                    'user_id'         => $user->id,
+                    'kind'            => 'payment',
+                    'type'            => 'payment_submission',
+                    'amount'          => $paidAmount,
+                    'status'          => PaymentStatus::PENDING->value,
+                    'payment_channel' => $data['payment_method'],
+                    'paid_at'         => $data['paid_at'],
+                    'year'            => $transactionYear,
+                    'semester'        => $transactionSem,
+                    'meta'            => [
                         'payment_method'   => $data['payment_method'],
                         'description'      => $data['description'] ?? null,
                         'selected_term_id' => (int) $data['selected_term_id'],
@@ -491,7 +471,6 @@ class TransactionController extends Controller
                     ->with('success', 'Payment submitted. Please upload proof of payment.');
             }
 
-            // For staff: process payment immediately without proof
             $result = $paymentService->processPayment($user, $paidAmount, [
                 'payment_method'   => $data['payment_method'],
                 'paid_at'          => $data['paid_at'],
@@ -502,15 +481,12 @@ class TransactionController extends Controller
                 'semester'         => $transactionSem,
             ], false);
 
-            // Post-processing for immediately-approved payments (staff side)
             event(new PaymentRecorded(
                 $user,
                 $result['transaction_id'] ?? null,
                 (float) $data['amount'],
                 $result['transaction_reference'] ?? 'N/A'
             ));
-            // Year-level promotion is handled automatically by AccountService::recalculate()
-            // which is called inside StudentPaymentService::processPayment().
 
             return back()->with('success', 'Payment recorded successfully!');
 
@@ -537,10 +513,6 @@ class TransactionController extends Controller
 
     // ─── Private helpers ──────────────────────────────────────────────────────
 
-    /**
-     * Find the active payment_approval workflow and start a workflow instance
-     * for the given transaction so accounting users can approve or reject it.
-     */
     private function startPaymentApprovalWorkflow(int $transactionId, int $userId): void
     {
         $workflow = Workflow::active()
@@ -584,7 +556,7 @@ class TransactionController extends Controller
         return "{$schoolYear} " . $this->getCurrentSemesterLabel();
     }
 
-    private function formatSchoolYear(string | int $year): string
+    private function formatSchoolYear(string|int $year): string
     {
         $yearNum = (int) $year;
         return "{$yearNum}-" . ($yearNum + 1);

@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Payment Receipt — {{ $assessment->assessment_number ?? $assessment->id }}</title>
+    <title>Payment Receipt — {{ $assessment?->assessment_number ?? $assessment?->id ?? $transactions->first()?->reference ?? 'Receipt' }}</title>
     <style>
         * { box-sizing: border-box; }
         body {
