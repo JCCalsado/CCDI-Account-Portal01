@@ -8,7 +8,14 @@ use Illuminate\Support\Facades\DB;
 class FeeSettingsSeeder extends Seeder
 {
     /**
-     * Seed the fee_settings table
+     * Seed the fee_settings table.
+     *
+     * Source of truth for all fee rates, misc fees, and payment term percentages.
+     * All billing logic reads from this table — NOT from config/fees.php.
+     * config/fees.php is referenced only by AssessmentService for fallback constants.
+     *
+     * Athletic Fee: ₱900.00  (verified from live DB and Fee Settings UI — AY 2025-2026)
+     * Misc Total:   ₱5,050.00 (sum of all miscellaneous + other categories)
      */
     public function run(): void
     {
@@ -17,32 +24,34 @@ class FeeSettingsSeeder extends Seeder
         $now = now();
 
         $settings = [
-            // ── Rates ────────────────────────────────────────────────────────
-            ['key' => 'tuition_per_unit', 'label' => 'Tuition per Unit', 'amount' => 364.00, 'category' => 'rate'],
-            ['key' => 'lab_fee_per_subject', 'label' => 'Lab Fee per Subject', 'amount' => 1656.00, 'category' => 'rate'],
-            ['key' => 'entrepreneurship_fee', 'label' => 'Entrepreneurship / Lab Activation Fee', 'amount' => 600.00, 'category' => 'rate'],
+            // ── Billing Rates ─────────────────────────────────────────────────
+            ['key' => 'tuition_per_unit',      'label' => 'Tuition per Unit',                       'amount' =>  364.00, 'category' => 'rate'],
+            ['key' => 'lab_fee_per_subject',   'label' => 'Lab Fee per Subject',                    'amount' => 1656.00, 'category' => 'rate'],
+            ['key' => 'entrepreneurship_fee',  'label' => 'Entrepreneurship / Lab Activation Fee',  'amount' =>  600.00, 'category' => 'rate'],
 
-            // ── Miscellaneous ────────────────────────────────────────────────
-            ['key' => 'misc_registration', 'label' => 'Registration Fee', 'amount' => 600.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_lms', 'label' => 'LMS Fee', 'amount' => 450.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_library', 'label' => 'Library Fee', 'amount' => 450.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_athletic', 'label' => 'Athletic Fee', 'amount' => 550.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_prisaa', 'label' => 'PRISAA Fee', 'amount' => 300.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_publication', 'label' => 'Publication Fee', 'amount' => 200.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_av', 'label' => 'Audio-Visual Fee', 'amount' => 250.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_id', 'label' => 'ID Fee', 'amount' => 300.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_biccs', 'label' => 'BICCS/PCCL/League Fee', 'amount' => 150.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_faculty', 'label' => 'Faculty Development', 'amount' => 250.00, 'category' => 'miscellaneous'],
-            ['key' => 'misc_guidance', 'label' => 'Guidance Services', 'amount' => 225.00, 'category' => 'miscellaneous'],
+            // ── Miscellaneous Fees ────────────────────────────────────────────
+            ['key' => 'misc_registration', 'label' => 'Registration Fee',      'amount' => 600.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_lms',          'label' => 'LMS Fee',               'amount' => 450.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_library',      'label' => 'Library Fee',           'amount' => 450.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_athletic',     'label' => 'Athletic Fee',          'amount' => 900.00, 'category' => 'miscellaneous'], // ₱900 — verified AY 2025-2026
+            ['key' => 'misc_prisaa',       'label' => 'PRISAA Fee',            'amount' => 300.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_publication',  'label' => 'Publication Fee',       'amount' => 200.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_av',           'label' => 'Audio-Visual Fee',      'amount' => 250.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_id',           'label' => 'ID Fee',                'amount' => 300.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_biccs',        'label' => 'BICCS/PCCL/League Fee', 'amount' => 150.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_faculty',      'label' => 'Faculty Development',   'amount' => 250.00, 'category' => 'miscellaneous'],
+            ['key' => 'misc_guidance',     'label' => 'Guidance Services',     'amount' => 225.00, 'category' => 'miscellaneous'],
 
-            // ── Other ────────────────────────────────────────────────────────
-            ['key' => 'misc_medical', 'label' => 'Medical Fee', 'amount' => 300.00, 'category' => 'other'],
-            ['key' => 'misc_insurance', 'label' => 'Insurance Fee', 'amount' => 100.00, 'category' => 'other'],
-            ['key' => 'misc_cultural', 'label' => 'Cultural Arts Fee', 'amount' => 175.00, 'category' => 'other'],
-            ['key' => 'misc_maintenance', 'label' => 'Maintenance Fee', 'amount' => 400.00, 'category' => 'other'],
+            // ── Other Fees ────────────────────────────────────────────────────
+            ['key' => 'misc_medical',      'label' => 'Medical Fee',           'amount' => 300.00, 'category' => 'other'],
+            ['key' => 'misc_insurance',    'label' => 'Insurance Fee',         'amount' => 100.00, 'category' => 'other'],
+            ['key' => 'misc_cultural',     'label' => 'Cultural Arts Fee',     'amount' => 175.00, 'category' => 'other'],
+            ['key' => 'misc_maintenance',  'label' => 'Maintenance Fee',       'amount' => 400.00, 'category' => 'other'],
 
-            // ── Payment term percentages ──────────────────────────────────────
-            ['key' => 'term_1_pct', 'label' => 'Upon Registration', 'amount' =>  0.00, 'category' => 'term'],
+            // ── Payment Term Percentages ──────────────────────────────────────
+            // These must sum to 100. term_1_pct (Upon Registration) is 0 — full
+            // balance is distributed across Prelim → Final terms only.
+            ['key' => 'term_1_pct', 'label' => 'Upon Registration', 'amount' =>  0, 'category' => 'term'],
             ['key' => 'term_2_pct', 'label' => 'Prelim',            'amount' => 30, 'category' => 'term'],
             ['key' => 'term_3_pct', 'label' => 'Midterm',           'amount' => 30, 'category' => 'term'],
             ['key' => 'term_4_pct', 'label' => 'Semi-Final',        'amount' => 25, 'category' => 'term'],
@@ -51,7 +60,7 @@ class FeeSettingsSeeder extends Seeder
 
         foreach ($settings as $s) {
             DB::table('fee_settings')->insert(array_merge($s, [
-                'is_active' => true,
+                'is_active'  => true,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]));
@@ -64,6 +73,8 @@ class FeeSettingsSeeder extends Seeder
         $this->command->info('✅ fee_settings seeded.');
         $this->command->info('   Tuition/unit : ₱364.00');
         $this->command->info('   Lab/subject  : ₱1,656.00');
-        $this->command->info("   Misc total   : ₱" . number_format($miscTotal, 2));
+        $this->command->info('   Entrep fee   : ₱600.00');
+        $this->command->info('   Athletic fee : ₱900.00');
+        $this->command->info('   Misc total   : ₱' . number_format($miscTotal, 2));
     }
 }

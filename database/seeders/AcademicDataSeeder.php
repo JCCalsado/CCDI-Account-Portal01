@@ -8,15 +8,16 @@ use Illuminate\Database\Seeder;
  * AcademicDataSeeder — Curriculum, Assessment & Demo Payment Data
  *
  * This seeder must be run AFTER the default DatabaseSeeder (migrate:fresh --seed),
- * because it depends on users and workflow templates already existing.
+ * because it depends on users, workflow templates, and course unit presets existing.
  *
  * Run order is strict — do not reorder:
- *   1. EnhancedSubjectSeeder          — subject master data (curriculum)
- *   2. ComprehensiveAssessmentSeeder  — assessment records per student per term
- *   3. RealisticStudentDataSeeder     — realistic payment simulation
- *   4. WorkflowInstanceSeeder         — demo workflow instances for pending students
- *   5. StudentFirstPaymentSeeder      — first-payment test scenario
- *   6. AdditionalStudentSeeder        — 4 named students with full transaction history
+ *   1. EnhancedSubjectSeeder              — subject master data (curriculum)
+ *   2. CourseUnitPresetSubjectsSeeder     — links subjects to course_unit_presets
+ *   3. ComprehensiveAssessmentSeeder      — assessment records per student per term
+ *   4. RealisticStudentDataSeeder         — realistic payment simulation
+ *   5. WorkflowInstanceSeeder             — demo workflow instances for pending students
+ *   6. StudentFirstPaymentSeeder          — first-payment test scenario
+ *   7. AdditionalStudentSeeder            — 4 named students with full transaction history
  *
  * Usage:
  *   php artisan db:seed --class=AcademicDataSeeder
@@ -32,7 +33,7 @@ class AcademicDataSeeder extends Seeder
     public function run(): void
     {
         $this->command->info('🎓 Starting academic & demo data seeding...');
-        $this->command->info('   (Requires: users, fee settings, and workflow templates to exist)');
+        $this->command->info('   (Requires: users, fee settings, workflow templates, and course presets to exist)');
         $this->command->newLine();
 
         $this->guardAgainstMissingPrerequisites();
@@ -42,38 +43,46 @@ class AcademicDataSeeder extends Seeder
         $this->call(EnhancedSubjectSeeder::class);
         $this->command->newLine();
 
-        // ── Step 2: Student Assessments & Payment Terms ────────────────────────
+        // ── Step 2: Link Subjects to Course Unit Presets ───────────────────────
+        // Must run AFTER EnhancedSubjectSeeder — queries subjects by course/year/semester.
+        // Must run AFTER CourseUnitPresetsSeeder (already done in DatabaseSeeder Step 4).
+        // Populates course_unit_preset_subjects — the "Preset Subjects" page in Fee Settings.
+        $this->command->info('🔗 Step 2: Linking Subjects to Course Unit Presets (CourseUnitPresetSubjectsSeeder)...');
+        $this->call(CourseUnitPresetSubjectsSeeder::class);
+        $this->command->newLine();
+
+        // ── Step 3: Student Assessments & Payment Terms ────────────────────────
         // Generates StudentAssessment + StudentPaymentTerm records for all students.
         // Fee formula is driven by config/fees.php — no hardcoded totals.
-        $this->command->info('📋 Step 2: Creating Student Assessments & Payment Terms...');
+        $this->command->info('📋 Step 3: Creating Student Assessments & Payment Terms...');
         $this->call(ComprehensiveAssessmentSeeder::class);
         $this->command->newLine();
 
-        // ── Step 3: Realistic Student Enrollments & Payments ───────────────────
+        // ── Step 4: Realistic Student Enrollments & Payments ───────────────────
         // Simulates historical payment behaviour across cohorts.
-        // Depends on Step 2 assessments existing.
-        $this->command->info('🎓 Step 3: Seeding Realistic Student Enrollments & Payments...');
+        // Depends on Step 3 assessments existing.
+        $this->command->info('🎓 Step 4: Seeding Realistic Student Enrollments & Payments...');
         $this->call(RealisticStudentDataSeeder::class);
         $this->command->newLine();
 
-        // ── Step 4: Demo Workflow Instances ────────────────────────────────────
+        // ── Step 5: Demo Workflow Instances ────────────────────────────────────
         // Creates sample workflow instances for students with pending enrollment.
         // Gracefully skips if no pending students are found.
-        $this->command->info('🔄 Step 4: Creating Sample Workflow Instances...');
+        $this->command->info('🔄 Step 5: Creating Sample Workflow Instances...');
         $this->call(WorkflowInstanceSeeder::class);
         $this->command->newLine();
 
-        // ── Step 5: First Payment Test Scenario ────────────────────────────────
+        // ── Step 6: First Payment Test Scenario ────────────────────────────────
         // Creates a controlled first-payment scenario for QA testing.
-        // Depends on Step 2 assessments existing.
-        $this->command->info('💳 Step 5: Creating First Payment Test Scenario...');
+        // Depends on Step 3 assessments existing.
+        $this->command->info('💳 Step 6: Creating First Payment Test Scenario...');
         $this->call(StudentFirstPaymentSeeder::class);
         $this->command->newLine();
 
-        // ── Step 6: Named Test Students with Full Transaction Histories ─────────
+        // ── Step 7: Named Test Students with Full Transaction Histories ─────────
         // Adds 4 named students (Maria, Juan, Ana, transaction.history@)
         // each with a complete multi-term payment history for UI/UX testing.
-        $this->command->info('🧪 Step 6: Creating 4 Named Test Students with Transaction Histories...');
+        $this->command->info('🧪 Step 7: Creating 4 Named Test Students with Transaction Histories...');
         $this->call(AdditionalStudentSeeder::class);
         $this->command->newLine();
 
@@ -85,8 +94,8 @@ class AcademicDataSeeder extends Seeder
 
     /**
      * Abort early with a clear error if the base system seeders have not been run.
-     * Running academic seeders without users or workflow templates will cause
-     * foreign-key constraint failures or silent data corruption.
+     * Running academic seeders without users, workflow templates, or presets will
+     * cause FK failures or silent empty-link bugs.
      */
     private function guardAgainstMissingPrerequisites(): void
     {
@@ -108,7 +117,16 @@ class AcademicDataSeeder extends Seeder
             exit(1);
         }
 
-        $this->command->info("   ✓ Prerequisites OK: {$userCount} users, {$workflowCount} workflow templates found.");
+        $presetCount = \DB::table('course_unit_presets')->where('is_active', true)->count();
+
+        if ($presetCount === 0) {
+            $this->command->error('❌ No active course unit presets found.');
+            $this->command->error('   Run the default seeder first (CourseUnitPresetsSeeder is in DatabaseSeeder):');
+            $this->command->error('   php artisan migrate:fresh --seed');
+            exit(1);
+        }
+
+        $this->command->info("   ✓ Prerequisites OK: {$userCount} users, {$workflowCount} workflows, {$presetCount} presets found.");
         $this->command->newLine();
     }
 
@@ -117,16 +135,16 @@ class AcademicDataSeeder extends Seeder
         $this->command->info('📊 ACADEMIC SEEDING SUMMARY');
         $this->command->info('═══════════════════════════════════════════════════════');
 
-        $studentCount = \App\Models\User::where('role', 'student')->count();
-
+        $studentCount      = \App\Models\User::where('role', 'student')->count();
         $activeStudents    = \App\Models\User::where('role', 'student')->where('status', \App\Models\User::STATUS_ACTIVE)->count();
         $droppedStudents   = \App\Models\User::where('role', 'student')->where('status', \App\Models\User::STATUS_DROPPED)->count();
         $graduatedStudents = \App\Models\User::where('role', 'student')->where('status', \App\Models\User::STATUS_GRADUATED)->count();
 
-        $assessmentCount  = \App\Models\StudentAssessment::count();
-        $paymentTermCount = \App\Models\StudentPaymentTerm::count();
-        $transactionCount = \App\Models\Transaction::count();
-
+        $subjectCount          = \DB::table('subjects')->where('is_active', true)->count();
+        $presetSubjectCount    = \DB::table('course_unit_preset_subjects')->count();
+        $assessmentCount       = \App\Models\StudentAssessment::count();
+        $paymentTermCount      = \App\Models\StudentPaymentTerm::count();
+        $transactionCount      = \App\Models\Transaction::count();
         $workflowInstanceCount = \App\Models\WorkflowInstance::count();
         $activeWorkflows       = \App\Models\WorkflowInstance::whereIn('status', ['pending', 'in_progress'])->count();
         $completedWorkflows    = \App\Models\WorkflowInstance::where('status', 'completed')->count();
@@ -135,20 +153,24 @@ class AcademicDataSeeder extends Seeder
         $this->command->table(
             ['Category', 'Count'],
             [
-                ['Total Students',               $studentCount],
-                ['├─ Active',                    $activeStudents],
-                ['├─ Dropped',                   $droppedStudents],
-                ['└─ Graduated',                 $graduatedStudents],
-                ['',                             ''],
-                ['Academic Data',                ''],
-                ['├─ Student Assessments',       $assessmentCount],
-                ['├─ Payment Terms',             $paymentTermCount],
-                ['└─ Transactions',              $transactionCount],
-                ['',                             ''],
-                ['Workflow Instances',           $workflowInstanceCount],
-                ['├─ Active',                    $activeWorkflows],
-                ['├─ Completed',                 $completedWorkflows],
-                ['└─ Pending Approvals',         $pendingApprovals],
+                ['Total Students',              $studentCount],
+                ['├─ Active',                   $activeStudents],
+                ['├─ Dropped',                  $droppedStudents],
+                ['└─ Graduated',                $graduatedStudents],
+                ['',                            ''],
+                ['Curriculum',                  ''],
+                ['├─ Active Subjects',          $subjectCount],
+                ['└─ Preset Subject Links',     $presetSubjectCount],
+                ['',                            ''],
+                ['Academic Data',               ''],
+                ['├─ Student Assessments',      $assessmentCount],
+                ['├─ Payment Terms',            $paymentTermCount],
+                ['└─ Transactions',             $transactionCount],
+                ['',                            ''],
+                ['Workflow Instances',          $workflowInstanceCount],
+                ['├─ Active',                   $activeWorkflows],
+                ['├─ Completed',               $completedWorkflows],
+                ['└─ Pending Approvals',        $pendingApprovals],
             ]
         );
 
@@ -158,11 +180,11 @@ class AcademicDataSeeder extends Seeder
         $this->command->table(
             ['Role', 'Email', 'Password'],
             [
-                ['Student (bulk)',   'student1@ccdi.edu.ph – student100@ccdi.edu.ph', 'password'],
-                ['Test: Maria',      'maria.santos@test.com',                         'password'],
-                ['Test: Juan',       'juan.dela.cruz@test.com',                       'password'],
-                ['Test: Ana',        'ana.garcia@test.com',                           'password'],
-                ['Test: TxHistory',  'transaction.history@ccdi.edu.ph',              'password'],
+                ['Student (bulk)',  'student1@ccdi.edu.ph – student100@ccdi.edu.ph', 'password'],
+                ['Test: Maria',     'maria.santos@test.com',                         'password'],
+                ['Test: Juan',      'juan.dela.cruz@test.com',                       'password'],
+                ['Test: Ana',       'ana.garcia@test.com',                           'password'],
+                ['Test: TxHistory', 'transaction.history@ccdi.edu.ph',              'password'],
             ]
         );
 
