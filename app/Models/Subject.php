@@ -25,7 +25,7 @@ class Subject extends Model
 
     protected $casts = [
         'units'          => 'integer',
-        'lec_units'      => 'integer',
+        'lec_units'      => 'float',    // decimal(4,1) — supports NSTP at 1.5
         'lab_units'      => 'integer',
         'price_per_unit' => 'decimal:2',
         'lab_fee'        => 'decimal:2',
@@ -35,35 +35,32 @@ class Subject extends Model
 
     /**
      * Get total units (LEC + LAB combined).
-     * Used for assessments to calculate total credit hours displayed to the student.
+     *
+     * Returns float because lec_units may be fractional (e.g. NSTP = 1.5).
+     * Callers that need an integer display value should cast at the call site.
      */
-    public function getTotalUnitsAttribute(): int
+    public function getTotalUnitsAttribute(): float
     {
-        return ($this->lec_units ?? 0) + ($this->lab_units ?? 0);
+        return ($this->lec_units ?? 0.0) + ($this->lab_units ?? 0);
     }
 
     /**
      * Get the computed total cost for this subject.
      *
-     * FIX #3: Was using the deprecated `units` column and `price_per_unit` from the
-     * subjects table. Both are unreliable since:
-     *   - `units` is no longer the billing source (replaced by lec_units / lab_units)
-     *   - `price_per_unit` on the subjects row is not kept in sync with config('fees.tuition_per_unit')
+     * Tuition  = lec_units × config('fees.tuition_per_unit')
+     * Lab      = lab_units > 0 ? config('fees.lab_fee_per_subject') : 0  (flat per subject)
+     * Total    = Tuition + Lab
      *
-     * Now matches the billing model used throughout the system:
-     *   - Tuition  = lec_units × config('fees.tuition_per_unit')      (per lecture unit)
-     *   - Lab      = lab_units > 0 ? config('fees.lab_fee_per_subject') : 0  (flat per subject)
-     *   - Total    = Tuition + Lab
-     *
-     * This accessor is not called by buildSubjectMap() (which computes inline),
-     * but is used in seeders, tests, and any future feature that calls $subject->total_cost.
+     * NOTE: For NSTP subjects, AssessmentService overrides lec_units with
+     * NSTP_MINIMUM_UNITS (1.5) at compute time. This accessor uses the stored
+     * DB value directly and is used for display/seeder purposes only.
      */
     public function getTotalCostAttribute(): float
     {
         $rate   = (float) config('fees.tuition_per_unit',    364.00);
         $labFee = (float) config('fees.lab_fee_per_subject', 1656.00);
 
-        $tuition = ($this->lec_units ?? 0) * $rate;
+        $tuition = ($this->lec_units ?? 0.0) * $rate;
         $lab     = ($this->lab_units ?? 0) > 0 ? $labFee : 0.0;
 
         return round($tuition + $lab, 2);
@@ -74,13 +71,11 @@ class Subject extends Model
         return $this->hasMany(StudentEnrollment::class);
     }
 
-    // Scope for active subjects
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
     }
 
-    // Scope for specific term and course
     public function scopeForTerm($query, $yearLevel, $semester, $course)
     {
         return $query->where('year_level', $yearLevel)
