@@ -331,6 +331,9 @@ const tuitionAndLab = computed(() =>
   tuitionFee.value + labFee.value + entrepreneurFee.value,
 )
 
+// ─── Display-only: Lab + Entrepreneurship combined for the Fee Breakdown card ──
+const labFeeTotal = computed(() => labFee.value + entrepreneurFee.value)
+
 // ─── Lecture Units Input ──────────────────────────────────────────────────────
 
 const displayLecUnits = computed({
@@ -1203,34 +1206,51 @@ function semLabel(s: string) {
             <CardContent class="space-y-3 text-sm">
 
               <div class="space-y-2">
+
+                <!-- ── Tuition Fee ── -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
-                    Tuition ({{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
+                    Tuition Fee ({{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
                   </span>
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
                 </div>
-                <div v-if="hasNstp" class="flex justify-between text-xs text-amber-600 pl-2">
-                  <span>incl. 1.5 NSTP units</span>
-                  <span>{{ formatCurrency(nstpTuition) }}</span>
+
+                <!-- ── Scholarship discount — clean warning pill ── -->
+                <div
+                  v-if="discountSaving > 0"
+                  class="ml-2 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="mt-px h-3.5 w-3.5 shrink-0 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span class="text-emerald-700 leading-snug">
+                    <span class="font-semibold">{{ pct }}% scholarship discount applied</span>
+                    <span class="mx-1 text-emerald-400">—</span>
+                    <span class="font-bold text-emerald-800">−{{ formatCurrency(discountSaving) }} saved</span>
+                    <span v-if="pct === 100" class="ml-1 font-medium text-amber-600">
+                      · NSTP billed separately at full price
+                    </span>
+                  </span>
                 </div>
-                <div v-if="discountSaving > 0" class="flex justify-between text-xs text-green-600 pl-2">
-                  <span>− {{ pct }}% discount saved</span>
-                  <span>− {{ formatCurrency(discountSaving) }}</span>
-                </div>
+
+                <!-- ── Lab. Fee (includes Entrepreneurship Fee) ── -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
-                    Lab Fee ({{ form.lab_units }} subj × {{ formatCurrency(feeRates.lab_fee_per_subject) }})
+                    Lab. Fee ({{ form.lab_units }} subj × {{ formatCurrency(feeRates.lab_fee_per_subject) }})
                   </span>
-                  <span class="font-medium">{{ formatCurrency(labFee) }}</span>
+                  <span class="font-medium">{{ formatCurrency(labFeeTotal) }}</span>
                 </div>
-                <div v-if="entrepreneurFee > 0" class="flex justify-between">
-                  <span class="text-muted-foreground">Entrepreneurship Fee</span>
-                  <span class="font-medium">{{ formatCurrency(entrepreneurFee) }}</span>
+                <div v-if="entrepreneurFee > 0" class="flex justify-between text-xs text-amber-600 pl-2">
+                  <span>incl. Entrepreneurship Fee</span>
+                  <span>{{ formatCurrency(entrepreneurFee) }}</span>
                 </div>
+
+                <!-- ── Misc. Fee ── -->
                 <div class="flex justify-between">
-                  <span class="text-muted-foreground">Miscellaneous (fixed)</span>
+                  <span class="text-muted-foreground">Misc. Fee (fixed)</span>
                   <span class="font-medium">{{ formatCurrency(miscFee) }}</span>
                 </div>
+
               </div>
 
               <div class="border-t pt-2 flex justify-between font-bold text-base">
