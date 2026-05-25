@@ -100,9 +100,14 @@ class SubjectController extends Controller
     public function update(Request $request, Subject $subject)
     {
         $validated = $request->validate([
-            'lec_units' => ['required', 'integer', 'min:0', 'max:10'],
+            // 'numeric' instead of 'integer' — NSTP subjects carry 1.5 lec_units per CHED curriculum.
+            // The decimal(4,1) column and float model cast support fractional values.
+            'lec_units' => ['required', 'numeric', 'min:0', 'max:10'],
             'lab_units' => ['required', 'integer', 'min:0', 'max:5'],
         ]);
+
+        $validated['lec_units'] = (float) $validated['lec_units'];
+        $validated['lab_units'] = (int)   $validated['lab_units'];
 
         $subject->update($validated);
 
@@ -119,9 +124,13 @@ class SubjectController extends Controller
     public function inlineUpdate(Request $request, Subject $subject): \Illuminate\Http\JsonResponse
     {
         $validated = $request->validate([
-            'lec_units' => ['required', 'integer', 'min:0', 'max:10'],
+            // 'numeric' instead of 'integer' — supports NSTP at 1.5 lec_units.
+            'lec_units' => ['required', 'numeric', 'min:0', 'max:10'],
             'lab_units' => ['required', 'integer', 'min:0', 'max:5'],
         ]);
+
+        $validated['lec_units'] = (float) $validated['lec_units'];
+        $validated['lab_units'] = (int)   $validated['lab_units'];
 
         $subject->update($validated);
 

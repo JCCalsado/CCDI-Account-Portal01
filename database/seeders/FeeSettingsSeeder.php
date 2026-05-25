@@ -20,6 +20,7 @@ class FeeSettingsSeeder extends Seeder
             // ── Rates ────────────────────────────────────────────────────────
             ['key' => 'tuition_per_unit', 'label' => 'Tuition per Unit', 'amount' => 364.00, 'category' => 'rate'],
             ['key' => 'lab_fee_per_subject', 'label' => 'Lab Fee per Subject', 'amount' => 1656.00, 'category' => 'rate'],
+            ['key' => 'entrepreneurship_fee', 'label' => 'Entrepreneurship / Lab Activation Fee', 'amount' => 600.00, 'category' => 'rate'],
 
             // ── Miscellaneous ────────────────────────────────────────────────
             ['key' => 'misc_registration', 'label' => 'Registration Fee', 'amount' => 600.00, 'category' => 'miscellaneous'],

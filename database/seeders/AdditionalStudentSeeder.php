@@ -518,20 +518,24 @@ class AdditionalStudentSeeder extends Seeder
         }
 
         $user = User::create([
-            'first_name'        => $firstName,
-            'last_name'         => $lastName,
-            'middle_initial'    => null,
-            'email'             => $email,
-            'password'          => bcrypt('password'),
-            'email_verified_at' => now(),
-            'role'              => UserRoleEnum::STUDENT->value,
-            'account_id'        => $accountId,
-            'year_level'        => $yearLevel,
-            'course'            => $course,
-            'status'            => User::STATUS_ACTIVE,
-            'address'           => 'Naga City, Camarines Sur',
-            'phone'             => '09' . rand(100000000, 999999999),
-            'birthday'          => '2003-01-01',
+            'first_name'               => $firstName,
+            'last_name'                => $lastName,
+            'middle_initial'           => null,
+            'email'                    => $email,
+            'password'                 => bcrypt('password'),
+            'email_verified_at'        => now(),
+            'role'                     => UserRoleEnum::STUDENT->value,
+            'account_id'               => $accountId,
+            'year_level'               => $yearLevel,
+            'course'                   => $course,
+            'status'                   => User::STATUS_ACTIVE,
+            'address_house_lot_unit'   => null,
+            'address_street_name'      => null,
+            'address_barangay'         => 'Barangay 1',
+            'address_municipality_city'=> 'Naga City',
+            'address_province'         => 'Camarines Sur',
+            'phone'                    => '09' . rand(100000000, 999999999),
+            'birthday'                 => '2003-01-01',
         ]);
 
         Account::firstOrCreate(

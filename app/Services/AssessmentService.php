@@ -166,7 +166,7 @@ class AssessmentService
         foreach ($subjects as $subj) {
             $isNstp    = self::isNstpSubject($subj->code, $subj->name);
             $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
-            $lecUnits  = (int) ($subj->lec_units ?? 0);
+            $lecUnits  = (float) ($subj->lec_units ?? 0.0);
             $labUnits  = (int) ($subj->lab_units ?? 0);
 
             if ($isNstp) {
@@ -237,7 +237,7 @@ class AssessmentService
      *
      * @param  bool   $isNstp
      * @param  bool   $isPathfit
-     * @param  int    $lecUnits   Stored lec_units from subjects table
+     * @param  float  $lecUnits   Stored lec_units from subjects table (1.5 for NSTP, integer for others)
      * @param  int    $labUnits   Stored lab_units from subjects table
      * @param  array  $rates      Output of loadRates()
      * @return array{tuition_fee: float, lab_fee: float, total_fee: float}
@@ -245,7 +245,7 @@ class AssessmentService
     public static function computeSubjectFees(
         bool  $isNstp,
         bool  $isPathfit,
-        int   $lecUnits,
+        float $lecUnits,
         int   $labUnits,
         array $rates
     ): array {
@@ -320,7 +320,7 @@ class AssessmentService
         foreach ($subjects as $subj) {
             $isNstp    = self::isNstpSubject($subj->code, $subj->name);
             $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
-            $lecUnits  = (int) ($subj->lec_units ?? 0);
+            $lecUnits  = (float) ($subj->lec_units ?? 0.0);
             $labUnits  = (int) ($subj->lab_units ?? 0);
             $isBillable = ! $isNstp && ! $isPathfit;
 
