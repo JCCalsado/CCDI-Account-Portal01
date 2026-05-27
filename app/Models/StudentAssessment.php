@@ -18,7 +18,11 @@ class StudentAssessment extends Model
         'school_year',
         'lec_units',
         'lab_units',
-        'lab_subjects',
+        // ✅ FIX #4: 'lab_subjects' removed — column was dropped by migration
+        //    2026_04_11_155638_remove_lab_subjects. Leave it in $fillable and
+        //    MySQL strict mode will error; leave it in $casts and you get a
+        //    phantom integer attribute that shadows the $lab_units fallback.
+        //    The correct read path is: $a->lab_subjects ?? $a->lab_units.
         'discount_type',
         'discount_percentage',
         'discount_name',
@@ -26,6 +30,11 @@ class StudentAssessment extends Model
         'tuition_fee',
         'lab_fee',
         'misc_fee',
+        // ✅ FIX #1: 'nstp_tuition' added — column exists in DB since migration
+        //    2026_05_04_160528 but was silently dropped by mass-assignment
+        //    protection on every create() and update() call. Every assessment
+        //    with NSTP was recording nstp_tuition = 0.00 (the column DEFAULT).
+        'nstp_tuition',
         'total_assessment',
         'status',
         'nstp_lec_units',
@@ -36,8 +45,9 @@ class StudentAssessment extends Model
     protected $casts = [
         'lec_units'            => 'decimal:1',
         'nstp_lec_units'       => 'decimal:1',
+        'nstp_tuition'         => 'decimal:2',
         'lab_units'            => 'integer',
-        'lab_subjects'         => 'integer',
+        // ✅ FIX #4: 'lab_subjects' cast removed — column does not exist.
         'discount_percentage'  => 'decimal:2',
         'discount_type'        => 'string',
         'discount_name'        => 'string',

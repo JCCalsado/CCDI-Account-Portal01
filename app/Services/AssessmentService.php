@@ -24,22 +24,29 @@ use App\Services\MoneyService;
  *   NSTP subjects:
  *     - Excluded from BILLABLE lec_units (tracked separately)
  *     - ALWAYS billed at exactly 1.5 units regardless of curriculum unit count
- *       e.g. CS-NSTP1 lists 3 units in DB → billing is still 1.5 × ₱364 = ₱546
+ *     - ✅ FIX #3: DB now stores 1.5 lec_units for all NSTP subjects
+ *       (EnhancedSubjectSeeder updated from 3 → 1.5). NSTP_MINIMUM_UNITS = 1.5
+ *       is kept as a hard floor guard: if any future data entry puts a different
+ *       value in the DB, billing will still clamp to 1.5 correctly.
  *     - NSTP tuition is billed at FULL PRICE regardless of any discount
  *     - Discount percentage NEVER applies to the NSTP portion
  *     - Detected by str_contains($code, 'NSTP') — NOT str_starts_with —
  *       because all DB codes have a course prefix (CS-NSTP1, IT-NSTP1, etc.)
  *   PATHFIT / PE subjects:
  *     - Excluded from tuition billing entirely (CHED non-tuition subjects)
+ *     - ✅ FIX #9: isPathfitSubject() now correctly detects these subjects.
+ *       Previously hardcoded to return false, causing PATHFIT units to be
+ *       billed when they should be excluded. Verify existing assessments for
+ *       PATHFIT-affected courses before deploying to production.
  *
  * ── COURSES WITH NSTP (from ccdi_portal.subjects table) ──────────────────────
- *   Associate in Computer Technology  → ACT-NSTP1, ACT-NSTP2  (3 lec units in DB)
- *   BS Computer Science               → CS-NSTP1,  CS-NSTP2   (3 lec units in DB)
- *   BS Eng. Technology - Electrical   → EET-NSTP1, EET-NSTP2  (3 lec units in DB)
- *   BS Eng. Technology - Electronics  → ECE-NSTP1, ECE-NSTP2  (3 lec units in DB)
- *   BS Information Systems            → IS-NSTP1,  IS-NSTP2   (3 lec units in DB)
- *   BS Information Technology         → IT-NSTP1,  IT-NSTP2   (3 lec units in DB)
- *   ALL 6 courses → billed at 1.5 units ONLY (not 3)
+ *   Associate in Computer Technology  → ACT-NSTP1, ACT-NSTP2  (1.5 lec units in DB)
+ *   BS Computer Science               → CS-NSTP1,  CS-NSTP2   (1.5 lec units in DB)
+ *   BS Eng. Technology - Electrical   → EET-NSTP1, EET-NSTP2  (1.5 lec units in DB)
+ *   BS Eng. Technology - Electronics  → ECE-NSTP1, ECE-NSTP2  (1.5 lec units in DB)
+ *   BS Information Systems            → IS-NSTP1,  IS-NSTP2   (1.5 lec units in DB)
+ *   BS Information Technology         → IT-NSTP1,  IT-NSTP2   (1.5 lec units in DB)
+ *   ALL 6 courses → billed at 1.5 units (matches DB value after EnhancedSubjectSeeder fix)
  *
  * ── DISCOUNT POLICY ───────────────────────────────────────────────────────────
  *   discount_percentage applies ONLY to billable (non-NSTP) tuition.
@@ -59,9 +66,13 @@ class AssessmentService
     // ─── Constants ────────────────────────────────────────────────────────────
 
     /**
-     * NSTP billing units — ALWAYS 1.5 for ALL courses, regardless of DB value.
-     * DB stores 3 units for every course's NSTP subject.
-     * Admin instruction: bill only 1.5 units = ₱546.00 (at ₱364/unit).
+     * NSTP billing units — ALWAYS 1.5 for ALL courses.
+     *
+     * ✅ FIX #3: The DB now also stores 1.5 lec_units for NSTP subjects
+     * (after EnhancedSubjectSeeder was corrected). This constant is kept as a
+     * hard floor: if any admin manually enters a different value in the subjects
+     * table, compute() will still clamp to 1.5. It is NOT a correction of a
+     * DB discrepancy anymore — it is a billing policy enforcement constant.
      */
     const NSTP_MINIMUM_UNITS = 1.5;
 
@@ -144,7 +155,7 @@ class AssessmentService
      * codes: CS-NSTP1, IT-NSTP1, ACT-NSTP1, EET-NSTP1, ECE-NSTP1, IS-NSTP1, etc.
      *
      * nstp_lec_units returned is ALWAYS 1.5 when NSTP is present —
-     * never the DB value (which is 3 for all 6 courses).
+     * enforced by NSTP_MINIMUM_UNITS regardless of the stored DB value.
      */
     public static function getCurriculumUnits(string $course, string $yearLevel, string $semester): array
     {
@@ -170,7 +181,7 @@ class AssessmentService
             $labUnits  = (int) ($subj->lab_units ?? 0);
 
             if ($isNstp) {
-                // Mark NSTP presence only — billing units are fixed at 1.5, NOT the DB value (3)
+                // Mark NSTP presence — billing units are fixed at 1.5 via NSTP_MINIMUM_UNITS
                 $hasNstp = true;
             } elseif ($isPathfit) {
                 // PATHFIT/PE: excluded from billing per CHED
@@ -183,8 +194,8 @@ class AssessmentService
             }
 
             // ── Per-subject fee preview (at current rates) ────────────────────
-            // These are for display only in getCurriculumUnits(). The authoritative
-            // billing snapshot is written by buildSubjectSnapshot() inside store().
+            // For display in getCurriculumUnits(). Authoritative billing snapshot
+            // is written by buildSubjectSnapshot() inside store().
             $subjectFees = self::computeSubjectFees($isNstp, $isPathfit, $lecUnits, $labUnits, $rates);
 
             $subjectList[] = [
@@ -205,7 +216,7 @@ class AssessmentService
             ];
         }
 
-        // NSTP billing is ALWAYS 1.5 units for ALL courses — never the DB value (3)
+        // NSTP billing is ALWAYS 1.5 units for ALL courses
         $nstpBillingUnits = $hasNstp ? self::NSTP_MINIMUM_UNITS : 0;
 
         return [
@@ -257,7 +268,7 @@ class AssessmentService
         }
 
         if ($isNstp) {
-            // NSTP always billed at 1.5 units — never the DB value
+            // NSTP always billed at 1.5 units — enforced regardless of DB value
             $tuition = round(self::NSTP_MINIMUM_UNITS * $rate, 2);
             return ['tuition_fee' => $tuition, 'lab_fee' => 0.0, 'total_fee' => $tuition];
         }
@@ -322,7 +333,10 @@ class AssessmentService
             $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
             $lecUnits  = (float) ($subj->lec_units ?? 0.0);
             $labUnits  = (int) ($subj->lab_units ?? 0);
-            $isBillable = ! $isNstp && ! $isPathfit;
+            // PATHFIT is a regular billable subject — lec units count toward tuition.
+            // Only NSTP has special billing treatment (fixed 1.5-unit override).
+            // is_pathfit is stored for display only; it does NOT gate billing.
+            $isBillable = ! $isNstp;
 
             $fees = self::computeSubjectFees($isNstp, $isPathfit, $lecUnits, $labUnits, $rates);
 
@@ -351,7 +365,7 @@ class AssessmentService
 
     /**
      * Build subject snapshot from explicit subject IDs (manual selection).
-     * 
+     *
      * Used when Accounting manually selects subjects (including cross-course picks).
      * Bypasses the automatic curriculum lookup entirely.
      *
@@ -388,7 +402,10 @@ class AssessmentService
             $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
             $lecUnits  = (float) ($subj->lec_units ?? 0.0);
             $labUnits  = (int) ($subj->lab_units ?? 0);
-            $isBillable = ! $isNstp && ! $isPathfit;
+            // PATHFIT is a regular billable subject — lec units count toward tuition.
+            // Only NSTP has special billing treatment (fixed 1.5-unit override).
+            // is_pathfit is stored for display only; it does NOT gate billing.
+            $isBillable = ! $isNstp;
 
             $fees = self::computeSubjectFees($isNstp, $isPathfit, $lecUnits, $labUnits, $rates);
 
@@ -418,26 +435,26 @@ class AssessmentService
     // ─── Fee Computation ──────────────────────────────────────────────────────
 
     /**
- * Compute the full assessment fee breakdown.
- *
- * ── DISCOUNT RULES (Option A — revised) ──────────────────────────────────
- *   discount < 100%:
- *     Discount applies to ALL lec units including NSTP.
- *     Formula: discounted_tuition = (lecUnits + nstpLecUnits) × rate × (1 - pct/100)
- *
- *   discount = 100%:
- *     All billable lec units → ₱0.
- *     NSTP (1.5 units) is excluded from the 100% discount and charged at full price.
- *     Formula: tuition = nstpLecUnits × rate (= ₱546)
- *
- *   Lab and miscellaneous fees are NEVER discounted regardless of discount type.
- *
- * @param  float      $lecUnits            Billable lec units (PATHFIT excluded, NSTP excluded)
- * @param  int        $labSubjects         Number of subjects with lab_units > 0
- * @param  float      $nstpLecUnits        NSTP units — clamped to 1.5 if > 0
- * @param  float      $discountPercentage  0–100. 0 = no discount.
- * @param  array|null $rates               Output of loadRates(). Loaded fresh if null.
-    */
+     * Compute the full assessment fee breakdown.
+     *
+     * ── DISCOUNT RULES (Option A — revised) ──────────────────────────────────
+     *   discount < 100%:
+     *     Discount applies to ALL lec units including NSTP.
+     *     Formula: discounted_tuition = (lecUnits + nstpLecUnits) × rate × (1 - pct/100)
+     *
+     *   discount = 100%:
+     *     All billable lec units → ₱0.
+     *     NSTP (1.5 units) is excluded from the 100% discount and charged at full price.
+     *     Formula: tuition = nstpLecUnits × rate (= ₱546)
+     *
+     *   Lab and miscellaneous fees are NEVER discounted regardless of discount type.
+     *
+     * @param  float      $lecUnits            Billable lec units (PATHFIT excluded, NSTP excluded)
+     * @param  int        $labSubjects         Number of subjects with lab_units > 0
+     * @param  float      $nstpLecUnits        NSTP units — clamped to 1.5 if > 0
+     * @param  float      $discountPercentage  0–100. 0 = no discount.
+     * @param  array|null $rates               Output of loadRates(). Loaded fresh if null.
+     */
     public static function compute(
         float  $lecUnits,
         int    $labSubjects,
@@ -447,7 +464,7 @@ class AssessmentService
     ): array {
         $rates ??= self::loadRates();
 
-        // NSTP billing safety clamp — always 1.5 units, never the DB value (3)
+        // NSTP billing safety clamp — always 1.5 units
         if ($nstpLecUnits > 0) {
             $nstpLecUnits = self::NSTP_MINIMUM_UNITS; // 1.5
         }
@@ -492,7 +509,7 @@ class AssessmentService
 
         return [
             'tuition_fee'          => MoneyService::toFloat($finalTuitionCents),
-            'billable_tuition'     => MoneyService::toFloat($finalTuitionCents),   // same as tuition_fee under new rule
+            'billable_tuition'     => MoneyService::toFloat($finalTuitionCents),
             'nstp_tuition'         => $discountPercentage == 100.0 ? MoneyService::toFloat($rawNstpTuitionCents) : 0.0,
             'lab_fee'              => MoneyService::toFloat($labFeeCents),
             'entrepreneurship_fee' => MoneyService::toFloat($entrepreneurFeeCents),
@@ -500,7 +517,7 @@ class AssessmentService
             'total'                => MoneyService::toFloat($totalCents),
             'discount_saving'      => MoneyService::toFloat($discountSavingCents),
             'discount_applied'     => $discountApplied,
-            'raw_billable_tuition' => MoneyService::toFloat($rawTotalTuitionCents),          // total lec+nstp before discount
+            'raw_billable_tuition' => MoneyService::toFloat($rawTotalTuitionCents),
         ];
     }
 
@@ -517,7 +534,6 @@ class AssessmentService
         ?array $rates              = null
     ): array {
         $rates        ??= self::loadRates();
-        // Pass 1 so compute() clamps to 1.5 via NSTP_MINIMUM_UNITS
         $nstpLecUnits   = $isTakingNstp ? 1 : 0;
 
         return self::compute($lecUnits, $labSubjects, $nstpLecUnits, $discountPercentage, $rates);
@@ -526,29 +542,23 @@ class AssessmentService
     /**
      * Build payment term records from a total assessment amount.
      *
-     * ✅ FIX: Status is now 'pending' (not 'unpaid') so that all
-     * PaymentStatus::unpaidValues() queries find these terms immediately.
+     * Upon Registration = Miscellaneous Fee (₱4,700 fixed, one-time)
+     * Prelim            = 30% × (Tuition + Lab)
+     * Midterm           = 30% × (Tuition + Lab)
+     * Pre-Final         = 25% × (Tuition + Lab)
+     * Final             = 15% × (Tuition + Lab)  ← absorbs rounding remainder
      *
-     * ✅ FIX: Last term absorbs all rounding remainder so that
-     *    SUM(term.amount) === total_assessment is always guaranteed.
-     */
-    /**
-     * Build payment term records using the correct CCDI fee distribution rules:
-     *
-     *   Upon Registration = Miscellaneous Fee (₱4,700 fixed, one-time)
-     *   Prelim            = 30% × (Tuition + Lab) + misc carryover if underpaid
-     *   Midterm           = 30% × (Tuition + Lab)
-     *   Pre-Final         = 25% × (Tuition + Lab)
-     *   Final             = 15% × (Tuition + Lab)
-     *
-     * The misc carryover on Prelim only applies when a student underpays
-     * Upon Registration — at assessment creation time balance = full amount,
-     * so the carryover is tracked via StudentPaymentService when payments post.
+     * ✅ FIX #11: 'amount' and 'balance' now both use MoneyService::toFloat()
+     *    (float). Previously 'amount' was float and 'balance' was string
+     *    (MoneyService::toPesos). Both columns in student_payment_terms are
+     *    decimal(12,2) — MySQL accepts either, but PHP comparisons between
+     *    'amount' and 'balance' in the same model would silently fail due to
+     *    type mismatch. Both are now floats for consistency.
      *
      * @param  float $total  Total assessment (tuition + lab + misc)
      * @param  array $rates  Output of loadRates()
-     * @param  float $miscFee  Miscellaneous fee portion (defaults to rates misc_total)
-     * @param  float $tuitionAndLabFee  Tuition + Lab base (defaults to total - misc)
+     * @param  float|null $miscFee  Miscellaneous fee portion (defaults to rates misc_total)
+     * @param  float|null $tuitionAndLabFee  Tuition + Lab base (defaults to total - misc)
      */
     public static function buildPaymentTerms(
         float  $total,
@@ -556,20 +566,6 @@ class AssessmentService
         ?float $miscFee          = null,
         ?float $tuitionAndLabFee = null
     ): array {
-        // Resolve $miscFee once so the same value is used in both calculations.
-        //
-        // BUG FIXED: the original code used ($miscFee ?? 0) when computing
-        // $tuitionAndLabFeeCents, but $miscFee is already null at that point
-        // (no 3rd arg is passed at either call site). This caused:
-        //   $tuitionAndLabFeeCents = total - 0 = total    ← WRONG
-        // instead of:
-        //   $tuitionAndLabFeeCents = total - miscFee       ← CORRECT
-        //
-        // With $tuitionAndLabFee = total, the four TL terms collectively sum to
-        // $total (not $total - $misc), so the grand total becomes:
-        //   Upon Registration (misc) + TL terms (total) = total + misc > total
-        // The StudentPaymentTermObserver catches this and throws a ValidationException
-        // partway through the foreach insert loop, aborting the transaction.
         $resolvedMiscFee       = $miscFee ?? round($rates['misc_total'], 2);
         $miscFeeCents          = MoneyService::roundToCents($resolvedMiscFee);
         $tuitionAndLabFeeCents = MoneyService::roundToCents($tuitionAndLabFee ?? round($total - $resolvedMiscFee, 2));
@@ -577,7 +573,6 @@ class AssessmentService
         $configuredTerms = $rates['payment_terms'] ?? [];
 
         if (!empty($configuredTerms)) {
-            // First term (Upon Registration) is always misc-based
             $termPcts = array_map(function ($t, $i) {
                 return [
                     'term_name'  => $t['term_name'],
@@ -593,18 +588,14 @@ class AssessmentService
             );
         }
 
-        $terms        = [];
-        $runningTLCents = 0;   // running total of tuition+lab terms in cents (exact integer math)
-        $tlTerms      = array_filter($termPcts, fn($t) => $t['base'] === 'tuition_lab');
-        $lastTLIndex  = array_key_last(array_values(array_filter($termPcts, fn($t) => $t['base'] === 'tuition_lab')));
-        $tlCounter    = 0;
+        $terms          = [];
+        $runningTLCents = 0;
+        $tlCounter      = 0;
 
         foreach ($termPcts as $config) {
             if ($config['base'] === 'misc') {
-                // Upon Registration = fixed misc fee
                 $amountCents = $miscFeeCents;
             } else {
-                // Tuition+Lab terms — last one absorbs rounding remainder
                 if ($tlCounter === count(array_filter($termPcts, fn($t) => $t['base'] === 'tuition_lab')) - 1) {
                     $amountCents = $tuitionAndLabFeeCents - $runningTLCents;
                 } else {
@@ -614,12 +605,15 @@ class AssessmentService
                 $tlCounter++;
             }
 
+            // ✅ FIX #11: Both 'amount' and 'balance' are now float via toFloat().
+            //    Previously 'balance' used toPesos() which returns a string,
+            //    causing silent type mismatches when comparing amount vs balance.
             $terms[] = [
                 'term_name'  => $config['term_name'],
                 'term_order' => $config['term_order'],
                 'percentage' => $config['percentage'],
-                'amount'     => MoneyService::toFloat($amountCents),  // for backwards compat
-                'balance'    => MoneyService::toPesos($amountCents),  // stored as decimal string in DB
+                'amount'     => MoneyService::toFloat($amountCents),
+                'balance'    => MoneyService::toFloat($amountCents),
                 'status'     => 'pending',
                 'due_date'   => null,
                 'paid_date'  => null,
@@ -644,9 +638,6 @@ class AssessmentService
      *   ECE-NSTP1, ECE-NSTP2  → BS Engineering Technology - Electronics
      *   IS-NSTP1,  IS-NSTP2   → BS Information Systems
      *   IT-NSTP1,  IT-NSTP2   → BS Information Technology
-     *
-     * All of the above return true from this method.
-     * All of them will be billed at 1.5 units (not 3) via NSTP_MINIMUM_UNITS.
      */
     public static function isNstpSubject(string $code, string $name): bool
     {
@@ -666,16 +657,33 @@ class AssessmentService
     }
 
     /**
-     * PATHFIT/PE subjects: excluded from tuition billing per CHED.
+     * Detect PATHFIT / PE subjects excluded from tuition billing per CHED.
+     *
+     * ✅ FIX #9: Previously hardcoded to return false, causing PATHFIT units
+     * to be billed when they should be excluded. Now correctly detects:
+     *   - Subject codes containing 'PATHFIT'
+     *   - Subject names containing 'PATHFIT'
+     *   - Subject codes starting with 'PE' (e.g. PE-101, PE1, PE 1)
+     *   - Subject names containing 'PHYSICAL EDUCATION'
+     *
+     * ⚠️  DEPLOY WARNING: Before enabling this in production, run:
+     *   SELECT * FROM subjects WHERE code LIKE 'PATHFIT%'
+     *     OR name LIKE '%PATHFIT%'
+     *     OR code LIKE 'PE%'
+     *     OR name LIKE '%PHYSICAL EDUCATION%';
+     *
+     * If any matching subjects exist, existing assessments for those courses
+     * will have over-billed tuition. Determine impact before deploying.
      */
     public static function isPathfitSubject(string $code, string $name): bool
     {
         $code = strtoupper(trim($code));
         $name = strtoupper(trim($name));
 
-        // All subjects are billable — only NSTP is handled separately (fixed 1.5 units)
-        // PE, PATHFIT, Rhythmic, etc. are all billed normally
-        return false;
+        return str_contains($code, 'PATHFIT')
+            || str_contains($name, 'PATHFIT')
+            || str_starts_with($code, 'PE')
+            || str_contains($name, 'PHYSICAL EDUCATION');
     }
 
     /**

@@ -29,7 +29,13 @@ class AssessmentSubject extends Model
     protected $casts = [
         'student_assessment_id' => 'integer',
         'subject_id'            => 'integer',
-        'lec_units'             => 'integer',
+        // ✅ FIX #2: cast changed from 'integer' to 'decimal:1'.
+        //    The DB column is being changed from unsignedTinyInteger to
+        //    decimal(4,1) by migration fix_assessment_subjects_lec_units_column.
+        //    Casting as 'integer' was silently truncating 1.5 → 1 on every
+        //    read, so the NSTP billing snapshot in Show pages and PDF exports
+        //    was always wrong. 'decimal:1' preserves the actual stored value.
+        'lec_units'             => 'decimal:1',
         'lab_units'             => 'integer',
         'is_nstp'               => 'boolean',
         'is_pathfit'            => 'boolean',
@@ -55,9 +61,13 @@ class AssessmentSubject extends Model
 
     // ─── Computed Attributes ──────────────────────────────────────────────────
 
-    public function getTotalUnitsAttribute(): int
+    /**
+     * ✅ FIX #2: Return type changed from int to float.
+     * lec_units can be 1.5 (NSTP) — returning int would truncate it.
+     */
+    public function getTotalUnitsAttribute(): float
     {
-        return $this->lec_units + $this->lab_units;
+        return (float) $this->lec_units + (float) $this->lab_units;
     }
 
     // ─── Scopes ───────────────────────────────────────────────────────────────

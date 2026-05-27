@@ -225,18 +225,17 @@ async function searchStudents() {
       const data = await res.json()
       searchResults.value = data.students ?? []
     } catch { searchResults.value = [] }
-    finally   { searchLoading.value = false }
+    finally  { searchLoading.value = false }
   }, 300)
 }
 
 function selectStudent(student: PreselectedStudent) {
-  selectedStudent.value          = student
-  paidSemesters.value            = student.paid_semesters ?? []
-  searchResults.value            = []
-  studentSearch.value            = ''
-  selectedSubjects.value         = []
-  curriculumMessage.value        = ''
-  hasNstpPresetFallback.value    = false   // ← reset preset-NSTP fallback
+  selectedStudent.value   = student
+  paidSemesters.value     = student.paid_semesters ?? []
+  searchResults.value     = []
+  studentSearch.value     = ''
+  selectedSubjects.value  = []
+  curriculumMessage.value = ''
 
   const next              = computeNextSemesterAndYear(paidSemesters.value, student.year_level)
   form.user_id            = student.id
@@ -247,19 +246,21 @@ function selectStudent(student: PreselectedStudent) {
 }
 
 function clearStudent() {
-  selectedStudent.value          = null
-  paidSemesters.value            = []
-  computedYearLevel.value        = ''
-  form.user_id                   = 0
-  form.year_level                = ''
-  form.lec_units                 = 0
-  form.lab_units                 = 0
-  selectedSubjects.value         = []
-  curriculumMessage.value        = ''
-  hasNstpPresetFallback.value    = false   // ← reset preset-NSTP fallback
+  selectedStudent.value   = null
+  paidSemesters.value     = []
+  computedYearLevel.value = ''
+  form.user_id            = 0
+  form.year_level         = ''
+  form.lec_units          = 0
+  form.lab_units          = 0
+  selectedSubjects.value  = []
+  curriculumMessage.value = ''
 }
 
-// ─── Subject State (manual management) ───────────────────────────────────────
+// ─── Subject State ────────────────────────────────────────────────────────────
+// selectedSubjects is the single source of truth for everything:
+// which subjects are enrolled, whether NSTP is present, billing unit counts.
+// There is no separate NSTP toggle — NSTP presence is purely derived from this list.
 
 const selectedSubjects  = ref<SubjectRow[]>([])
 
@@ -284,7 +285,7 @@ async function searchSubjects() {
       const existingIds = new Set(selectedSubjects.value.map(s => s.id))
       subjectSearchResults.value = (data.subjects ?? []).filter((s: SubjectRow) => !existingIds.has(s.id))
     } catch { subjectSearchResults.value = [] }
-    finally   { subjectSearchLoading.value = false }
+    finally  { subjectSearchLoading.value = false }
   }, 300)
 }
 
@@ -305,42 +306,19 @@ function removeSubject(subjectId: number) {
 const curriculumLoading = ref(false)
 const curriculumMessage = ref('')
 
-// ─── NSTP — single source of truth ───────────────────────────────────────────
-//
-// hasNstp is a COMPUTED — not a writable ref. It is true when:
-//   (a) An NSTP subject is present in selectedSubjects (primary path — subject rows)
-//   (b) A preset-only curriculum (no subject rows) declares has_nstp: true (fallback)
-//
-// The standalone NSTP checkbox has been removed. NSTP state is determined
-// entirely by the subject list. This eliminates the drift between the
-// checkbox and the subject table seen in the previous implementation.
-
-const hasNstpPresetFallback = ref(false) // only set when source === 'preset'
-
-const hasNstp = computed(
-  () => selectedSubjects.value.some(s => s.is_nstp) || hasNstpPresetFallback.value,
-)
-
-const NSTP_UNITS = 1.5
-
 async function loadCurriculum() {
   const student = selectedStudent.value
   if (!student) return
-
-  // Irregular students have no curriculum to auto-load.
   if (student.is_irregular) {
-    selectedSubjects.value      = []
-    hasNstpPresetFallback.value = false
-    curriculumMessage.value     = 'Irregular student — add subjects manually using the search below.'
+    selectedSubjects.value  = []
+    curriculumMessage.value = ''
     return
   }
-
   if (!form.semester) return
 
-  curriculumLoading.value     = true
-  selectedSubjects.value      = []
-  hasNstpPresetFallback.value = false
-  curriculumMessage.value     = ''
+  curriculumLoading.value = true
+  selectedSubjects.value  = []
+  curriculumMessage.value = ''
 
   try {
     const url = route('student-fees.curriculum-units')
@@ -353,29 +331,17 @@ async function loadCurriculum() {
 
     if (data.found) {
       if (data.source === 'subjects' && data.subjects?.length) {
-        // Full subject-level data: populate the editable list.
-        // NSTP is now tracked through the subject itself in selectedSubjects —
-        // hasNstpPresetFallback stays false.
-        selectedSubjects.value      = data.subjects
-        hasNstpPresetFallback.value = false
-        curriculumMessage.value     = ''
+        selectedSubjects.value  = data.subjects
+        curriculumMessage.value = ''
       } else {
-        // Preset-only aggregate (no individual subject rows).
-        // hasNstpPresetFallback carries the NSTP flag for billing math.
-        hasNstpPresetFallback.value = data.has_nstp ?? false
-        curriculumMessage.value     = data.message ?? 'Units auto-filled from preset — add subjects manually if needed.'
-
-        // Seed lec/lab from preset so billing is not zero out of the box.
-        form.lec_units = data.billable_lec_units ?? 0
-        form.lab_units = data.lab_subject_count  ?? 0
+        // Preset-only aggregate response — no subject rows to populate
+        curriculumMessage.value = data.message ?? 'Units auto-filled from preset — add subjects manually if needed.'
       }
     } else {
-      hasNstpPresetFallback.value = false
-      curriculumMessage.value     = data.message ?? 'No curriculum data found. Add subjects manually.'
+      curriculumMessage.value = data.message ?? 'No curriculum data found. Add subjects manually.'
     }
   } catch {
-    hasNstpPresetFallback.value = false
-    curriculumMessage.value     = 'Could not load curriculum. Add subjects manually.'
+    curriculumMessage.value = 'Could not load curriculum. Add subjects manually.'
   } finally {
     curriculumLoading.value = false
   }
@@ -385,37 +351,66 @@ watch([selectedStudent, () => form.semester], () => {
   if (selectedStudent.value) loadCurriculum()
 }, { immediate: true })
 
-// ─── Derived billing values from the selected subject list ────────────────────
+// ─── NSTP — derived entirely from subject list ────────────────────────────────
+//
+// hasNstp is a COMPUTED, not a ref. It becomes true the moment an NSTP subject
+// appears in selectedSubjects[]. No checkbox, no manual toggle, no split state.
+// Removing the NSTP subject from the list is how Accounting opts out of NSTP billing.
+//
+// NSTP billing rule:
+//   - Academic lec_units on the NSTP subject row are IGNORED for billing.
+//   - NSTP is always billed at a fixed 1.5 units regardless of the listed value.
+//   - nstpLecUnits feeds directly into totalLecUnits alongside derivedLecUnits.
+//   - NSTP subjects have is_billable=false so they are excluded from derivedLecUnits.
+//   - At 100% discount: billable units → ₱0; NSTP (1.5 units) is charged at full price.
+//   - At partial discount: discount applies to the full totalLecUnits (incl. NSTP 1.5).
 
-const nstpLecUnits = computed(() => hasNstp.value ? NSTP_UNITS : 0)
+const NSTP_BILLING_UNITS = 1.5
 
-// Billable lec units = sum of lec_units for subjects that are not NSTP and not PATHFIT
+const hasNstp = computed(() =>
+  selectedSubjects.value.some(s => s.is_nstp),
+)
+
+const nstpSubject = computed(() =>
+  selectedSubjects.value.find(s => s.is_nstp) ?? null,
+)
+
+// The fixed billing units added for NSTP when it is present in the list
+const nstpLecUnits = computed(() => hasNstp.value ? NSTP_BILLING_UNITS : 0)
+
+// The actual academic lec_units on the NSTP subject row (for display/annotation only)
+const nstpAcademicUnits = computed(() => nstpSubject.value?.lec_units ?? 0)
+
+// ─── Derived billing counts from subject list ─────────────────────────────────
+
+const isIrregular = computed(() => selectedStudent.value?.is_irregular ?? false)
+
+// Lec units: sum of all billable subject lec_units.
+// is_billable=true for every subject EXCEPT NSTP (which uses a fixed 1.5-unit override).
+// PATHFIT is fully billable — its lec units count toward tuition like any other subject.
 const derivedLecUnits = computed(() =>
   selectedSubjects.value
     .filter(s => s.is_billable)
     .reduce((sum, s) => sum + (s.lec_units || 0), 0),
 )
 
-// Lab subject count = billable subjects that have lab hours
+// Lab count: number of billable subjects that carry at least one lab unit.
+// PATHFIT subjects with lab units are included here correctly.
 const derivedLabUnits = computed(() =>
   selectedSubjects.value.filter(s => s.is_billable && (s.lab_units || 0) > 0).length,
 )
 
-const isIrregular = computed(() => selectedStudent.value?.is_irregular ?? false)
-
-// Sync form fields whenever derived values change.
-// lec/lab only sync for regular students (irregular uses manual inputs).
-// nstp_lec_units ALWAYS syncs — an irregular student who adds an NSTP subject
-// via search must have nstp_lec_units submitted correctly to the backend.
+// Sync form fields from computed subject list for regular students.
+// Irregular students use the Manual Override card below.
 watch([derivedLecUnits, derivedLabUnits, nstpLecUnits], () => {
-  form.nstp_lec_units = nstpLecUnits.value          // always
   if (!isIrregular.value) {
-    form.lec_units = derivedLecUnits.value
-    form.lab_units = derivedLabUnits.value
+    form.lec_units      = derivedLecUnits.value
+    form.lab_units      = derivedLabUnits.value
+    form.nstp_lec_units = nstpLecUnits.value
   }
 }, { immediate: true })
 
-// Keep manual_subject_ids in sync with the subject list
+// Sync manual_subject_ids on every change to selectedSubjects
 watch(selectedSubjects, (subjects) => {
   form.manual_subject_ids = subjects.map(s => s.id)
 }, { deep: true })
@@ -424,6 +419,7 @@ watch(selectedSubjects, (subjects) => {
 
 const rate = computed(() => props.feeRates.tuition_per_unit)
 
+// Total billed lec units = regular billable units + NSTP fixed 1.5 (when present)
 const totalLecUnits = computed(() => Number(form.lec_units) + nstpLecUnits.value)
 
 const rawTotalTuition    = computed(() => totalLecUnits.value * rate.value)
@@ -433,21 +429,22 @@ const nstpTuition        = computed(() => nstpLecUnits.value * rate.value)
 const pct = computed(() => Number(form.discount_percentage) || 0)
 
 const discountSaving = computed(() => {
-  if (pct.value === 100) return rawBillableTuition.value
+  if (pct.value === 100) return rawBillableTuition.value        // NSTP excluded from full waiver
   if (pct.value > 0) return Math.round(rawTotalTuition.value * (pct.value / 100) * 100) / 100
   return 0
 })
 
 const tuitionFee = computed(() => {
-  if (pct.value === 100) return nstpTuition.value
+  if (pct.value === 100) return nstpTuition.value               // Only NSTP remains at 100%
   return Math.round((rawTotalTuition.value - discountSaving.value) * 100) / 100
 })
 
 const entrepreneurFee = computed(() =>
   Number(form.lab_units) > 0 ? (props.feeRates.entrepreneurship_fee ?? 600) : 0,
 )
-const labFee  = computed(() => Number(form.lab_units) * props.feeRates.lab_fee_per_subject)
-const miscFee = computed(() => props.feeRates.misc_total)
+const labFee      = computed(() => Number(form.lab_units) * props.feeRates.lab_fee_per_subject)
+const labFeeTotal = computed(() => labFee.value + entrepreneurFee.value)
+const miscFee     = computed(() => props.feeRates.misc_total)
 
 const totalAssessment = computed(() =>
   tuitionFee.value + labFee.value + entrepreneurFee.value + miscFee.value,
@@ -457,32 +454,17 @@ const tuitionAndLab = computed(() =>
   tuitionFee.value + labFee.value + entrepreneurFee.value,
 )
 
-const labFeeTotal = computed(() => labFee.value + entrepreneurFee.value)
-
-// ─── NSTP annotation helpers (display only, not billing) ─────────────────────
-
-// Sum of lec_units as stored in DB — may differ from totalLecUnits when NSTP is present
-const academicTotalLecUnits = computed(() =>
-  selectedSubjects.value.reduce((sum, s) => sum + (s.lec_units || 0), 0),
-)
-
-// The raw DB lec_units of the NSTP subject (e.g. 3) for the "X acad." annotation
-const nstpAcademicUnits = computed(() => {
-  const nstpSubj = selectedSubjects.value.find(s => s.is_nstp)
-  return nstpSubj?.lec_units ?? 0
-})
-
 // ─── Payment Terms ────────────────────────────────────────────────────────────
 
 const tlTermNames = props.feeRates.payment_terms
-  .filter(t => t.term_name !== 'Upon Registration')
-  .map(t => t.term_name)
+  .filter((t) => t.term_name !== 'Upon Registration')
+  .map((t) => t.term_name)
 
 const editablePercentages = ref<Record<string, number>>(
   Object.fromEntries(
     props.feeRates.payment_terms
-      .filter(t => t.term_name !== 'Upon Registration')
-      .map(t => [t.term_name, t.percentage]),
+      .filter((t) => t.term_name !== 'Upon Registration')
+      .map((t) => [t.term_name, t.percentage]),
   ),
 )
 
@@ -547,7 +529,7 @@ function submit() {
 // ─── Paid History Helpers ─────────────────────────────────────────────────────
 
 const paidSchoolYears = computed(() => {
-  const years = [...new Set(paidSemesters.value.map(ps => ps.school_year))]
+  const years = [...new Set(paidSemesters.value.map((ps) => ps.school_year))]
   return years.sort((a, b) => b.localeCompare(a))
 })
 
@@ -768,7 +750,7 @@ function semLabel(s: string) {
             </CardContent>
           </Card>
 
-          <!-- ── Subject Management ─────────────────────────────────────── -->
+          <!-- ── Enrolled Subjects ───────────────────────────────────────── -->
           <Card>
             <CardHeader>
               <CardTitle class="flex items-center gap-2 text-base">
@@ -793,14 +775,14 @@ function semLabel(s: string) {
               </div>
 
               <!-- Irregular student notice -->
-              <div v-else-if="selectedStudent?.is_irregular"
+              <div v-else-if="selectedStudent?.is_irregular && !curriculumLoading"
                 class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 <AlertTriangle class="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
                 <div>
                   <p class="font-semibold">Irregular Student</p>
                   <p class="text-amber-800 text-xs mt-0.5">
-                    Curriculum auto-populate is disabled. Use the search below to add subjects
-                    individually — including NSTP if this student is enrolled in it.
+                    Curriculum auto-populate is disabled. Use the search below to add subjects individually.
+                    If this student takes NSTP, search for and add the NSTP subject — billing will apply automatically.
                   </p>
                 </div>
               </div>
@@ -810,21 +792,11 @@ function semLabel(s: string) {
                 Select a student to load subjects.
               </div>
 
-              <!-- Curriculum info message (preset fallback or no-data notice) -->
+              <!-- Curriculum info message (preset fallback or no data) -->
               <div v-if="curriculumMessage && !curriculumLoading && selectedStudent"
                    class="flex items-start gap-2 rounded-md bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-800">
                 <Info class="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" />
                 {{ curriculumMessage }}
-              </div>
-
-              <!-- NSTP preset fallback notice — shown when preset declares NSTP but no subject row exists -->
-              <div v-if="hasNstpPresetFallback && selectedSubjects.length === 0 && !curriculumLoading"
-                   class="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
-                <Info class="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
-                <span>
-                  This course-semester preset includes NSTP (1.5 units billed).
-                  To manage NSTP as a subject row, search and add the NSTP subject below.
-                </span>
               </div>
 
               <!-- Subject table -->
@@ -854,10 +826,8 @@ function semLabel(s: string) {
                     <p class="text-xs font-semibold text-blue-700">
                       {{ totalLecUnits }} billing units
                     </p>
-                    <!-- Show academic total annotation only when NSTP inflates billing units -->
-                    <p v-if="hasNstp && academicTotalLecUnits !== totalLecUnits"
-                       class="text-xs text-amber-600">
-                      {{ academicTotalLecUnits }} academic
+                    <p v-if="hasNstp" class="text-xs text-amber-600">
+                      {{ derivedLecUnits }} regular + 1.5 NSTP
                     </p>
                   </div>
                 </div>
@@ -880,10 +850,7 @@ function semLabel(s: string) {
                       :key="subj.id"
                       :class="[
                         'transition-colors',
-                        subj.is_nstp    ? 'bg-amber-50/60' :
-                        subj.is_pathfit ? 'bg-purple-50/60' :
-                        subj.is_billable ? 'bg-white hover:bg-gray-50/60' :
-                        'bg-gray-50/40'
+                        subj.is_nstp ? 'bg-amber-50/70' : 'bg-white hover:bg-gray-50/60'
                       ]"
                     >
                       <td class="px-5 py-2.5 font-mono text-xs font-semibold text-gray-700">
@@ -891,15 +858,13 @@ function semLabel(s: string) {
                       </td>
                       <td class="px-5 py-2.5">
                         <p class="text-gray-800">{{ subj.name }}</p>
-                        <!-- Cross-course tag — shown when subject course differs from student's course -->
                         <p v-if="subj.course !== selectedStudent?.course"
                            class="text-xs text-indigo-600 font-medium">
                           {{ subj.course }} · {{ subj.year_level }}
                         </p>
                       </td>
-
-                      <!-- Lec column: NSTP shows billing rate (1.5) + academic annotation -->
                       <td class="px-4 py-2.5 text-center font-mono">
+                        <!-- NSTP: show fixed billing units with academic annotation -->
                         <template v-if="subj.is_nstp">
                           <span class="font-semibold text-amber-700">1.5</span>
                           <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
@@ -910,42 +875,30 @@ function semLabel(s: string) {
                           <span class="text-gray-700">{{ subj.lec_units || '—' }}</span>
                         </template>
                       </td>
-
                       <td class="px-4 py-2.5 text-center font-mono text-gray-700">
                         {{ subj.lab_units || '—' }}
                       </td>
-
-                      <!-- Status badge -->
                       <td class="px-4 py-2.5 text-center">
+                        <!-- NSTP: special fixed-unit billing rule, shown separately -->
+                        <!-- All other subjects (including PATHFIT) are fully billable -->
                         <template v-if="subj.is_nstp">
                           <span class="inline-flex flex-col items-center gap-0.5 rounded-lg bg-amber-100 border border-amber-300 px-2.5 py-1 text-amber-800">
                             <span class="text-xs font-bold leading-tight">NSTP</span>
                             <span class="text-xs font-normal text-amber-600 leading-tight whitespace-nowrap">billed: 1.5 units</span>
                           </span>
                         </template>
-                        <template v-else-if="subj.is_pathfit">
-                          <span class="inline-flex items-center gap-1 rounded-full bg-purple-100 border border-purple-300 px-2 py-0.5 text-xs font-semibold text-purple-800">
-                            PATHFIT
-                          </span>
-                        </template>
-                        <template v-else-if="subj.is_billable">
-                          <span class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
-                            <CheckCircle2 class="h-3 w-3" /> Billable
-                          </span>
-                        </template>
                         <template v-else>
-                          <span class="inline-flex rounded-full bg-gray-100 border border-gray-200 px-2 py-0.5 text-xs text-gray-500">
-                            Non-billable
+                          <span class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
+                            <CheckCircle2 class="h-3 w-3" />
+                            {{ subj.is_pathfit ? 'PATHFIT' : 'Billable' }}
                           </span>
                         </template>
                       </td>
-
-                      <!-- Remove button -->
                       <td class="px-4 py-2.5 text-center">
                         <button
                           type="button"
                           class="inline-flex items-center justify-center h-7 w-7 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                          title="Remove subject"
+                          :title="subj.is_nstp ? 'Remove NSTP subject (disables NSTP billing)' : 'Remove subject'"
                           @click="removeSubject(subj.id)"
                         >
                           <Trash2 class="h-4 w-4" />
@@ -960,10 +913,11 @@ function semLabel(s: string) {
                       <td colspan="2" class="px-5 py-2.5 text-xs font-semibold text-gray-600 uppercase tracking-wide">
                         Billing Summary
                       </td>
+                      <!-- Billing units column -->
                       <td class="px-4 py-2.5 text-center font-mono font-bold text-blue-700">
                         {{ totalLecUnits }}
-                        <span v-if="hasNstp" class="block text-xs font-normal text-amber-600">
-                          {{ form.lec_units }} + 1.5 NSTP
+                        <span v-if="hasNstp" class="block text-xs font-normal text-amber-600 whitespace-nowrap">
+                          {{ derivedLecUnits }} + 1.5
                         </span>
                       </td>
                       <td class="px-4 py-2.5 text-center font-mono font-bold text-gray-700">
@@ -973,45 +927,74 @@ function semLabel(s: string) {
                         <span class="inline-flex items-center gap-3 flex-wrap">
                           <span class="flex items-center gap-1">
                             <span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
-                            Billable lec: <strong class="text-gray-700">{{ form.lec_units }}</strong>
+                            Billable lec: <strong class="text-gray-700">{{ derivedLecUnits }}</strong>
                           </span>
                           <span v-if="hasNstp" class="flex items-center gap-1">
                             <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
                             NSTP: <strong class="text-amber-700">1.5 billed</strong>
-                            <span v-if="nstpAcademicUnits > 0" class="text-gray-400">({{ nstpAcademicUnits }} academic)</span>
+                            <span v-if="nstpAcademicUnits !== NSTP_BILLING_UNITS" class="text-gray-400">
+                              ({{ nstpAcademicUnits }} academic)
+                            </span>
                           </span>
                           <span class="flex items-center gap-1">
                             <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
                             Lab subjects: <strong class="text-gray-700">{{ form.lab_units }}</strong>
-                          </span>
-                          <span v-if="selectedSubjects.some(s => s.is_pathfit)" class="flex items-center gap-1">
-                            <span class="w-2 h-2 rounded-full bg-purple-400 inline-block"></span>
-                            PATHFIT: <strong class="text-purple-700">excluded from billing</strong>
                           </span>
                         </span>
                       </td>
                     </tr>
                   </tfoot>
                 </table>
+
+                <!-- NSTP billing info banner — shown inline within the table card when NSTP is present -->
+                <!-- This replaces the old standalone checkbox. It's purely informational. -->
+                <div v-if="hasNstp"
+                     class="border-t border-amber-200 bg-amber-50/80 px-5 py-3 flex items-start gap-3">
+                  <div class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-400 text-white text-xs font-bold">
+                    N
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-semibold text-amber-900">
+                      NSTP billing active — {{ formatCurrency(nstpTuition) }}
+                    </p>
+                    <p class="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                      <strong>{{ nstpSubject?.code }}</strong> is billed at a fixed
+                      <strong>1.5 units ({{ formatCurrency(nstpTuition) }})</strong>
+                      regardless of its listed {{ nstpAcademicUnits }}-unit academic count.
+                      <template v-if="pct === 100">
+                        At <strong>100% discount</strong>, NSTP is excluded from the full waiver
+                        and charged at full price.
+                      </template>
+                      <template v-else-if="pct > 0">
+                        The <strong>{{ pct }}% discount</strong> applies to all {{ totalLecUnits }} billing units including NSTP.
+                      </template>
+                      To opt out of NSTP billing, remove this subject using the
+                      <Trash2 class="inline h-3 w-3 text-red-400" /> button above.
+                    </p>
+                  </div>
+                  <div class="shrink-0 text-right">
+                    <p class="text-xs font-mono font-bold text-amber-800">{{ formatCurrency(nstpTuition) }}</p>
+                    <p class="text-xs text-amber-600">1.5 units</p>
+                  </div>
+                </div>
               </div>
 
-              <!-- Empty state — no subjects loaded, not irregular -->
-              <div v-else-if="selectedStudent && !curriculumLoading && !selectedSubjects.length && !selectedStudent.is_irregular && !hasNstpPresetFallback"
+              <!-- Empty state -->
+              <div v-else-if="selectedStudent && !curriculumLoading && !selectedSubjects.length && !selectedStudent.is_irregular"
                    class="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
                 <AlertTriangle class="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
                 <div>
                   <p class="font-semibold">No Curriculum Subjects Found</p>
                   <p class="text-xs text-amber-800 mt-0.5">
                     No subjects were found for {{ selectedStudent.course }} —
-                    {{ computedYearLevel || selectedStudent.year_level }} —
-                    {{ semLabel(form.semester) }}.
+                    {{ computedYearLevel || selectedStudent.year_level }} — {{ semLabel(form.semester) }}.
                     Add subjects manually using the search below.
                   </p>
                 </div>
               </div>
 
               <!-- ── Add Subject Search ──────────────────────────────────── -->
-              <div v-if="selectedStudent && !curriculumLoading" class="pt-1">
+              <div v-if="selectedStudent && !curriculumLoading" class="pt-2">
 
                 <div v-if="!showSubjectSearch">
                   <button
@@ -1050,10 +1033,10 @@ function semLabel(s: string) {
                   </div>
 
                   <p class="text-xs text-blue-600">
-                    You can add subjects from any course — useful for cross-course enrollees or irregular students.
+                    Subjects from any course can be added — for cross-course enrollees or irregular students.
+                    Adding an NSTP subject activates NSTP billing automatically.
                   </p>
 
-                  <!-- Search results -->
                   <div v-if="subjectSearchResults.length > 0"
                        class="rounded-md border border-blue-200 bg-white divide-y divide-gray-100 max-h-72 overflow-y-auto shadow-sm">
                     <button
@@ -1075,9 +1058,14 @@ function semLabel(s: string) {
                           </p>
                         </div>
                         <div class="shrink-0 flex flex-col items-end gap-0.5">
-                          <span v-if="s.is_nstp" class="text-xs font-semibold text-amber-700 bg-amber-100 px-1.5 rounded">NSTP</span>
-                          <span v-else-if="!s.is_billable" class="text-xs text-gray-400 bg-gray-100 px-1.5 rounded">Non-billable</span>
-                          <span v-else class="text-xs text-green-700 bg-green-100 px-1.5 rounded">Billable</span>
+                          <span v-if="s.is_nstp"
+                                class="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">
+                            NSTP · billed 1.5 units
+                          </span>
+                          <span v-else
+                                class="text-xs font-semibold text-green-700 bg-green-100 border border-green-200 px-1.5 py-0.5 rounded">
+                            {{ s.is_pathfit ? 'PATHFIT · Billable' : 'Billable' }}
+                          </span>
                           <Plus class="h-3.5 w-3.5 text-blue-500 mt-1" />
                         </div>
                       </div>
@@ -1094,7 +1082,7 @@ function semLabel(s: string) {
             </CardContent>
           </Card>
 
-          <!-- Manual Unit Override — irregular students only -->
+          <!-- Irregular manual overrides -->
           <Card v-if="isIrregular && selectedStudent">
             <CardHeader>
               <CardTitle class="flex items-center gap-2 text-base">
@@ -1104,10 +1092,6 @@ function semLabel(s: string) {
               </CardTitle>
             </CardHeader>
             <CardContent class="space-y-4">
-              <p class="text-xs text-muted-foreground">
-                Units will be derived automatically if subjects are added above.
-                Fill these in only when not adding individual subjects.
-              </p>
               <div class="grid grid-cols-2 gap-6">
                 <div class="space-y-1.5">
                   <Label for="lec_units" class="flex items-center gap-1.5">
@@ -1134,6 +1118,11 @@ function semLabel(s: string) {
                   <p v-if="form.errors.lab_units" class="text-sm text-destructive">{{ form.errors.lab_units }}</p>
                 </div>
               </div>
+              <p class="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Info class="h-3.5 w-3.5 text-blue-400" />
+                NSTP billing is controlled by the subject list above.
+                If this student takes NSTP, add the NSTP subject via the search — billing applies automatically.
+              </p>
             </CardContent>
           </Card>
 
@@ -1156,9 +1145,9 @@ function semLabel(s: string) {
                 <div>
                   <p class="font-semibold">100% Discount — NSTP Exception</p>
                   <p class="text-xs text-amber-800 mt-0.5">
-                    All billable lecture units ({{ form.lec_units }}) are fully discounted to ₱0.
+                    All billable lecture units ({{ derivedLecUnits }}) are fully discounted to ₱0.
                     NSTP (1.5 units, {{ formatCurrency(nstpTuition) }}) is excluded from the 100% discount
-                    and will be charged at full price.
+                    and charged at full price.
                   </p>
                 </div>
               </div>
@@ -1193,13 +1182,13 @@ function semLabel(s: string) {
                 </div>
               </div>
 
-              <!-- Custom scholarship name field -->
+              <!-- Custom scholarship name -->
               <div v-if="selectedScholarshipPreset === '__custom__'" class="space-y-1.5">
                 <Label for="custom_scholarship_name">Scholarship / Grant Name</Label>
                 <Input
                   id="custom_scholarship_name"
                   v-model="customScholarshipName"
-                  placeholder="e.g. LGU Scholars Program, Athletic Grant…"
+                  placeholder="e.g. LGU Scholars Program, Athletic Grant, etc."
                   class="w-full"
                 />
                 <p class="text-xs text-muted-foreground">
@@ -1217,31 +1206,31 @@ function semLabel(s: string) {
                 <span v-if="pct > 0" class="text-amber-700 text-xs ml-auto">{{ pct }}% discount</span>
               </div>
 
-              <!-- Discount percentage override -->
+              <!-- Discount percentage input -->
               <div class="space-y-2">
                 <Label for="discount_percentage">
                   Discount Percentage (%)
-                  <span class="ml-1 text-xs font-normal text-muted-foreground">— auto-set by scholarship type, override if needed</span>
+                  <span class="ml-1 text-xs font-normal text-muted-foreground">
+                    — auto-set by scholarship type, override if needed
+                  </span>
                 </Label>
                 <p class="text-xs text-muted-foreground">
                   <template v-if="hasNstp">
-                    For partial discounts (&lt;100%): applies to all lecture units including NSTP ({{ totalLecUnits }} total).
+                    For partial discounts (&lt;100%): applies to all {{ totalLecUnits }} billing units (including NSTP 1.5).
                     At exactly 100%: all billable units waived, NSTP ({{ formatCurrency(nstpTuition) }}) charged at full price.
                     Lab and misc fees are never discounted.
                   </template>
                   <template v-else>
-                    Applies to all lecture units ({{ form.lec_units }} units). Lab and miscellaneous fees are never discounted.
+                    Applies to all {{ form.lec_units }} lecture units.
+                    Lab and miscellaneous fees are never discounted.
                   </template>
                 </p>
-
                 <div class="flex items-center gap-3">
                   <Input
                     id="discount_percentage"
                     type="number"
                     v-model.number="form.discount_percentage"
-                    min="0"
-                    max="100"
-                    step="0.01"
+                    min="0" max="100" step="0.01"
                     placeholder="0.00"
                     class="w-28 text-center text-lg font-semibold"
                   />
@@ -1253,19 +1242,19 @@ function semLabel(s: string) {
               </div>
 
               <!-- Live discount breakdown -->
-              <div
-                v-if="pct > 0"
-                class="rounded-md bg-green-50 border border-green-200 p-3 space-y-1.5 text-sm"
-              >
+              <div v-if="pct > 0"
+                   class="rounded-md bg-green-50 border border-green-200 p-3 space-y-1.5 text-sm">
                 <p class="font-semibold text-xs uppercase tracking-wide text-green-700 mb-2">
                   Effective Fees After Discount
-                  <span v-if="scholarshipName" class="ml-1 font-normal normal-case text-green-600">({{ scholarshipName }})</span>
+                  <span v-if="scholarshipName" class="ml-1 font-normal normal-case text-green-600">
+                    ({{ scholarshipName }})
+                  </span>
                 </p>
 
                 <template v-if="pct < 100">
                   <template v-if="hasNstp">
                     <div class="flex justify-between text-green-800 text-xs">
-                      <span>Billable tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
+                      <span>Billable tuition ({{ derivedLecUnits }} units × {{ formatCurrency(rate) }})</span>
                       <span>{{ formatCurrency(rawBillableTuition) }}</span>
                     </div>
                     <div class="flex justify-between text-amber-700 text-xs">
@@ -1284,7 +1273,10 @@ function semLabel(s: string) {
                     </div>
                   </template>
                   <div class="flex justify-between text-green-600 text-xs">
-                    <span>− {{ pct }}% discount ({{ hasNstp ? `applied to all ${totalLecUnits} units incl. NSTP` : `applied to ${form.lec_units} units` }})</span>
+                    <span>
+                      − {{ pct }}% discount
+                      ({{ hasNstp ? `applied to all ${totalLecUnits} units incl. NSTP` : `applied to ${form.lec_units} units` }})
+                    </span>
                     <span>− {{ formatCurrency(discountSaving) }}</span>
                   </div>
                   <div class="flex justify-between text-green-900 font-medium pt-1 border-t border-green-200">
@@ -1295,11 +1287,11 @@ function semLabel(s: string) {
 
                 <template v-else>
                   <div class="flex justify-between text-green-800 text-xs">
-                    <span>Billable tuition ({{ form.lec_units }} units × {{ formatCurrency(rate) }})</span>
+                    <span>Billable tuition ({{ derivedLecUnits }} units × {{ formatCurrency(rate) }})</span>
                     <span>{{ formatCurrency(rawBillableTuition) }}</span>
                   </div>
                   <div class="flex justify-between text-green-600 text-xs">
-                    <span>− 100% discount (full waiver on {{ form.lec_units }} billable units)</span>
+                    <span>− 100% discount (full waiver on {{ derivedLecUnits }} billable units)</span>
                     <span>− {{ formatCurrency(discountSaving) }}</span>
                   </div>
                   <template v-if="hasNstp">
@@ -1363,11 +1355,15 @@ function semLabel(s: string) {
             <CardContent class="space-y-3 text-sm">
 
               <div class="space-y-2">
-
-                <!-- Tuition Fee -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
-                    Tuition Fee ({{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
+                    Tuition Fee
+                    <span class="block text-xs">
+                      {{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }}
+                      <span v-if="hasNstp" class="text-amber-600">
+                        ({{ derivedLecUnits }} + 1.5 NSTP)
+                      </span>
+                    </span>
                   </span>
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
                 </div>
@@ -1381,18 +1377,15 @@ function semLabel(s: string) {
                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <span class="text-emerald-700 leading-snug">
-                    <span class="font-semibold">
-                      {{ scholarshipName || pct + '%' }} discount applied
-                    </span>
+                    <span class="font-semibold">{{ scholarshipName || pct + '%' }} discount applied</span>
                     <span class="mx-1 text-emerald-400">—</span>
                     <span class="font-bold text-emerald-800">−{{ formatCurrency(discountSaving) }} saved</span>
-                    <span v-if="pct === 100" class="ml-1 font-medium text-amber-600">
-                      · NSTP billed separately at full price
+                    <span v-if="pct === 100 && hasNstp" class="ml-1 font-medium text-amber-600">
+                      · NSTP billed at full price
                     </span>
                   </span>
                 </div>
 
-                <!-- Lab Fee -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
                     Lab. Fee ({{ form.lab_units }} subj × {{ formatCurrency(feeRates.lab_fee_per_subject) }})
@@ -1404,12 +1397,10 @@ function semLabel(s: string) {
                   <span>{{ formatCurrency(entrepreneurFee) }}</span>
                 </div>
 
-                <!-- Misc Fee -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">Misc. Fee (fixed)</span>
                   <span class="font-medium">{{ formatCurrency(miscFee) }}</span>
                 </div>
-
               </div>
 
               <div class="border-t pt-2 flex justify-between font-bold text-base">

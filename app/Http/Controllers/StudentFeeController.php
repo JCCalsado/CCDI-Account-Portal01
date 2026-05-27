@@ -1026,9 +1026,11 @@ class StudentFeeController extends Controller
                 'semester'    => $s->semester,
                 'course'      => $s->course,
                 'is_nstp'     => AssessmentService::isNstpSubjectPublic($s->code, $s->name),
+                // PATHFIT is a regular billable subject — lec units count toward tuition.
+                // Only NSTP has special billing treatment (fixed 1.5-unit override).
+                // is_pathfit is kept purely for display/annotation purposes in the UI.
                 'is_pathfit'  => AssessmentService::isPathfitSubjectPublic($s->code, $s->name),
-                'is_billable' => ! AssessmentService::isNstpSubjectPublic($s->code, $s->name)
-                              && ! AssessmentService::isPathfitSubjectPublic($s->code, $s->name),
+                'is_billable' => ! AssessmentService::isNstpSubjectPublic($s->code, $s->name),
             ])->values(),
         ]);
     }

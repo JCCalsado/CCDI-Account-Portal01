@@ -12,7 +12,12 @@ class Transaction extends Model
     protected $fillable = [
         'user_id', 'account_id', 'fee_id', 'reference',
         'payment_channel', 'kind', 'type', 'amount', 'status',
-        'paid_at', 'meta', 'year', 'semester','or_number',
+        'paid_at', 'meta', 'year', 'semester', 'or_number',
+        // ✅ FIX #12: 'category' added — column added by migration
+        //    2025_09_23_130918_add_category_to_transactions_table but was
+        //    missing from $fillable. Any write to transaction.category was
+        //    silently dropped by mass-assignment protection.
+        'category',
     ];
 
     protected $casts = [
@@ -47,7 +52,6 @@ class Transaction extends Model
 
     /**
      * Returns the pending WorkflowInstance for this transaction, if any.
-     * Used by the approval workflow to find in-progress approvals.
      */
     public function pendingApproval(): ?WorkflowInstance
     {
@@ -59,7 +63,6 @@ class Transaction extends Model
 
     /**
      * Returns a human-readable description for this transaction.
-     * Checks meta->description first, then meta->fee_name, then type, then kind.
      */
     public function getDescriptionAttribute(): string
     {

@@ -57,7 +57,7 @@ Route::middleware(['auth', 'verified', 'role:student'])->prefix('student')->grou
     Route::post('/account/pay-now', [TransactionController::class, 'payNow'])->name('account.pay-now');
     Route::get('/payment/{transaction}/proof', [PaymentController::class, 'showProofForm'])->name('payment.proof.show');
     Route::post('/payment/{transaction}/proof', [PaymentController::class, 'uploadProof'])->name('payment.proof.upload');
-Route::delete('/payment/{transaction}/proof/cancel', [PaymentController::class, 'cancelAbandonedProof'])->name('payment.proof.cancel');
+    Route::delete('/payment/{transaction}/proof/cancel', [PaymentController::class, 'cancelAbandonedProof'])->name('payment.proof.cancel');
     Route::get('/notifications', [NotificationController::class, 'studentIndex'])->name('student.notifications');
     Route::post('/notifications/mark-all-read', [NotificationController::class, 'markAllRead'])->name('student.notifications.mark-all-read');
     Route::post('/notifications/{notification}/dismiss', [NotificationController::class, 'dismiss'])->name('notifications.dismiss');
@@ -68,8 +68,6 @@ Route::delete('/payment/{transaction}/proof/cancel', [PaymentController::class, 
 // ============================================
 
 // ── Shared read: Admin + Accounting ──────────────────────────────────────────
-// Both roles can view the index, search, and individual student fee detail.
-// Registered once here to avoid named-route collision.
 Route::middleware(['auth', 'verified', 'role:admin,accounting'])
     ->prefix('student-fees')
     ->name('student-fees.')
@@ -89,7 +87,12 @@ Route::middleware(['auth', 'verified', 'role:accounting'])
     ->name('student-fees.')
     ->group(function () {
         Route::get('/curriculum-units', [StudentFeeController::class, 'getCurriculumUnits'])->name('curriculum-units');
-        Route::get('/subject-search', [StudentFeeController::class, 'subjectSearch'])->name('subject-search');
+
+        // ✅ FIX: subjectSearch route — the controller method existed but had no
+        //    route. Every call to route('student-fees.subject-search') was a 404.
+        //    Registered here (accounting-only, GET) alongside curriculum-units
+        //    since both are fetch endpoints used by the Create.vue form.
+        Route::get('/subjects/search', [StudentFeeController::class, 'subjectSearch'])->name('subject-search');
 
         Route::get('/create', [StudentFeeController::class, 'create'])->name('create');
         Route::post('/', [StudentFeeController::class, 'store'])->name('store');
@@ -127,7 +130,6 @@ Route::middleware(['auth', 'verified', 'role:accounting'])->group(function () {
 Route::middleware(['auth', 'verified', 'role:admin'])->prefix('admin')->group(function () {
     Route::get('/dashboard', [AdminDashboardController::class, 'index'])->name('admin.dashboard');
 
-    // User management — Admin can view all, but create/edit/deactivate Accounting only
     Route::get('users', [AdminController::class, 'index'])->name('users.index');
     Route::get('users/create', [AdminController::class, 'create'])->name('users.create');
     Route::post('users', [AdminController::class, 'store'])->name('users.store');
@@ -137,12 +139,10 @@ Route::middleware(['auth', 'verified', 'role:admin'])->prefix('admin')->group(fu
     Route::post('users/{user}/deactivate', [AdminController::class, 'deactivate'])->name('users.deactivate');
     Route::post('users/{user}/reactivate', [AdminController::class, 'reactivate'])->name('users.reactivate');
 
-    // Notifications — view only for admin
     Route::get('notifications', [NotificationController::class, 'index'])->name('admin.notifications.index');
     Route::get('notifications/{notification}', [NotificationController::class, 'show'])->name('admin.notifications.show');
     Route::post('notifications/{notification}/dismiss', [NotificationController::class, 'dismiss'])->name('admin.notifications.dismiss');
 
-    // Payment terms — view only
     Route::get('/payment-terms', [PaymentTermsController::class, 'index'])->name('admin.payment-terms.index');
 });
 
@@ -190,7 +190,6 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
             Route::post('/sync',              [PresetSubjectController::class, 'sync'])  ->name('sync');
         });
 
-    // Notification Management — accounting owns all operations
     Route::get('notifications', [NotificationController::class, 'index'])->name('accounting.notifications.index');
     Route::get('notifications/create', [NotificationController::class, 'create'])->name('accounting.notifications.create');
     Route::get('notifications/{notification}', [NotificationController::class, 'show'])->name('accounting.notifications.show');
@@ -235,10 +234,6 @@ Route::middleware(['auth', 'verified', 'role:accounting'])->group(function () {
 
 // ============================================
 // PROOF OF PAYMENT — ROUTE-BASED FILE SERVING
-// No storage symlink required.
-// Hostinger shared hosting cannot reliably use /storage/ symlinks.
-// PHP serves the file directly from storage/app/public/.
-// ?dl=1 → browser download; default → inline (for <img> and <iframe>).
 // ============================================
 Route::middleware(['auth', 'verified', 'role:accounting,admin'])->group(function () {
     Route::get('/payment/{transaction}/proof/serve', [PaymentController::class, 'serveProof'])->name('payment.proof.serve');
