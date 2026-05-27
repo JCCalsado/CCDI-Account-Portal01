@@ -89,6 +89,7 @@ Route::middleware(['auth', 'verified', 'role:accounting'])
     ->name('student-fees.')
     ->group(function () {
         Route::get('/curriculum-units', [StudentFeeController::class, 'getCurriculumUnits'])->name('curriculum-units');
+        Route::get('/subject-search', [StudentFeeController::class, 'subjectSearch'])->name('subject-search');
 
         Route::get('/create', [StudentFeeController::class, 'create'])->name('create');
         Route::post('/', [StudentFeeController::class, 'store'])->name('store');

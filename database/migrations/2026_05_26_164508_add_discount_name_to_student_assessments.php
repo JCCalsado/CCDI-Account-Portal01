@@ -5,13 +5,19 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * ADD: discount_name to student_assessments
+ * ADD discount_name TO student_assessments
  *
- * Stores the human-readable scholarship or discount label
- * (e.g. "CHED Full Scholar", "CCDI Institutional Grant", "Academic Excellence").
+ * Stores the specific scholarship or discount label at assessment creation time.
+ * Examples: "CHED Full Scholar", "CCDI Institutional", "Academic Excellence Award",
+ *           "Faculty/Staff Dependent", "Sibling Discount", etc.
  *
- * Nullable — existing assessments have no named discount and will show null.
- * The application layer renders null as "No discount" or "—" in the UI.
+ * This is a nullable free-text field, not an ENUM, because scholarship programs
+ * change and should not require schema migrations to extend.
+ *
+ * Relationship to existing discount columns:
+ *   discount_type        ENUM('none','full','nstp','percentage') — the mechanics
+ *   discount_percentage  DECIMAL(5,2)                            — the numeric %
+ *   discount_name        VARCHAR(150) NULL                       — the human label  ← NEW
  */
 return new class extends Migration
 {
@@ -21,9 +27,8 @@ return new class extends Migration
             if (! Schema::hasColumn('student_assessments', 'discount_name')) {
                 $table->string('discount_name', 150)
                     ->nullable()
-                    ->default(null)
                     ->after('discount_percentage')
-                    ->comment('Human-readable scholarship or discount label. Null = no discount applied.');
+                    ->comment('Human-readable label for the scholarship or discount applied, e.g. "CHED Full Scholar"');
             }
         });
     }

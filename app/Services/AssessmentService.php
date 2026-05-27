@@ -349,6 +349,72 @@ class AssessmentService
         return $rows;
     }
 
+    /**
+     * Build subject snapshot from explicit subject IDs (manual selection).
+     * 
+     * Used when Accounting manually selects subjects (including cross-course picks).
+     * Bypasses the automatic curriculum lookup entirely.
+     *
+     * @param  array $subjectIds     Array of subject.id values to include
+     * @param  array $rates          Fee rates (output of loadRates())
+     * @param  int   $assessmentId   The assessment being created
+     * @return array                 Rows ready for assessment_subjects insert
+     */
+    public static function buildSubjectSnapshotFromIds(
+        array $subjectIds,
+        array $rates,
+        int   $assessmentId
+    ): array {
+        if (empty($subjectIds)) {
+            return [];
+        }
+
+        $subjects = Subject::whereIn('id', $subjectIds)
+            ->where('is_active', true)
+            ->get()
+            ->keyBy('id');
+
+        $rows      = [];
+        $sortOrder = 1;
+        $now       = now();
+
+        foreach ($subjectIds as $subjectId) {
+            $subj = $subjects->get($subjectId);
+            if (! $subj) {
+                continue;
+            }
+
+            $isNstp    = self::isNstpSubject($subj->code, $subj->name);
+            $isPathfit = self::isPathfitSubject($subj->code, $subj->name);
+            $lecUnits  = (float) ($subj->lec_units ?? 0.0);
+            $labUnits  = (int) ($subj->lab_units ?? 0);
+            $isBillable = ! $isNstp && ! $isPathfit;
+
+            $fees = self::computeSubjectFees($isNstp, $isPathfit, $lecUnits, $labUnits, $rates);
+
+            $rows[] = [
+                'student_assessment_id' => $assessmentId,
+                'subject_id'            => $subj->id,
+                'code'                  => $subj->code,
+                'name'                  => $subj->name,
+                'lec_units'             => $lecUnits,
+                'lab_units'             => $labUnits,
+                'is_nstp'               => $isNstp,
+                'is_pathfit'            => $isPathfit,
+                'is_billable'           => $isBillable,
+                'tuition_fee'           => $fees['tuition_fee'],
+                'lab_fee'               => $fees['lab_fee'],
+                'total_fee'             => $fees['total_fee'],
+                'nstp_billing_units'    => $isNstp ? self::NSTP_MINIMUM_UNITS : 0.0,
+                'sort_order'            => $sortOrder++,
+                'created_at'            => $now,
+                'updated_at'            => $now,
+            ];
+        }
+
+        return $rows;
+    }
+
     // ─── Fee Computation ──────────────────────────────────────────────────────
 
     /**
@@ -592,6 +658,14 @@ class AssessmentService
     }
 
     /**
+     * Alias for isNstpSubject() — used in API responses to avoid naming conflicts.
+     */
+    public static function isNstpSubjectPublic(string $code, string $name): bool
+    {
+        return self::isNstpSubject($code, $name);
+    }
+
+    /**
      * PATHFIT/PE subjects: excluded from tuition billing per CHED.
      */
     public static function isPathfitSubject(string $code, string $name): bool
@@ -602,6 +676,14 @@ class AssessmentService
         // All subjects are billable — only NSTP is handled separately (fixed 1.5 units)
         // PE, PATHFIT, Rhythmic, etc. are all billed normally
         return false;
+    }
+
+    /**
+     * Alias for isPathfitSubject() — used in API responses to avoid naming conflicts.
+     */
+    public static function isPathfitSubjectPublic(string $code, string $name): bool
+    {
+        return self::isPathfitSubject($code, $name);
     }
 
     /**

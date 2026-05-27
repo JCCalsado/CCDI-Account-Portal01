@@ -244,14 +244,15 @@ class StudentFeeController extends Controller
             'term_percentages'    => ['nullable', 'array'],
             'term_percentages.*'  => ['numeric', 'min:0', 'max:100'],
             'year_level'          => ['nullable', 'string', 'max:50'],
-            'subject_ids'         => ['nullable', 'array'],
-            'subject_ids.*'       => ['integer', 'exists:subjects,id'],
+            'manual_subject_ids'   => ['nullable', 'array'],
+            'manual_subject_ids.*' => ['integer', 'exists:subjects,id'],
         ]);
 
         $validated['lec_units']           = (float) $validated['lec_units'];
         $validated['lab_units']           = (int) $validated['lab_units'];
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
+        $validated['discount_name']       = $validated['discount_name'] ?? null;
 
         // Validate that term percentages add up to 100% (excluding "Upon Registration")
         if (!empty($validated['term_percentages'])) {
@@ -366,67 +367,21 @@ class StudentFeeController extends Controller
                     $assessment->paymentTerms()->create($term);
                 }
 
-                // ─── Subject snapshot ─────────────────────────────────────
-                // When the frontend submits an explicit subject_ids[] list
-                // (regular students with manual edits), build the snapshot
-                // directly from those subjects.
-                //
-                // Fallback: if no subject_ids are sent (irregular students,
-                // or preset-only assessments), use buildSubjectSnapshot() as
-                // before, which queries by course/year/semester.
-                $submittedIds = $validated['subject_ids'] ?? [];
+                // ─── Subject snapshot — honours manual overrides ───────────────
+                // If accounting manually selected subjects (including cross-course
+                // additions or removals), use that exact list instead of the
+                // automatic course/year/semester query.
+                $manualIds = $validated['manual_subject_ids'] ?? [];
 
-                if (! empty($submittedIds)) {
-                    $subjectRows = Subject::whereIn('id', $submittedIds)
-                        ->where('is_active', true)
-                        ->orderBy('id')
-                        ->get();
-
-                    $snapshotRows = [];
-                    $sortOrder    = 1;
-                    $now          = now();
-
-                    foreach ($subjectRows as $subj) {
-                        $isNstp    = AssessmentService::isNstpSubject($subj->code, $subj->name);
-                        $isPathfit = AssessmentService::isPathfitSubject($subj->code, $subj->name);
-                        $lecUnits  = (float) ($subj->lec_units ?? 0.0);
-                        $labUnits  = (int) ($subj->lab_units ?? 0);
-                        $isBillable = ! $isNstp && ! $isPathfit;
-
-                        $fees = AssessmentService::computeSubjectFees(
-                            $isNstp,
-                            $isPathfit,
-                            $lecUnits,
-                            $labUnits,
-                            $rates,
-                        );
-
-                        $snapshotRows[] = [
-                            'student_assessment_id' => $assessment->id,
-                            'subject_id'            => $subj->id,
-                            'code'                  => $subj->code,
-                            'name'                  => $subj->name,
-                            'lec_units'             => $lecUnits,
-                            'lab_units'             => $labUnits,
-                            'is_nstp'               => $isNstp,
-                            'is_pathfit'            => $isPathfit,
-                            'is_billable'           => $isBillable,
-                            'tuition_fee'           => $fees['tuition_fee'],
-                            'lab_fee'               => $fees['lab_fee'],
-                            'total_fee'             => $fees['total_fee'],
-                            'nstp_billing_units'    => $isNstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0.0,
-                            'sort_order'            => $sortOrder++,
-                            'created_at'            => $now,
-                            'updated_at'            => $now,
-                        ];
-                    }
-
-                    if (! empty($snapshotRows)) {
-                        \Illuminate\Support\Facades\DB::table('assessment_subjects')->insert($snapshotRows);
-                    }
+                if (! empty($manualIds)) {
+                    // Build snapshot from the exact subject IDs the user selected
+                    $snapshotRows = AssessmentService::buildSubjectSnapshotFromIds(
+                        $manualIds,
+                        $rates,
+                        $assessment->id
+                    );
                 } else {
-                    // Fallback: no explicit subject list — use curriculum lookup
-                    // (covers irregular students and preset-only configurations).
+                    // Fall back to the automatic curriculum query (original behaviour)
                     $semesterNorm = AssessmentService::normalizeSemester($validated['semester']);
                     $snapshotRows = AssessmentService::buildSubjectSnapshot(
                         $student->course,
@@ -435,11 +390,12 @@ class StudentFeeController extends Controller
                         $rates,
                         $assessment->id
                     );
-                    if (! empty($snapshotRows)) {
-                        \Illuminate\Support\Facades\DB::table('assessment_subjects')->insert($snapshotRows);
-                    }
                 }
-                // ─────────────────────────────────────────────────────────
+
+                if (! empty($snapshotRows)) {
+                    \Illuminate\Support\Facades\DB::table('assessment_subjects')->insert($snapshotRows);
+                }
+                // ─────────────────────────────────────────────────────────────────
 
                 // FIX: Guard against duplicate charge transactions.
                 $chargeYear = (int) explode('-', $validated['school_year'])[0];
@@ -448,6 +404,7 @@ class StudentFeeController extends Controller
                     'lab_units'           => $validated['lab_units'],
                     'nstp_lec_units'      => $validated['nstp_lec_units'],
                     'discount_percentage' => $validated['discount_percentage'],
+                    'discount_name'       => $validated['discount_name'],
                     'tuition_fee'         => $fees['tuition_fee'],
                     'billable_tuition'    => $fees['billable_tuition'],
                     'nstp_tuition'        => $fees['nstp_tuition'],
@@ -1036,69 +993,44 @@ class StudentFeeController extends Controller
     //  SUBJECT SEARCH
     // ─────────────────────────────────────────────────────────────
 
-    /**
-     * Cross-course subject search for manual subject selection during assessment creation.
-     *
-     * Returns subjects across ALL courses so Accounting can add cross-course subjects
-     * (e.g., a BSCS student taking an IT elective).
-     *
-     * Query params:
-     *   q        — search term (code or name), min 2 chars
-     *   course   — optional filter to a specific course
-     *   semester — optional filter
-     *
-     * GET /student-fees/subjects/search
-     */
     public function subjectSearch(Request $request): \Illuminate\Http\JsonResponse
     {
-        $q        = trim($request->get('q', ''));
-        $course   = $request->get('course');
-        $semester = $request->get('semester');
-
-        if (strlen($q) < 2) {
-            return response()->json(['subjects' => []]);
-        }
+        $q      = trim($request->get('q', ''));
+        $course = $request->get('course', '');
 
         $query = Subject::where('is_active', true)
-            ->where(function ($sub) use ($q) {
-                $sub->where('code', 'like', "%{$q}%")
-                    ->orWhere('name', 'like', "%{$q}%");
-            });
-
-        if ($course) {
-            $query->where('course', $course);
-        }
-
-        if ($semester) {
-            $semNorm = AssessmentService::normalizeSemester($semester);
-            $query->where('semester', $semNorm);
-        }
-
-        $subjects = $query
+            ->when(strlen($q) >= 2, function ($query) use ($q) {
+                $query->where(function ($q2) use ($q) {
+                    $q2->where('code', 'like', "%{$q}%")
+                       ->orWhere('name', 'like', "%{$q}%");
+                });
+            })
+            ->when($course, fn ($query) => $query->where('course', $course))
+            ->select('id', 'code', 'name', 'lec_units', 'lab_units', 'year_level', 'semester', 'course', 'is_active')
             ->orderBy('course')
+            ->orderBy('year_level')
+            ->orderBy('semester')
             ->orderBy('code')
-            ->limit(20)
-            ->get()
-            ->map(function (Subject $s) {
-                $isNstp    = AssessmentService::isNstpSubject($s->code, $s->name);
-                $isPathfit = AssessmentService::isPathfitSubject($s->code, $s->name);
-                return [
-                    'id'          => $s->id,
-                    'code'        => $s->code,
-                    'name'        => $s->name,
-                    'lec_units'   => (float) $s->lec_units,
-                    'lab_units'   => (int) $s->lab_units,
-                    'total_units' => (float) $s->lec_units + (int) $s->lab_units,
-                    'is_nstp'     => $isNstp,
-                    'is_pathfit'  => $isPathfit,
-                    'is_billable' => ! $isNstp && ! $isPathfit,
-                    'course'      => $s->course,
-                    'year_level'  => $s->year_level,
-                    'semester'    => $s->semester,
-                ];
-            });
+            ->limit(30)
+            ->get();
 
-        return response()->json(['subjects' => $subjects]);
+        return response()->json([
+            'subjects' => $query->map(fn ($s) => [
+                'id'          => $s->id,
+                'code'        => $s->code,
+                'name'        => $s->name,
+                'lec_units'   => (float) $s->lec_units,
+                'lab_units'   => (int) $s->lab_units,
+                'total_units' => (float) $s->lec_units + (int) $s->lab_units,
+                'year_level'  => $s->year_level,
+                'semester'    => $s->semester,
+                'course'      => $s->course,
+                'is_nstp'     => AssessmentService::isNstpSubjectPublic($s->code, $s->name),
+                'is_pathfit'  => AssessmentService::isPathfitSubjectPublic($s->code, $s->name),
+                'is_billable' => ! AssessmentService::isNstpSubjectPublic($s->code, $s->name)
+                              && ! AssessmentService::isPathfitSubjectPublic($s->code, $s->name),
+            ])->values(),
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────

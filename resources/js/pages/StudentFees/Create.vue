@@ -11,6 +11,7 @@ import { useDataFormatting } from '@/composables/useDataFormatting'
 import {
   Search, User, BookOpen, Calculator,
   CheckCircle2, Loader2, AlertTriangle, Info, History,
+  Plus, Trash2, X,
 } from 'lucide-vue-next'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -43,13 +44,16 @@ interface PreselectedStudent {
   paid_semesters: PaidSemester[]
 }
 
-interface CurriculumSubject {
+interface SubjectRow {
   id: number
   code: string
   name: string
   lec_units: number
   lab_units: number
   total_units: number
+  year_level: string
+  semester: string
+  course: string
   is_nstp: boolean
   is_pathfit: boolean
   is_billable: boolean
@@ -138,6 +142,38 @@ const _initial = props.preselectedStudent
     )
   : { semester: '1st' as const, school_year: _defaultYear, year_level: '' }
 
+// ─── Scholarship preset options ───────────────────────────────────────────────
+
+const SCHOLARSHIP_PRESETS = [
+  { label: 'No Discount',                value: '',                          pct: 0   },
+  { label: 'CHED Full Scholar',          value: 'CHED Full Scholar',         pct: 100 },
+  { label: 'CHED Half Scholar',          value: 'CHED Half Scholar',         pct: 50  },
+  { label: 'CHED Partial Scholar',       value: 'CHED Partial Scholar',      pct: 25  },
+  { label: 'CCDI Institutional Grant',   value: 'CCDI Institutional Grant',  pct: 100 },
+  { label: 'Academic Excellence Award',  value: 'Academic Excellence Award', pct: 50  },
+  { label: 'Faculty / Staff Dependent',  value: 'Faculty / Staff Dependent', pct: 100 },
+  { label: 'Sibling Discount',           value: 'Sibling Discount',          pct: 10  },
+  { label: 'Other / Custom',             value: '__custom__',                pct: null },
+]
+
+const selectedScholarshipPreset = ref<string>('')   // value key from SCHOLARSHIP_PRESETS
+const customScholarshipName      = ref<string>('')   // typed when "Other / Custom" selected
+
+const scholarshipName = computed(() => {
+  if (!selectedScholarshipPreset.value) return ''
+  if (selectedScholarshipPreset.value === '__custom__') return customScholarshipName.value.trim()
+  return selectedScholarshipPreset.value
+})
+
+function onScholarshipPresetChange(value: string) {
+  selectedScholarshipPreset.value = value
+  const preset = SCHOLARSHIP_PRESETS.find(p => p.value === value)
+  if (preset && preset.pct !== null) {
+    form.discount_percentage = preset.pct
+  }
+  // If "Other / Custom", leave the percentage as-is so Accounting can set it manually
+}
+
 // ─── Form ─────────────────────────────────────────────────────────────────────
 
 const form = useForm({
@@ -147,9 +183,11 @@ const form = useForm({
   year_level:          _initial.year_level,
   lec_units:           0,
   lab_units:           0,
-  nstp_lec_units:      0,
+  nstp_lec_units:      0 as number,
   discount_percentage: 0 as number,
+  discount_name:       '' as string,
   term_percentages:    {} as Record<string, number>,
+  manual_subject_ids:  [] as number[],
 })
 
 // ─── Reactive State ───────────────────────────────────────────────────────────
@@ -203,7 +241,7 @@ function selectStudent(student: PreselectedStudent) {
   paidSemesters.value      = student.paid_semesters ?? []
   searchResults.value      = []
   studentSearch.value      = ''
-  curriculumSubjects.value = []
+  selectedSubjects.value   = []
   curriculumMessage.value  = ''
   hasNstp.value            = false
 
@@ -216,23 +254,66 @@ function selectStudent(student: PreselectedStudent) {
 }
 
 function clearStudent() {
-  selectedStudent.value     = null
-  paidSemesters.value       = []
-  computedYearLevel.value   = ''
-  form.user_id              = 0
-  form.year_level           = ''
-  form.lec_units            = 0
-  form.lab_units            = 0
-  curriculumSubjects.value  = []
-  curriculumMessage.value   = ''
-  hasNstp.value             = false
+  selectedStudent.value    = null
+  paidSemesters.value      = []
+  computedYearLevel.value  = ''
+  form.user_id             = 0
+  form.year_level          = ''
+  form.lec_units           = 0
+  form.lab_units           = 0
+  selectedSubjects.value   = []
+  curriculumMessage.value  = ''
+  hasNstp.value            = false
+}
+
+// ─── Subject State (manual management) ───────────────────────────────────────
+
+// The authoritative list of subjects for this assessment.
+// Populated from curriculum fetch, then freely editable by Accounting.
+const selectedSubjects  = ref<SubjectRow[]>([])
+
+// Subject search (for adding subjects)
+const subjectSearchQuery   = ref('')
+const subjectSearchResults = ref<SubjectRow[]>([])
+const subjectSearchLoading = ref(false)
+const showSubjectSearch    = ref(false)
+
+let subjectSearchTimeout: ReturnType<typeof setTimeout>
+
+async function searchSubjects() {
+  const q = subjectSearchQuery.value.trim()
+  if (q.length < 2) { subjectSearchResults.value = []; return }
+  subjectSearchLoading.value = true
+  clearTimeout(subjectSearchTimeout)
+  subjectSearchTimeout = setTimeout(async () => {
+    try {
+      const params = new URLSearchParams({ q })
+      const res    = await fetch(route('student-fees.subject-search') + '?' + params.toString())
+      const data   = await res.json()
+      // Filter out subjects already in the list
+      const existingIds = new Set(selectedSubjects.value.map(s => s.id))
+      subjectSearchResults.value = (data.subjects ?? []).filter((s: SubjectRow) => !existingIds.has(s.id))
+    } catch { subjectSearchResults.value = [] }
+    finally   { subjectSearchLoading.value = false }
+  }, 300)
+}
+
+function addSubject(subject: SubjectRow) {
+  if (selectedSubjects.value.some(s => s.id === subject.id)) return
+  selectedSubjects.value.push(subject)
+  subjectSearchQuery.value   = ''
+  subjectSearchResults.value = []
+  showSubjectSearch.value    = false
+}
+
+function removeSubject(subjectId: number) {
+  selectedSubjects.value = selectedSubjects.value.filter(s => s.id !== subjectId)
 }
 
 // ─── Curriculum Auto-Populate ─────────────────────────────────────────────────
 
-const curriculumLoading  = ref(false)
-const curriculumSubjects = ref<CurriculumSubject[]>([])
-const curriculumMessage  = ref('')
+const curriculumLoading = ref(false)
+const curriculumMessage = ref('')
 
 // ── NSTP state ────────────────────────────────────────────────────────────────
 const hasNstp = ref(false)
@@ -242,17 +323,17 @@ const NSTP_UNITS = 1.5
 async function loadCurriculum() {
   const student = selectedStudent.value
   if (!student || student.is_irregular) {
-    curriculumSubjects.value = []
-    curriculumMessage.value  = student?.is_irregular ? 'Irregular student — enter units manually.' : ''
+    selectedSubjects.value  = []
+    curriculumMessage.value = student?.is_irregular ? 'Irregular student — subjects cannot be auto-loaded. Add subjects manually.' : ''
     hasNstp.value = false
     return
   }
   if (!form.semester) return
 
-  curriculumLoading.value  = true
-  curriculumSubjects.value = []
-  curriculumMessage.value  = ''
-  hasNstp.value            = false
+  curriculumLoading.value = true
+  selectedSubjects.value  = []
+  curriculumMessage.value = ''
+  hasNstp.value           = false
 
   try {
     const url = route('student-fees.curriculum-units')
@@ -264,35 +345,67 @@ async function loadCurriculum() {
     const data = await res.json()
 
     if (data.found) {
-      curriculumSubjects.value = data.subjects
-      form.lec_units           = data.billable_lec_units
-      form.lab_units           = data.lab_subject_count
-      hasNstp.value            = data.has_nstp ?? false
-
-      if (data.source === 'preset') {
-        curriculumMessage.value = data.message ?? 'Units auto-filled from preset — no subject breakdown available.'
-      } else {
+      if (data.source === 'subjects' && data.subjects?.length) {
+        // Full subject-level data — populate the editable list
+        selectedSubjects.value  = data.subjects
+        hasNstp.value           = data.has_nstp ?? false
         curriculumMessage.value = ''
+      } else {
+        // Preset-only (aggregate, no rows) — show message, allow manual add
+        hasNstp.value           = data.has_nstp ?? false
+        curriculumMessage.value = data.message ?? 'Units auto-filled from preset — add subjects manually if needed.'
       }
     } else {
-      curriculumMessage.value = data.message ?? 'No curriculum data found for this student.'
+      curriculumMessage.value = data.message ?? 'No curriculum data found. Add subjects manually.'
     }
   } catch {
-    curriculumMessage.value = 'Could not load curriculum — enter units manually.'
+    curriculumMessage.value = 'Could not load curriculum. Add subjects manually.'
   } finally {
     curriculumLoading.value = false
   }
 }
 
 watch([selectedStudent, () => form.semester], () => {
-  if (selectedStudent.value && !selectedStudent.value.is_irregular) loadCurriculum()
+  if (selectedStudent.value) loadCurriculum()
 }, { immediate: true })
 
-// ─── Derived NSTP values ──────────────────────────────────────────────────────
+// ─── Derived billing values from the selected subject list ────────────────────
 
 const nstpLecUnits = computed(() => hasNstp.value ? NSTP_UNITS : 0)
 
-watch(nstpLecUnits, (val) => { form.nstp_lec_units = val }, { immediate: true })
+const derivedLecUnits = computed(() => {
+  // Sum lec_units of all billable (non-NSTP, non-PATHFIT) subjects
+  const billable = selectedSubjects.value
+    .filter(s => s.is_billable)
+    .reduce((sum, s) => sum + (s.lec_units || 0), 0)
+  return billable
+})
+
+const derivedLabUnits = computed(() => {
+  // Count subjects that have lab (lab_units > 0) and are billable
+  return selectedSubjects.value.filter(s => s.is_billable && (s.lab_units || 0) > 0).length
+})
+
+// For irregular students, allow manual override via the inputs (kept visible)
+const isIrregular = computed(() => selectedStudent.value?.is_irregular ?? false)
+
+// Sync form fields from derived values unless student is irregular
+watch([derivedLecUnits, derivedLabUnits, nstpLecUnits], () => {
+  if (!isIrregular.value) {
+    form.lec_units       = derivedLecUnits.value
+    form.lab_units       = derivedLabUnits.value
+    form.nstp_lec_units  = nstpLecUnits.value
+  }
+}, { immediate: true })
+
+watch(nstpLecUnits, (val) => {
+  if (!isIrregular.value) form.nstp_lec_units = val
+}, { immediate: true })
+
+// Sync manual_subject_ids whenever selectedSubjects changes
+watch(selectedSubjects, (subjects) => {
+  form.manual_subject_ids = subjects.map(s => s.id)
+}, { deep: true })
 
 // ─── Live Fee Computation ─────────────────────────────────────────────────────
 
@@ -331,32 +444,16 @@ const tuitionAndLab = computed(() =>
   tuitionFee.value + labFee.value + entrepreneurFee.value,
 )
 
-// ─── Display-only: Lab + Entrepreneurship combined for the Fee Breakdown card ──
 const labFeeTotal = computed(() => labFee.value + entrepreneurFee.value)
 
-// ─── Lecture Units Input ──────────────────────────────────────────────────────
-
-const displayLecUnits = computed({
-  get() {
-    return totalLecUnits.value
-  },
-  set(val: number) {
-    form.lec_units = Math.max(0, Number(val) - nstpLecUnits.value)
-  },
-})
-
-// ─── Academic totals (for display annotation — not used in billing) ───────────
-// The raw sum of lec_units from the subject records as stored in the DB.
-// This may differ from totalLecUnits when NSTP is present because
-// totalLecUnits uses the fixed 1.5 billing rate, not the DB value (e.g. 2 or 3).
+// ─── NSTP annotation helpers ──────────────────────────────────────────────────
 
 const academicTotalLecUnits = computed(() =>
-  curriculumSubjects.value.reduce((sum, s) => sum + (s.lec_units || 0), 0),
+  selectedSubjects.value.reduce((sum, s) => sum + (s.lec_units || 0), 0),
 )
 
-// The NSTP subject's raw DB lec_units — used to show "2 academic" annotation.
 const nstpAcademicUnits = computed(() => {
-  const nstpSubj = curriculumSubjects.value.find((s) => s.is_nstp)
+  const nstpSubj = selectedSubjects.value.find((s) => s.is_nstp)
   return nstpSubj?.lec_units ?? 0
 })
 
@@ -418,17 +515,17 @@ function submit() {
 
   submitting.value = true
 
-  form.user_id          = selectedStudent.value.id
-  form.year_level       = computedYearLevel.value || selectedStudent.value.year_level
-  form.nstp_lec_units   = nstpLecUnits.value
-  form.term_percentages = { ...editablePercentages.value }
+  form.user_id             = selectedStudent.value.id
+  form.year_level          = computedYearLevel.value || selectedStudent.value.year_level
+  form.nstp_lec_units      = nstpLecUnits.value
+  form.term_percentages    = { ...editablePercentages.value }
+  form.manual_subject_ids  = selectedSubjects.value.map(s => s.id)
+  form.discount_name       = scholarshipName.value
 
   form.post(route('student-fees.store'), {
     onError:  (errors) => console.error('[submit] validation errors:', errors),
     onSuccess: ()      => console.log('[submit] success'),
-    onFinish: ()      => {
-      submitting.value = false
-    },
+    onFinish: ()      => { submitting.value = false },
   })
 }
 
@@ -518,6 +615,7 @@ function semLabel(s: string) {
                   class="absolute z-20 mt-1 w-full rounded-md border bg-white dark:bg-zinc-900 shadow-lg">
                   <button
                     v-for="s in searchResults" :key="s.id"
+                    type="button"
                     class="w-full text-left px-4 py-3 hover:bg-accent transition-colors border-b last:border-0"
                     @click="selectStudent(s)"
                   >
@@ -566,7 +664,7 @@ function semLabel(s: string) {
             </div>
           </div>
 
-          <!-- ── Paid Semester History ── -->
+          <!-- Paid Semester History -->
           <Card v-if="paidSemesters.length > 0" class="border-green-200 bg-green-50/40">
             <CardHeader class="pb-3">
               <CardTitle class="flex items-center gap-2 text-base text-green-800">
@@ -655,336 +753,226 @@ function semLabel(s: string) {
             </CardContent>
           </Card>
 
-          <!-- ── Curriculum / Unit Breakdown ──────────────────────── -->
-
-          <!-- Loading skeleton -->
-          <div v-if="curriculumLoading"
-               class="rounded-xl border border-gray-200 bg-white overflow-hidden">
-            <div class="px-5 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-2">
-              <Loader2 class="h-4 w-4 animate-spin text-blue-500" />
-              <span class="text-sm font-semibold text-gray-600">Loading curriculum subjects…</span>
-            </div>
-            <div class="p-5 space-y-2">
-              <div v-for="i in 5" :key="i"
-                   class="h-8 rounded bg-gray-100 animate-pulse"
-                   :style="{ width: (75 + i * 4) + '%' }" />
-            </div>
-          </div>
-
-          <!-- Subject Table — shown when subjects array is populated -->
-          <div v-else-if="selectedStudent && curriculumSubjects.length > 0"
-               class="rounded-xl border border-gray-200 bg-white overflow-hidden">
-
-            <!-- Header -->
-            <div class="px-5 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-              <div>
-                <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <BookOpen class="h-4 w-4 text-blue-500" />
-                  Curriculum Subjects
-                </h3>
-                <p class="text-xs text-gray-400 mt-0.5">
-                  {{ selectedStudent.course }}
-                  &middot;
-                  <span :class="computedYearLevel !== selectedStudent.year_level ? 'text-amber-600 font-medium' : ''">
-                    {{ computedYearLevel || selectedStudent.year_level }}
-                  </span>
-                  &middot; {{ semLabel(form.semester) }}
-                  &middot; {{ form.school_year }}
-                </p>
-              </div>
-              <div class="text-right">
-                <p class="text-xs text-gray-500">
-                  {{ curriculumSubjects.length }} subject{{ curriculumSubjects.length !== 1 ? 's' : '' }}
-                </p>
-                <!-- ── FIX: label as "billing units" and show academic total when NSTP present ── -->
-                <p class="text-xs font-semibold text-blue-700">
-                  {{ totalLecUnits }} billing units
-                </p>
-                <p v-if="hasNstp && academicTotalLecUnits !== totalLecUnits"
-                   class="text-xs text-amber-600">
-                  {{ academicTotalLecUnits }} academic
-                </p>
-                <!-- ──────────────────────────────────────────────────────────────────────────── -->
-              </div>
-            </div>
-
-            <!-- Subject rows -->
-            <table class="w-full text-sm">
-              <thead class="text-xs uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th class="text-left px-5 py-2 w-24">Code</th>
-                  <th class="text-left px-5 py-2">Subject</th>
-                  <th class="text-center px-4 py-2 w-20">Lec</th>
-                  <th class="text-center px-4 py-2 w-20">Lab</th>
-                  <th class="text-center px-4 py-2 w-24">Total</th>
-                  <th class="text-center px-4 py-2 w-36">Status</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-100">
-                <tr
-                  v-for="subj in curriculumSubjects"
-                  :key="subj.id"
-                  :class="[
-                    'transition-colors',
-                    subj.is_nstp    ? 'bg-amber-50/60' :
-                    subj.is_pathfit ? 'bg-purple-50/60' :
-                    subj.is_billable ? 'bg-white hover:bg-gray-50/60' :
-                    'bg-gray-50/40'
-                  ]"
-                >
-                  <td class="px-5 py-2.5 font-mono text-xs font-semibold text-gray-700">
-                    {{ subj.code }}
-                  </td>
-                  <td class="px-5 py-2.5 text-gray-800">{{ subj.name }}</td>
-
-                  <!-- ── FIX: Lec column — NSTP rows show billing unit (1.5) with academic annotation ── -->
-                  <td class="px-4 py-2.5 text-center font-mono">
-                    <template v-if="subj.is_nstp">
-                      <span class="font-semibold text-amber-700">1.5</span>
-                      <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
-                        {{ subj.lec_units }} acad.
-                      </span>
-                    </template>
-                    <template v-else>
-                      <span class="text-gray-700">{{ subj.lec_units || '—' }}</span>
-                    </template>
-                  </td>
-                  <!-- ─────────────────────────────────────────────────────────────────────────────── -->
-
-                  <td class="px-4 py-2.5 text-center font-mono text-gray-700">
-                    {{ subj.lab_units || '—' }}
-                  </td>
-
-                  <!-- ── FIX: Total column — NSTP rows show billing total (1.5) with academic annotation ── -->
-                  <td class="px-4 py-2.5 text-center font-mono font-semibold">
-                    <template v-if="subj.is_nstp">
-                      <span class="text-amber-700">1.5</span>
-                      <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
-                        {{ subj.total_units }} acad.
-                      </span>
-                    </template>
-                    <template v-else>
-                      <span class="text-gray-900">{{ subj.total_units }}</span>
-                    </template>
-                  </td>
-                  <!-- ────────────────────────────────────────────────────────────────────────────────── -->
-
-                  <!-- ── FIX: NSTP status badge — shows billing context inline ── -->
-                  <td class="px-4 py-2.5 text-center">
-                    <template v-if="subj.is_nstp">
-                      <span class="inline-flex flex-col items-center gap-0.5 rounded-lg bg-amber-100 border border-amber-300 px-2.5 py-1 text-amber-800">
-                        <span class="text-xs font-bold leading-tight">NSTP</span>
-                        <span class="text-xs font-normal text-amber-600 leading-tight whitespace-nowrap">
-                          billed: 1.5 units
-                        </span>
-                      </span>
-                    </template>
-                    <template v-else-if="subj.is_pathfit">
-                      <span class="inline-flex items-center gap-1 rounded-full bg-purple-100 border border-purple-300 px-2 py-0.5 text-xs font-semibold text-purple-800">
-                        PATHFIT
-                      </span>
-                    </template>
-                    <template v-else-if="subj.is_billable">
-                      <span class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
-                        <CheckCircle2 class="h-3 w-3" /> Billable
-                      </span>
-                    </template>
-                    <template v-else>
-                      <span class="inline-flex rounded-full bg-gray-100 border border-gray-200 px-2 py-0.5 text-xs text-gray-500">
-                        Non-billable
-                      </span>
-                    </template>
-                  </td>
-                  <!-- ──────────────────────────────────────────────────────────── -->
-
-                </tr>
-              </tbody>
-
-              <!-- Totals footer -->
-              <tfoot class="bg-gray-50 border-t-2 border-gray-200">
-                <tr>
-                  <td colspan="2" class="px-5 py-2.5 text-xs font-semibold text-gray-600 uppercase tracking-wide">
-                    Billing Summary
-                  </td>
-                  <td class="px-4 py-2.5 text-center font-mono font-bold text-blue-700">
-                    {{ totalLecUnits }}
-                    <span v-if="hasNstp" class="block text-xs font-normal text-amber-600">
-                      {{ form.lec_units }} + 1.5 NSTP
-                    </span>
-                  </td>
-                  <td class="px-4 py-2.5 text-center font-mono font-bold text-gray-700">
-                    {{ form.lab_units }}
-                  </td>
-                  <td class="px-4 py-2.5 text-center font-mono font-bold text-blue-700">
-                    {{ totalLecUnits + Number(form.lab_units) }}
-                  </td>
-                  <td class="px-4 py-2.5 text-center text-xs text-gray-500">
-                    {{ form.lab_units }} lab subj
-                  </td>
-                </tr>
-                <tr class="border-t border-gray-200">
-                  <td colspan="6" class="px-5 py-2 text-xs text-gray-500">
-                    <span class="inline-flex items-center gap-3 flex-wrap">
-                      <span class="flex items-center gap-1">
-                        <span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
-                        Billable lec units: <strong class="text-gray-700">{{ form.lec_units }}</strong>
-                      </span>
-                      <!-- ── FIX: NSTP footer note explains the academic vs billing split ── -->
-                      <span v-if="hasNstp" class="flex items-center gap-1">
-                        <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
-                        NSTP: <strong class="text-amber-700">1.5 units billed</strong>
-                        <span class="text-gray-400">({{ nstpAcademicUnits }} academic)</span>
-                      </span>
-                      <!-- ──────────────────────────────────────────────────────────────── -->
-                      <span class="flex items-center gap-1">
-                        <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
-                        Lab subjects: <strong class="text-gray-700">{{ form.lab_units }}</strong>
-                      </span>
-                      <span v-if="curriculumSubjects.some(s => s.is_pathfit)" class="flex items-center gap-1">
-                        <span class="w-2 h-2 rounded-full bg-purple-400 inline-block"></span>
-                        PATHFIT: <strong class="text-purple-700">excluded from billing</strong>
-                      </span>
-                    </span>
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-
-          <!-- Preset fallback — subjects exist as aggregate only, no row data -->
-          <div v-else-if="selectedStudent && !curriculumLoading && (form.lec_units > 0 || hasNstp)"
-               class="rounded-xl border border-gray-200 bg-white overflow-hidden">
-            <div class="px-5 py-3 bg-gray-50 border-b border-gray-200">
-              <h3 class="text-sm font-semibold text-gray-700">Unit Breakdown</h3>
-              <p class="text-xs text-gray-400 mt-0.5">
-                {{ selectedStudent.course }} &middot;
-                <span :class="computedYearLevel !== selectedStudent.year_level ? 'text-amber-600 font-medium' : ''">
-                  {{ computedYearLevel || selectedStudent.year_level }}
-                </span>
-                &middot; {{ semLabel(form.semester) }} &middot; {{ form.school_year }}
-              </p>
-            </div>
-
-            <table class="w-full text-sm">
-              <thead class="text-xs uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
-                <tr>
-                  <th class="text-left px-5 py-2">Course</th>
-                  <th class="text-left px-5 py-2">Year Level</th>
-                  <th class="text-left px-5 py-2">Semester</th>
-                  <th class="text-center px-4 py-2">Lec Units</th>
-                  <th class="text-center px-4 py-2">Lab Units</th>
-                  <th class="text-center px-4 py-2">Lab Subjects</th>
-                  <th class="text-center px-4 py-2">Total Units</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr class="border-t border-gray-100">
-                  <td class="px-5 py-3 text-gray-700">{{ selectedStudent.course }}</td>
-                  <td class="px-5 py-3 text-gray-700">
-                    <span :class="computedYearLevel !== selectedStudent.year_level ? 'text-amber-700 font-semibold' : ''">
-                      {{ computedYearLevel || selectedStudent.year_level }}
-                    </span>
-                    <span
-                      v-if="computedYearLevel && computedYearLevel !== selectedStudent.year_level"
-                      class="block text-xs text-amber-600 font-normal">
-                      (was {{ selectedStudent.year_level }})
-                    </span>
-                  </td>
-                  <td class="px-5 py-3 text-gray-700">{{ semLabel(form.semester) }}</td>
-                  <td class="px-4 py-3 text-center font-mono font-semibold text-gray-900">
-                    {{ totalLecUnits }}
-                    <span v-if="hasNstp" class="block text-xs font-normal text-amber-600">
-                      {{ form.lec_units }} + 1.5 NSTP
-                    </span>
-                  </td>
-                  <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
-                  <td class="px-4 py-3 text-center font-mono text-gray-900">{{ form.lab_units }}</td>
-                  <td class="px-4 py-3 text-center font-mono font-bold text-blue-700">
-                    {{ totalLecUnits + Number(form.lab_units) }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-
-            <div v-if="curriculumMessage"
-                 class="flex items-start gap-2 px-5 py-3 bg-blue-50 border-t border-blue-100 text-xs text-blue-800">
-              <Info class="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" />
-              {{ curriculumMessage }}
-            </div>
-          </div>
-
-          <!-- No curriculum data message -->
-          <div v-else-if="selectedStudent && !curriculumLoading && !selectedStudent.is_irregular && curriculumMessage"
-               class="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
-            <AlertTriangle class="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
-            <div>
-              <p class="font-semibold">No Curriculum Data Found</p>
-              <p class="text-xs text-amber-800 mt-0.5">{{ curriculumMessage }}</p>
-              <p class="text-xs text-amber-700 mt-1">
-                You can still enter units manually below.
-                To auto-populate, seed subjects for this course/year/semester in Fee Settings or add a Course Unit Preset.
-              </p>
-            </div>
-          </div>
-
-          <!-- Irregular student notice -->
-          <div v-if="selectedStudent?.is_irregular"
-            class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <AlertTriangle class="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
-            <div>
-              <p class="font-semibold">Irregular Student</p>
-              <p class="text-amber-800 text-xs mt-0.5">
-                Curriculum auto-populate is disabled. Enter lecture units and lab subjects manually.
-                Use the NSTP checkbox below if this student is enrolled in NSTP.
-              </p>
-            </div>
-          </div>
-
-          <!-- Units Input + NSTP Checkbox -->
+          <!-- ── Subject Management ─────────────────────────────────────── -->
           <Card>
             <CardHeader>
               <CardTitle class="flex items-center gap-2 text-base">
                 <BookOpen class="h-4 w-4" />
-                Units Enrolled
+                Enrolled Subjects
                 <span class="ml-auto text-xs font-normal text-muted-foreground">
-                  Auto-filled from curriculum — override if needed
+                  Auto-loaded from curriculum · add or remove as needed
                 </span>
               </CardTitle>
             </CardHeader>
-            <CardContent class="space-y-5">
+            <CardContent class="space-y-4">
 
-              <div class="grid grid-cols-2 gap-6">
-                <div class="space-y-1.5">
-                  <Label for="lec_units" class="flex items-center gap-1.5">
-                    <span class="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
-                    Lecture Units
-                    <span v-if="hasNstp" class="text-xs text-amber-600 font-medium">(incl. 1.5 NSTP)</span>
-                    <span v-else class="text-xs text-muted-foreground">(billable only)</span>
-                  </Label>
-                  <Input id="lec_units" type="number"
-                    v-model.number="displayLecUnits"
-                    min="0" max="50" step="0.5" class="text-center text-lg font-semibold" />
-                  <p class="text-xs text-muted-foreground text-center">
-                    {{ totalLecUnits }} units × {{ formatCurrency(feeRates.tuition_per_unit) }} / unit
+              <!-- Loading skeleton -->
+              <div v-if="curriculumLoading" class="space-y-2">
+                <div v-for="i in 5" :key="i"
+                     class="h-8 rounded bg-gray-100 animate-pulse"
+                     :style="{ width: (75 + i * 4) + '%' }" />
+                <p class="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                  Loading curriculum subjects…
+                </p>
+              </div>
+
+              <!-- Irregular student notice -->
+              <div v-else-if="selectedStudent?.is_irregular"
+                class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <AlertTriangle class="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
+                <div>
+                  <p class="font-semibold">Irregular Student</p>
+                  <p class="text-amber-800 text-xs mt-0.5">
+                    Curriculum auto-populate is disabled. Use the search below to add subjects individually.
+                    Check the NSTP toggle if this student is enrolled in NSTP.
                   </p>
-                  <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
-                </div>
-
-                <div class="space-y-1.5">
-                  <Label for="lab_units" class="flex items-center gap-1.5">
-                    <span class="w-2 h-2 rounded-full bg-orange-500 inline-block"></span>
-                    Lab Subjects
-                    <span class="text-xs text-muted-foreground">(subjects with lab)</span>
-                  </Label>
-                  <Input id="lab_units" type="number" v-model.number="form.lab_units"
-                    min="0" max="20" class="text-center text-lg font-semibold" />
-                  <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.lab_fee_per_subject) }} / subject</p>
-                  <p v-if="form.errors.lab_units" class="text-sm text-destructive">{{ form.errors.lab_units }}</p>
                 </div>
               </div>
 
-              <!-- NSTP Checkbox -->
-              <div class="rounded-lg border"
+              <!-- No curriculum message -->
+              <div v-else-if="!selectedStudent" class="text-center py-6 text-muted-foreground text-sm">
+                Select a student to load subjects.
+              </div>
+
+              <!-- Curriculum info message (preset fallback) -->
+              <div v-if="curriculumMessage && !curriculumLoading && selectedStudent"
+                   class="flex items-start gap-2 rounded-md bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-800">
+                <Info class="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" />
+                {{ curriculumMessage }}
+              </div>
+
+              <!-- Subject table -->
+              <div v-if="selectedSubjects.length > 0 && !curriculumLoading"
+                   class="rounded-xl border border-gray-200 bg-white overflow-hidden">
+
+                <!-- Header bar -->
+                <div class="px-5 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                  <div>
+                    <h3 class="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                      <BookOpen class="h-4 w-4 text-blue-500" />
+                      {{ selectedSubjects.length }} subject{{ selectedSubjects.length !== 1 ? 's' : '' }} selected
+                    </h3>
+                    <p class="text-xs text-gray-400 mt-0.5">
+                      <span v-if="selectedStudent">
+                        {{ selectedStudent.course }}
+                        &middot;
+                        <span :class="computedYearLevel !== selectedStudent.year_level ? 'text-amber-600 font-medium' : ''">
+                          {{ computedYearLevel || selectedStudent.year_level }}
+                        </span>
+                        &middot; {{ semLabel(form.semester) }}
+                        &middot; {{ form.school_year }}
+                      </span>
+                    </p>
+                  </div>
+                  <div class="text-right">
+                    <p class="text-xs font-semibold text-blue-700">
+                      {{ totalLecUnits }} billing units
+                    </p>
+                    <p v-if="hasNstp && academicTotalLecUnits !== totalLecUnits"
+                       class="text-xs text-amber-600">
+                      {{ academicTotalLecUnits }} academic
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Subject rows -->
+                <table class="w-full text-sm">
+                  <thead class="text-xs uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      <th class="text-left px-5 py-2 w-24">Code</th>
+                      <th class="text-left px-5 py-2">Subject</th>
+                      <th class="text-center px-4 py-2 w-20">Lec</th>
+                      <th class="text-center px-4 py-2 w-20">Lab</th>
+                      <th class="text-center px-4 py-2 w-24">Status</th>
+                      <th class="text-center px-4 py-2 w-16">Remove</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-100">
+                    <tr
+                      v-for="subj in selectedSubjects"
+                      :key="subj.id"
+                      :class="[
+                        'transition-colors',
+                        subj.is_nstp    ? 'bg-amber-50/60' :
+                        subj.is_pathfit ? 'bg-purple-50/60' :
+                        subj.is_billable ? 'bg-white hover:bg-gray-50/60' :
+                        'bg-gray-50/40'
+                      ]"
+                    >
+                      <td class="px-5 py-2.5 font-mono text-xs font-semibold text-gray-700">
+                        {{ subj.code }}
+                      </td>
+                      <td class="px-5 py-2.5">
+                        <p class="text-gray-800">{{ subj.name }}</p>
+                        <p v-if="subj.course !== selectedStudent?.course"
+                           class="text-xs text-indigo-600 font-medium">
+                          {{ subj.course }} · {{ subj.year_level }}
+                        </p>
+                      </td>
+                      <td class="px-4 py-2.5 text-center font-mono">
+                        <template v-if="subj.is_nstp">
+                          <span class="font-semibold text-amber-700">1.5</span>
+                          <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
+                            {{ subj.lec_units }} acad.
+                          </span>
+                        </template>
+                        <template v-else>
+                          <span class="text-gray-700">{{ subj.lec_units || '—' }}</span>
+                        </template>
+                      </td>
+                      <td class="px-4 py-2.5 text-center font-mono text-gray-700">
+                        {{ subj.lab_units || '—' }}
+                      </td>
+                      <td class="px-4 py-2.5 text-center">
+                        <template v-if="subj.is_nstp">
+                          <span class="inline-flex flex-col items-center gap-0.5 rounded-lg bg-amber-100 border border-amber-300 px-2.5 py-1 text-amber-800">
+                            <span class="text-xs font-bold leading-tight">NSTP</span>
+                            <span class="text-xs font-normal text-amber-600 leading-tight whitespace-nowrap">billed: 1.5 units</span>
+                          </span>
+                        </template>
+                        <template v-else-if="subj.is_pathfit">
+                          <span class="inline-flex items-center gap-1 rounded-full bg-purple-100 border border-purple-300 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                            PATHFIT
+                          </span>
+                        </template>
+                        <template v-else-if="subj.is_billable">
+                          <span class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
+                            <CheckCircle2 class="h-3 w-3" /> Billable
+                          </span>
+                        </template>
+                        <template v-else>
+                          <span class="inline-flex rounded-full bg-gray-100 border border-gray-200 px-2 py-0.5 text-xs text-gray-500">
+                            Non-billable
+                          </span>
+                        </template>
+                      </td>
+                      <td class="px-4 py-2.5 text-center">
+                        <button
+                          type="button"
+                          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                          title="Remove subject"
+                          @click="removeSubject(subj.id)"
+                        >
+                          <Trash2 class="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+
+                  <!-- Billing summary footer -->
+                  <tfoot class="bg-gray-50 border-t-2 border-gray-200">
+                    <tr>
+                      <td colspan="2" class="px-5 py-2.5 text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                        Billing Summary
+                      </td>
+                      <td class="px-4 py-2.5 text-center font-mono font-bold text-blue-700">
+                        {{ totalLecUnits }}
+                        <span v-if="hasNstp" class="block text-xs font-normal text-amber-600">
+                          {{ form.lec_units }} + 1.5 NSTP
+                        </span>
+                      </td>
+                      <td class="px-4 py-2.5 text-center font-mono font-bold text-gray-700">
+                        {{ form.lab_units }}
+                      </td>
+                      <td colspan="2" class="px-4 py-2.5 text-xs text-gray-500">
+                        <span class="inline-flex items-center gap-3 flex-wrap">
+                          <span class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
+                            Billable lec: <strong class="text-gray-700">{{ form.lec_units }}</strong>
+                          </span>
+                          <span v-if="hasNstp" class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
+                            NSTP: <strong class="text-amber-700">1.5 billed</strong>
+                            <span class="text-gray-400">({{ nstpAcademicUnits }} academic)</span>
+                          </span>
+                          <span class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
+                            Lab subjects: <strong class="text-gray-700">{{ form.lab_units }}</strong>
+                          </span>
+                        </span>
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <!-- Empty state when no subjects loaded yet -->
+              <div v-else-if="selectedStudent && !curriculumLoading && !selectedSubjects.length && !selectedStudent.is_irregular"
+                   class="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
+                <AlertTriangle class="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
+                <div>
+                  <p class="font-semibold">No Curriculum Subjects Found</p>
+                  <p class="text-xs text-amber-800 mt-0.5">
+                    No subjects were found for {{ selectedStudent.course }} — {{ computedYearLevel || selectedStudent.year_level }} — {{ semLabel(form.semester) }}.
+                    Add subjects manually using the search below.
+                  </p>
+                </div>
+              </div>
+
+              <!-- NSTP toggle -->
+              <div v-if="selectedStudent && !curriculumLoading"
+                   class="rounded-lg border"
                    :class="hasNstp ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-gray-50'">
                 <label for="nstp_checkbox"
                        class="flex items-start gap-3 px-4 py-3 cursor-pointer select-none">
@@ -1003,12 +991,12 @@ function semLabel(s: string) {
                        :class="hasNstp ? 'text-amber-700' : 'text-muted-foreground'">
                       <template v-if="hasNstp">
                         <strong>Checked:</strong> 1.5 NSTP units ({{ formatCurrency(nstpTuition) }}) are included in billing.
-                        For partial discounts, NSTP is discounted along with all other lecture units.
+                        For partial discounts, NSTP is discounted along with other lecture units.
                         At 100% discount, NSTP is excluded and charged at full price ({{ formatCurrency(nstpTuition) }}).
                       </template>
                       <template v-else>
-                        Check if this course / year level / semester includes an NSTP subject.
-                        NSTP is billed at a fixed 1.5 units regardless of the subject's listed unit count.
+                        Check if this student's term includes an NSTP subject.
+                        NSTP is billed at a fixed 1.5 units regardless of the listed unit count.
                       </template>
                     </p>
                   </div>
@@ -1021,10 +1009,130 @@ function semLabel(s: string) {
                 </label>
               </div>
 
+              <!-- ── Add Subject Search ──────────────────────────────────── -->
+              <div v-if="selectedStudent && !curriculumLoading" class="pt-2">
+
+                <div v-if="!showSubjectSearch">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-2 rounded-md border border-dashed border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 transition-colors"
+                    @click="showSubjectSearch = true"
+                  >
+                    <Plus class="h-4 w-4" />
+                    Add Subject
+                  </button>
+                </div>
+
+                <div v-else class="rounded-xl border border-blue-200 bg-blue-50/60 p-4 space-y-3">
+                  <div class="flex items-center justify-between">
+                    <p class="text-sm font-semibold text-blue-800">Search &amp; Add Subject</p>
+                    <button
+                      type="button"
+                      class="text-blue-400 hover:text-blue-600"
+                      @click="showSubjectSearch = false; subjectSearchQuery = ''; subjectSearchResults = []"
+                    >
+                      <X class="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <div class="relative">
+                    <Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      v-model="subjectSearchQuery"
+                      class="pl-9 bg-white"
+                      placeholder="Search by subject code or name… (any course)"
+                      @input="searchSubjects"
+                      autofocus
+                    />
+                    <Loader2 v-if="subjectSearchLoading"
+                      class="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+
+                  <p class="text-xs text-blue-600">
+                    You can add subjects from any course — useful for cross-course enrollees or irregular students.
+                  </p>
+
+                  <!-- Results -->
+                  <div v-if="subjectSearchResults.length > 0"
+                       class="rounded-md border border-blue-200 bg-white divide-y divide-gray-100 max-h-72 overflow-y-auto shadow-sm">
+                    <button
+                      v-for="s in subjectSearchResults"
+                      :key="s.id"
+                      type="button"
+                      class="w-full text-left px-4 py-2.5 hover:bg-blue-50 transition-colors"
+                      @click="addSubject(s)"
+                    >
+                      <div class="flex items-start justify-between gap-2">
+                        <div>
+                          <p class="text-sm font-semibold text-gray-800">
+                            <span class="font-mono text-xs text-gray-500 mr-1.5">{{ s.code }}</span>
+                            {{ s.name }}
+                          </p>
+                          <p class="text-xs text-muted-foreground">
+                            {{ s.course }} · {{ s.year_level }} · {{ s.semester }}
+                            · Lec: {{ s.lec_units }} · Lab: {{ s.lab_units }}
+                          </p>
+                        </div>
+                        <div class="shrink-0 flex flex-col items-end gap-0.5">
+                          <span v-if="s.is_nstp" class="text-xs font-semibold text-amber-700 bg-amber-100 px-1.5 rounded">NSTP</span>
+                          <span v-else-if="!s.is_billable" class="text-xs text-gray-400 bg-gray-100 px-1.5 rounded">Non-billable</span>
+                          <span v-else class="text-xs text-green-700 bg-green-100 px-1.5 rounded">Billable</span>
+                          <Plus class="h-3.5 w-3.5 text-blue-500 mt-1" />
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+
+                  <p v-else-if="subjectSearchQuery.length >= 2 && !subjectSearchLoading"
+                     class="text-sm text-muted-foreground text-center py-2">
+                    No subjects found for "{{ subjectSearchQuery }}"
+                  </p>
+                </div>
+              </div>
+
             </CardContent>
           </Card>
 
-          <!-- ── Discount / Scholarship ────────────────────────────────────── -->
+          <!-- Irregular manual overrides -->
+          <Card v-if="isIrregular && selectedStudent">
+            <CardHeader>
+              <CardTitle class="flex items-center gap-2 text-base">
+                <BookOpen class="h-4 w-4" />
+                Manual Unit Override
+                <span class="ml-auto text-xs font-normal text-muted-foreground">Irregular students only</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent class="space-y-4">
+              <div class="grid grid-cols-2 gap-6">
+                <div class="space-y-1.5">
+                  <Label for="lec_units" class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
+                    Lecture Units (billable)
+                  </Label>
+                  <Input id="lec_units" type="number"
+                    v-model.number="form.lec_units"
+                    min="0" max="50" step="0.5" class="text-center text-lg font-semibold" />
+                  <p class="text-xs text-muted-foreground text-center">
+                    {{ form.lec_units }} units × {{ formatCurrency(feeRates.tuition_per_unit) }} / unit
+                  </p>
+                  <p v-if="form.errors.lec_units" class="text-sm text-destructive">{{ form.errors.lec_units }}</p>
+                </div>
+
+                <div class="space-y-1.5">
+                  <Label for="lab_units" class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-orange-500 inline-block"></span>
+                    Lab Subjects (count)
+                  </Label>
+                  <Input id="lab_units" type="number" v-model.number="form.lab_units"
+                    min="0" max="20" class="text-center text-lg font-semibold" />
+                  <p class="text-xs text-muted-foreground text-center">× {{ formatCurrency(feeRates.lab_fee_per_subject) }} / subject</p>
+                  <p v-if="form.errors.lab_units" class="text-sm text-destructive">{{ form.errors.lab_units }}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <!-- ── Scholarship / Discount ─────────────────────────────────── -->
           <Card>
             <CardHeader>
               <CardTitle class="text-base flex items-center gap-2">
@@ -1034,6 +1142,7 @@ function semLabel(s: string) {
             </CardHeader>
             <CardContent class="space-y-4">
 
+              <!-- 100% + NSTP warning -->
               <div
                 v-if="hasNstp && pct === 100"
                 class="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-300 p-3 text-sm text-amber-900"
@@ -1049,9 +1158,67 @@ function semLabel(s: string) {
                 </div>
               </div>
 
-              <div class="space-y-3">
-                <Label for="discount_percentage">Discount Percentage (%)</Label>
-                <p class="text-xs text-muted-foreground -mt-2">
+              <!-- Scholarship type selector -->
+              <div class="space-y-2">
+                <Label>Scholarship / Discount Type</Label>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    v-for="preset in SCHOLARSHIP_PRESETS"
+                    :key="preset.value"
+                    type="button"
+                    @click="onScholarshipPresetChange(preset.value)"
+                    :class="[
+                      'text-left rounded-lg border px-3 py-2.5 text-sm transition-colors',
+                      selectedScholarshipPreset === preset.value
+                        ? 'border-amber-500 bg-amber-50 text-amber-900 shadow-sm'
+                        : 'border-input bg-background text-muted-foreground hover:bg-muted',
+                    ]"
+                  >
+                    <p class="font-medium leading-tight">{{ preset.label }}</p>
+                    <p v-if="preset.pct !== null && preset.pct > 0" class="text-xs mt-0.5 opacity-75">
+                      {{ preset.pct }}% off tuition
+                    </p>
+                    <p v-else-if="preset.value === ''" class="text-xs mt-0.5 opacity-75">
+                      Full tuition applies
+                    </p>
+                    <p v-else class="text-xs mt-0.5 opacity-75">
+                      Enter custom %
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Custom scholarship name (shown when "Other / Custom") -->
+              <div v-if="selectedScholarshipPreset === '__custom__'" class="space-y-1.5">
+                <Label for="custom_scholarship_name">Scholarship / Grant Name</Label>
+                <Input
+                  id="custom_scholarship_name"
+                  v-model="customScholarshipName"
+                  placeholder="e.g. LGU Scholars Program, Athletic Grant, etc."
+                  class="w-full"
+                />
+                <p class="text-xs text-muted-foreground">
+                  This label will appear on the student's Statement of Account.
+                </p>
+              </div>
+
+              <!-- Active scholarship label display -->
+              <div
+                v-if="scholarshipName && selectedScholarshipPreset !== '__custom__'"
+                class="flex items-center gap-2 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm"
+              >
+                <span class="text-amber-600">🎓</span>
+                <span class="font-semibold text-amber-900">{{ scholarshipName }}</span>
+                <span v-if="pct > 0" class="text-amber-700 text-xs ml-auto">{{ pct }}% discount</span>
+              </div>
+
+              <!-- Discount percentage display / override -->
+              <div class="space-y-2">
+                <Label for="discount_percentage">
+                  Discount Percentage (%)
+                  <span class="ml-1 text-xs font-normal text-muted-foreground">— auto-set by scholarship type, override if needed</span>
+                </Label>
+                <p class="text-xs text-muted-foreground">
                   <template v-if="hasNstp">
                     For partial discounts (&lt;100%): applies to all lecture units including NSTP ({{ totalLecUnits }} total).
                     At exactly 100%: all billable units waived, NSTP ({{ formatCurrency(nstpTuition) }}) charged at full price.
@@ -1061,23 +1228,6 @@ function semLabel(s: string) {
                     Applies to all lecture units ({{ form.lec_units }} units). Lab and miscellaneous fees are never discounted.
                   </template>
                 </p>
-
-                <div class="flex gap-1.5 flex-wrap">
-                  <button
-                    v-for="preset in [0, 10, 20, 25, 50, 75, 100]"
-                    :key="preset"
-                    type="button"
-                    @click="form.discount_percentage = preset"
-                    :class="[
-                      'px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
-                      form.discount_percentage === preset
-                        ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
-                        : 'bg-background border-input text-muted-foreground hover:bg-muted'
-                    ]"
-                  >
-                    {{ preset === 0 ? 'No discount' : preset + '%' }}
-                  </button>
-                </div>
 
                 <div class="flex items-center gap-3">
                   <Input
@@ -1097,12 +1247,14 @@ function semLabel(s: string) {
                 </p>
               </div>
 
+              <!-- Live discount breakdown -->
               <div
                 v-if="pct > 0"
                 class="rounded-md bg-green-50 border border-green-200 p-3 space-y-1.5 text-sm"
               >
                 <p class="font-semibold text-xs uppercase tracking-wide text-green-700 mb-2">
                   Effective Fees After Discount
+                  <span v-if="scholarshipName" class="ml-1 font-normal normal-case text-green-600">({{ scholarshipName }})</span>
                 </p>
 
                 <template v-if="pct < 100">
@@ -1207,7 +1359,7 @@ function semLabel(s: string) {
 
               <div class="space-y-2">
 
-                <!-- ── Tuition Fee ── -->
+                <!-- Tuition Fee -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
                     Tuition Fee ({{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }})
@@ -1215,7 +1367,7 @@ function semLabel(s: string) {
                   <span class="font-medium">{{ formatCurrency(tuitionFee) }}</span>
                 </div>
 
-                <!-- ── Scholarship discount — clean warning pill ── -->
+                <!-- Scholarship discount pill -->
                 <div
                   v-if="discountSaving > 0"
                   class="ml-2 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs"
@@ -1224,7 +1376,9 @@ function semLabel(s: string) {
                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <span class="text-emerald-700 leading-snug">
-                    <span class="font-semibold">{{ pct }}% scholarship discount applied</span>
+                    <span class="font-semibold">
+                      {{ scholarshipName || pct + '%' }} discount applied
+                    </span>
                     <span class="mx-1 text-emerald-400">—</span>
                     <span class="font-bold text-emerald-800">−{{ formatCurrency(discountSaving) }} saved</span>
                     <span v-if="pct === 100" class="ml-1 font-medium text-amber-600">
@@ -1233,7 +1387,7 @@ function semLabel(s: string) {
                   </span>
                 </div>
 
-                <!-- ── Lab. Fee (includes Entrepreneurship Fee) ── -->
+                <!-- Lab Fee -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">
                     Lab. Fee ({{ form.lab_units }} subj × {{ formatCurrency(feeRates.lab_fee_per_subject) }})
@@ -1245,7 +1399,7 @@ function semLabel(s: string) {
                   <span>{{ formatCurrency(entrepreneurFee) }}</span>
                 </div>
 
-                <!-- ── Misc. Fee ── -->
+                <!-- Misc Fee -->
                 <div class="flex justify-between">
                   <span class="text-muted-foreground">Misc. Fee (fixed)</span>
                   <span class="font-medium">{{ formatCurrency(miscFee) }}</span>
