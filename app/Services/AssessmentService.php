@@ -33,11 +33,12 @@ use App\Services\MoneyService;
  *     - Detected by str_contains($code, 'NSTP') — NOT str_starts_with —
  *       because all DB codes have a course prefix (CS-NSTP1, IT-NSTP1, etc.)
  *   PATHFIT / PE subjects:
- *     - Excluded from tuition billing entirely (CHED non-tuition subjects)
- *     - ✅ FIX #9: isPathfitSubject() now correctly detects these subjects.
- *       Previously hardcoded to return false, causing PATHFIT units to be
- *       billed when they should be excluded. Verify existing assessments for
- *       PATHFIT-affected courses before deploying to production.
+ *     - ✅ BILLED NORMALLY at CCDI — lec_units count toward tuition like any other subject.
+ *     - isPathfitSubject() correctly detects these subjects and sets is_pathfit=true
+ *       on each subject row for display purposes (shows a "PATHFIT" badge in the UI).
+ *     - is_pathfit=true does NOT gate billing. is_billable = !is_nstp for all subjects.
+ *     - CHED may recommend exclusion but CCDI's institutional policy is to bill these
+ *       subjects at the standard tuition rate.
  *
  * ── COURSES WITH NSTP (from ccdi_portal.subjects table) ──────────────────────
  *   Associate in Computer Technology  → ACT-NSTP1, ACT-NSTP2  (1.5 lec units in DB)
@@ -171,7 +172,7 @@ class AssessmentService
         $billableLecUnits = 0;
         $hasNstp          = false;
         $labSubjectCount  = 0;
-        $pathfitUnits     = 0;
+        $pathfitUnits     = 0;  // kept for API compat but always 0 — PATHFIT is billed normally
         $subjectList      = [];
 
         foreach ($subjects as $subj) {
@@ -183,10 +184,9 @@ class AssessmentService
             if ($isNstp) {
                 // Mark NSTP presence — billing units are fixed at 1.5 via NSTP_MINIMUM_UNITS
                 $hasNstp = true;
-            } elseif ($isPathfit) {
-                // PATHFIT/PE: excluded from billing per CHED
-                $pathfitUnits += $lecUnits;
             } else {
+                // Both regular AND PATHFIT subjects count toward billable lec units.
+                // PATHFIT is billed at standard tuition rate at CCDI (is_pathfit is display-only).
                 $billableLecUnits += $lecUnits;
                 if ($labUnits > 0) {
                     $labSubjectCount++;
@@ -207,7 +207,9 @@ class AssessmentService
                 'total_units'        => $lecUnits + $labUnits,
                 'is_nstp'            => $isNstp,
                 'is_pathfit'         => $isPathfit,
-                'is_billable'        => ! $isNstp && ! $isPathfit,
+                // PATHFIT subjects are billed normally at CCDI. is_billable = !is_nstp.
+                // is_pathfit=true is a display flag only — it does NOT exclude from billing.
+                'is_billable'        => ! $isNstp,
                 'nstp_billing_units' => $isNstp ? self::NSTP_MINIMUM_UNITS : 0,
                 // Per-subject fee preview
                 'tuition_fee'        => $subjectFees['tuition_fee'],
@@ -238,16 +240,17 @@ class AssessmentService
      * Rules:
      *   Regular subject: tuition = lec_units × rate
      *                    lab_fee = lab_fee_per_subject if lab_units > 0
+     *   PATHFIT subject: tuition = lec_units × rate  (billed normally at CCDI)
+     *                    lab_fee = lab_fee_per_subject if lab_units > 0
+     *                    is_pathfit=true is a display flag only — not a billing gate
      *   NSTP:            tuition = 1.5 × rate (fixed, regardless of lec_units stored)
      *                    lab_fee = 0 (NSTP has no lab component)
-     *   PATHFIT:         tuition = 0 (excluded from billing per CHED)
-     *                    lab_fee = 0
      *
      * Note: entrepreneurship_fee is charged ONCE at the assessment level (not per subject).
      * It is NOT included in the per-subject total here.
      *
      * @param  bool   $isNstp
-     * @param  bool   $isPathfit
+     * @param  bool   $isPathfit   Passed through for future use; does not affect billing at CCDI
      * @param  float  $lecUnits   Stored lec_units from subjects table (1.5 for NSTP, integer for others)
      * @param  int    $labUnits   Stored lab_units from subjects table
      * @param  array  $rates      Output of loadRates()
@@ -263,9 +266,11 @@ class AssessmentService
         $rate             = $rates['tuition_per_unit'];
         $labFeePerSubject = $rates['lab_fee_per_subject'];
 
-        if ($isPathfit) {
-            return ['tuition_fee' => 0.0, 'lab_fee' => 0.0, 'total_fee' => 0.0];
-        }
+        // ✅ FIX: Removed early-return for $isPathfit.
+        // PATHFIT subjects are billed at the standard tuition rate at CCDI.
+        // The old return-0 block was never reached when isPathfitSubject()
+        // returned false, but now that detection is active, leaving it would
+        // produce ₱0 tuition for PATHFIT — incorrect for this institution.
 
         if ($isNstp) {
             // NSTP always billed at 1.5 units — enforced regardless of DB value
@@ -273,6 +278,7 @@ class AssessmentService
             return ['tuition_fee' => $tuition, 'lab_fee' => 0.0, 'total_fee' => $tuition];
         }
 
+        // Regular subjects AND PATHFIT subjects — standard billing
         $tuition = round($lecUnits * $rate, 2);
         $labFee  = $labUnits > 0 ? round($labFeePerSubject, 2) : 0.0;
 
@@ -449,7 +455,7 @@ class AssessmentService
      *
      *   Lab and miscellaneous fees are NEVER discounted regardless of discount type.
      *
-     * @param  float      $lecUnits            Billable lec units (PATHFIT excluded, NSTP excluded)
+     * @param  float      $lecUnits            Billable lec units (PATHFIT included, NSTP excluded)
      * @param  int        $labSubjects         Number of subjects with lab_units > 0
      * @param  float      $nstpLecUnits        NSTP units — clamped to 1.5 if > 0
      * @param  float      $discountPercentage  0–100. 0 = no discount.
@@ -657,23 +663,18 @@ class AssessmentService
     }
 
     /**
-     * Detect PATHFIT / PE subjects excluded from tuition billing per CHED.
+     * Detect PATHFIT / PE subjects for display and classification purposes.
      *
-     * ✅ FIX #9: Previously hardcoded to return false, causing PATHFIT units
-     * to be billed when they should be excluded. Now correctly detects:
-     *   - Subject codes containing 'PATHFIT'
+     * At CCDI, PATHFIT/PE subjects are billed normally at the standard tuition rate.
+     * This method returning true sets is_pathfit=true on the subject row, which
+     * causes a "PATHFIT" badge to appear in the UI — it does NOT exclude the subject
+     * from billing. is_billable = !is_nstp for all subjects (PATHFIT included).
+     *
+     * Detection covers:
+     *   - Subject codes containing 'PATHFIT' (e.g. CS-PATHFIT1)
      *   - Subject names containing 'PATHFIT'
-     *   - Subject codes starting with 'PE' (e.g. PE-101, PE1, PE 1)
+     *   - Subject codes starting with 'PE' (e.g. PE-101)
      *   - Subject names containing 'PHYSICAL EDUCATION'
-     *
-     * ⚠️  DEPLOY WARNING: Before enabling this in production, run:
-     *   SELECT * FROM subjects WHERE code LIKE 'PATHFIT%'
-     *     OR name LIKE '%PATHFIT%'
-     *     OR code LIKE 'PE%'
-     *     OR name LIKE '%PHYSICAL EDUCATION%';
-     *
-     * If any matching subjects exist, existing assessments for those courses
-     * will have over-billed tuition. Determine impact before deploying.
      */
     public static function isPathfitSubject(string $code, string $name): bool
     {
