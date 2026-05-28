@@ -145,7 +145,7 @@ class StudentRegistration extends Model
                   });
             })
             ->whereIn('status', ['pending', 'approved', 'needs_revision'])
-            ->get(['id', 'full_name', 'email', 'contact_number', 'status', 'submitted_at']);
+            ->get(['id', 'first_name', 'last_name', 'email', 'contact_number', 'status', 'submitted_at']);
     }
 
     /**

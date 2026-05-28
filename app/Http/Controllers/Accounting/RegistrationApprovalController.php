@@ -79,7 +79,7 @@ class RegistrationApprovalController extends Controller
             'registration' => $this->serializeForDetail($registration),
             'duplicates'   => $duplicates->map(fn($d) => [
                 'id'             => $d->id,
-                'full_name'      => $d->full_name,
+                'full_name'      => $d->last_name . ', ' . $d->first_name,
                 'email'          => $d->email,
                 'contact_number' => $d->contact_number,
                 'status'         => $d->status->value,

@@ -7,19 +7,20 @@ use Illuminate\Database\Seeder;
 class DatabaseSeeder extends Seeder
 {
     /**
-     * Default seeder — essential system and application data only.
+     * Default seeder — essential system and application data including curriculum.
+     *
+     * Now includes (were previously standalone):
+     *   - EnhancedSubjectSeeder          (subject/curriculum master data) — STEP 5
+     *   - CourseUnitPresetSubjectsSeeder (links subjects to course presets) — STEP 6
      *
      * Excluded from this run (must be called explicitly via AcademicDataSeeder):
-     *   - EnhancedSubjectSeeder          (subject/curriculum master data)
      *   - ComprehensiveAssessmentSeeder  (student assessment records)
      *   - RealisticStudentDataSeeder     (payment history simulation)
      *   - WorkflowInstanceSeeder         (demo workflow instances)
      *   - StudentFirstPaymentSeeder      (payment test scenario)
      *   - AdditionalStudentSeeder        (named test students with transactions)
      *
-     * Standalone curriculum seeders (not part of this group):
-     *   php artisan db:seed --class=CurriculumSubjectsSeeder
-     *   php artisan db:seed --class=CourseUnitPresetSubjectsSeeder
+     * Other curriculum seeders (optional, not part of default run):
      *   php artisan db:seed --class=CurriculumFeePresetSeeder
      *   php artisan db:seed --class=QuickStudentAssessmentSeeder
      *
@@ -57,16 +58,29 @@ class DatabaseSeeder extends Seeder
         $this->call(CourseUnitPresetsSeeder::class);
         $this->command->newLine();
 
-        // ── Step 5: Workflow Templates ─────────────────────────────────────────
+        // ── Step 5: Subject / Curriculum Master Data ───────────────────────────
+        // Seeds subjects with course/year/semester classification.
+        $this->command->info('📖 Step 5: Seeding Subject Curriculum...');
+        $this->call(EnhancedSubjectSeeder::class);
+        $this->command->newLine();
+
+        // ── Step 6: Link Subjects to Course Unit Presets ────────────────────────
+        // Links subjects to presets for the Preset Subjects page in Fee Settings.
+        // Must run AFTER EnhancedSubjectSeeder and CourseUnitPresetsSeeder.
+        $this->command->info('🔗 Step 6: Linking Subjects to Course Unit Presets...');
+        $this->call(CourseUnitPresetSubjectsSeeder::class);
+        $this->command->newLine();
+
+        // ── Step 7: Workflow Templates ─────────────────────────────────────────
         // Seeds workflow definitions required for the approval pipeline.
-        $this->command->info('⚙️  Step 5: Seeding Workflow Templates...');
+        $this->command->info('⚙️  Step 7: Seeding Workflow Templates...');
         $this->call(DemoWorkflowSeeder::class);
         $this->call(PaymentApprovalWorkflowSeeder::class);
         $this->command->newLine();
 
-        // ── Step 6: Announcements ──────────────────────────────────────────────
+        // ── Step 8: Announcements ──────────────────────────────────────────────
         // Seeds sample announcement notifications for the student dashboard.
-        $this->command->info('🔔 Step 6: Seeding Notifications...');
+        $this->command->info('🔔 Step 8: Seeding Notifications...');
         $this->call(NotificationSeeder::class);
         $this->command->newLine();
 

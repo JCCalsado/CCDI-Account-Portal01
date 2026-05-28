@@ -5,19 +5,20 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 
 /**
- * AcademicDataSeeder — Curriculum, Assessment & Demo Payment Data
+ * AcademicDataSeeder — Assessment & Demo Payment Data
  *
  * This seeder must be run AFTER the default DatabaseSeeder (migrate:fresh --seed),
- * because it depends on users, workflow templates, and course unit presets existing.
+ * because it depends on users, subjects, workflow templates, and course unit presets existing.
+ *
+ * NOTE: EnhancedSubjectSeeder and CourseUnitPresetSubjectsSeeder are now part of DatabaseSeeder
+ * and will run automatically with migrate:fresh --seed.
  *
  * Run order is strict — do not reorder:
- *   1. EnhancedSubjectSeeder              — subject master data (curriculum)
- *   2. CourseUnitPresetSubjectsSeeder     — links subjects to course_unit_presets
- *   3. ComprehensiveAssessmentSeeder      — assessment records per student per term
- *   4. RealisticStudentDataSeeder         — realistic payment simulation
- *   5. WorkflowInstanceSeeder             — demo workflow instances for pending students
- *   6. StudentFirstPaymentSeeder          — first-payment test scenario
- *   7. AdditionalStudentSeeder            — 4 named students with full transaction history
+ *   1. ComprehensiveAssessmentSeeder      — assessment records per student per term
+ *   2. RealisticStudentDataSeeder         — realistic payment simulation
+ *   3. WorkflowInstanceSeeder             — demo workflow instances for pending students
+ *   4. StudentFirstPaymentSeeder          — first-payment test scenario
+ *   5. AdditionalStudentSeeder            — 4 named students with full transaction history
  *
  * Usage:
  *   php artisan db:seed --class=AcademicDataSeeder
@@ -33,56 +34,46 @@ class AcademicDataSeeder extends Seeder
     public function run(): void
     {
         $this->command->info('🎓 Starting academic & demo data seeding...');
-        $this->command->info('   (Requires: users, fee settings, workflow templates, and course presets to exist)');
+        $this->command->info('   (Requires: users, subjects, workflow templates, and course presets to exist)');
         $this->command->newLine();
 
         $this->guardAgainstMissingPrerequisites();
 
-        // ── Step 1: Subject / Curriculum Master Data ───────────────────────────
-        $this->command->info('📚 Step 1: Seeding Subject Curriculum (EnhancedSubjectSeeder)...');
-        $this->call(EnhancedSubjectSeeder::class);
+        $this->command->info('✅ Subjects and Course Presets already seeded via DatabaseSeeder.');
         $this->command->newLine();
 
-        // ── Step 2: Link Subjects to Course Unit Presets ───────────────────────
-        // Must run AFTER EnhancedSubjectSeeder — queries subjects by course/year/semester.
-        // Must run AFTER CourseUnitPresetsSeeder (already done in DatabaseSeeder Step 4).
-        // Populates course_unit_preset_subjects — the "Preset Subjects" page in Fee Settings.
-        $this->command->info('🔗 Step 2: Linking Subjects to Course Unit Presets (CourseUnitPresetSubjectsSeeder)...');
-        $this->call(CourseUnitPresetSubjectsSeeder::class);
-        $this->command->newLine();
-
-        // ── Step 3: Student Assessments & Payment Terms ────────────────────────
+        // ── Step 1: Student Assessments & Payment Terms ────────────────────────
         // Generates StudentAssessment + StudentPaymentTerm records for all students.
         // Fee formula is driven by config/fees.php — no hardcoded totals.
-        $this->command->info('📋 Step 3: Creating Student Assessments & Payment Terms...');
+        $this->command->info('📋 Step 1: Creating Student Assessments & Payment Terms...');
         $this->call(ComprehensiveAssessmentSeeder::class);
         $this->command->newLine();
 
-        // ── Step 4: Realistic Student Enrollments & Payments ───────────────────
+        // ── Step 2: Realistic Student Enrollments & Payments ───────────────────
         // Simulates historical payment behaviour across cohorts.
-        // Depends on Step 3 assessments existing.
-        $this->command->info('🎓 Step 4: Seeding Realistic Student Enrollments & Payments...');
+        // Depends on Step 1 assessments existing.
+        $this->command->info('🎓 Step 2: Seeding Realistic Student Enrollments & Payments...');
         $this->call(RealisticStudentDataSeeder::class);
         $this->command->newLine();
 
-        // ── Step 5: Demo Workflow Instances ────────────────────────────────────
+        // ── Step 3: Demo Workflow Instances ────────────────────────────────────
         // Creates sample workflow instances for students with pending enrollment.
         // Gracefully skips if no pending students are found.
-        $this->command->info('🔄 Step 5: Creating Sample Workflow Instances...');
+        $this->command->info('🔄 Step 3: Creating Sample Workflow Instances...');
         $this->call(WorkflowInstanceSeeder::class);
         $this->command->newLine();
 
-        // ── Step 6: First Payment Test Scenario ────────────────────────────────
+        // ── Step 4: First Payment Test Scenario ────────────────────────────────
         // Creates a controlled first-payment scenario for QA testing.
-        // Depends on Step 3 assessments existing.
-        $this->command->info('💳 Step 6: Creating First Payment Test Scenario...');
+        // Depends on Step 1 assessments existing.
+        $this->command->info('💳 Step 4: Creating First Payment Test Scenario...');
         $this->call(StudentFirstPaymentSeeder::class);
         $this->command->newLine();
 
-        // ── Step 7: Named Test Students with Full Transaction Histories ─────────
+        // ── Step 5: Named Test Students with Full Transaction Histories ─────────
         // Adds 4 named students (Maria, Juan, Ana, transaction.history@)
         // each with a complete multi-term payment history for UI/UX testing.
-        $this->command->info('🧪 Step 7: Creating 4 Named Test Students with Transaction Histories...');
+        $this->command->info('🧪 Step 5: Creating 4 Named Test Students with Transaction Histories...');
         $this->call(AdditionalStudentSeeder::class);
         $this->command->newLine();
 
