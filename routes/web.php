@@ -22,6 +22,7 @@ use App\Http\Controllers\WorkflowApprovalController;
 use App\Http\Controllers\WorkflowController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
+use App\Http\Controllers\Accounting\RegistrationApprovalController;
 
 // ============================================
 // PUBLIC ROUTES
@@ -252,6 +253,22 @@ if (app()->environment(['local', 'staging'])) {
         ]);
     })->name('test.resend');
 }
+
+// ============================================
+// REGISTRATION APPROVAL ROUTES (Accounting + Admin)
+// ============================================
+
+Route::middleware(['auth', 'verified', 'role:accounting,admin'])
+    ->prefix('accounting/registrations')
+    ->name('accounting.registrations.')
+    ->group(function () {
+        Route::get('/',                                [RegistrationApprovalController::class, 'index'])         ->name('index');
+        Route::get('/{registration}',                  [RegistrationApprovalController::class, 'show'])          ->name('show');
+        Route::post('/{registration}/approve',         [RegistrationApprovalController::class, 'approve'])       ->name('approve');
+        Route::post('/{registration}/reject',          [RegistrationApprovalController::class, 'reject'])        ->name('reject');
+        Route::post('/{registration}/request-revision',[RegistrationApprovalController::class, 'requestRevision'])->name('request-revision');
+        Route::get('/{registration}/documents/{type}', [RegistrationApprovalController::class, 'serveDocument']) ->name('document');
+    });
 
 require __DIR__ . '/settings.php';
 

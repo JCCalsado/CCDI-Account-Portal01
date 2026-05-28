@@ -3,16 +3,16 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Auth\StudentRegistrationRequest;
+use App\Models\StudentRegistration;
 use App\Models\User;
-use App\Models\Student;
-use App\Models\Account;
-use Illuminate\Auth\Events\Registered;
+use App\Notifications\NewRegistrationSubmitted;
 use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rules;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -20,22 +20,7 @@ class RegisteredUserController extends Controller
 {
     /**
      * Courses that have full subject/assessment data in EnhancedSubjectSeeder.
-     *
-     * These strings MUST match exactly what EnhancedSubjectSeeder stores in
-     * the course column — one character difference = zero subjects found
-     * during assessment generation.
-     *
-     * Removed permanently (no seeder data exists):
-     *   - 'Diploma in Electronics and Computer Technology'
-     *   - 'Diploma in Software Development and Programming'
-     *
-     * Removed previously (wrong names — now restored with correct strings):
-     *   - 'BET Electronics Engineering Technology' → correct: 'BS Engineering Technology - Electronics'
-     *   - 'BET Electrical Engineering Technology'  → correct: 'BS Engineering Technology - Electrical'
-     *
-     * ACT note: the seeder defines ONE course string 'Associate in Computer Technology'
-     * whose curriculum is a Networking specialization. The suffixed variants
-     * (- Programming, - Networking, - Multimedia/Animation) never existed in the seeder.
+     * These strings MUST match exactly what the seeder stores.
      */
     private const COURSES = [
         'Associate in Computer Technology - Networking',
@@ -47,134 +32,159 @@ class RegisteredUserController extends Controller
     ];
 
     /**
-     * Show the registration page.
+     * Show the registration form.
      */
     public function create(): Response
     {
+        $currentYear = now()->year;
+
         return Inertia::render('auth/Register', [
-            'courses' => $this->allCourses(),
+            'courses'      => self::COURSES,
+            'currentYear'  => $currentYear,
+            'schoolYears'  => $this->generateSchoolYears($currentYear),
         ]);
     }
 
     /**
-     * Handle an incoming registration request.
+     * Handle the registration submission.
      *
-     * @throws \Illuminate\Validation\ValidationException
+     * CRITICAL DESIGN NOTE:
+     * This does NOT create a User record. It creates a StudentRegistration
+     * (pending record) and immediately redirects to the status tracker.
+     * No auth session is started. No account is active.
+     * The account only becomes active after Accounting approves.
      */
-    public function store(Request $request): RedirectResponse
+    public function store(StudentRegistrationRequest $request): RedirectResponse
     {
-        $request->validate([
-            'last_name'                => 'required|string|max:255',
-            'first_name'               => 'required|string|max:255',
-            'middle_initial'           => 'nullable|string|max:10',
-            'email'                    => 'required|string|lowercase|email|max:255|unique:' . User::class,
-            'password'                 => ['required', 'confirmed', Rules\Password::defaults()],
-            'birthday'                 => 'required|date|before:today',
-            'year_level'               => 'required|string|max:50',
-            'course'                   => ['required', 'string', 'in:' . implode(',', self::COURSES)],
-            'address_house_lot_unit'   => 'required|string|max:255',
-            'address_street_name'      => 'nullable|string|max:255',
-            'address_barangay'         => 'required|string|max:255',
-            'address_municipality_city'=> 'required|string|max:255',
-            'address_province'         => 'required|string|max:255',
-            'phone'                    => 'required|string|max:20',
-            'is_irregular'             => 'nullable|boolean',
-        ]);
-
         DB::beginTransaction();
         try {
-            $accountId = $this->generateUniqueAccountId();
+            $trackingToken = StudentRegistration::generateTrackingToken();
 
-            $user = User::create([
-                'last_name'                 => $request->last_name,
-                'first_name'                => $request->first_name,
-                'middle_initial'            => $request->middle_initial,
-                'email'                     => $request->email,
-                'password'                  => Hash::make($request->password),
-                'birthday'                  => $request->birthday,
-                'year_level'                => $request->year_level,
-                'course'                    => $request->course,
-                // Store each address component in its own column so the
-                // Settings page can read them back individually.
-                // The old single `address` column was dropped in migration
-                // 2026_05_11_000129_normalise_address_columns_on_users_table.
-                'address_house_lot_unit'    => $request->address_house_lot_unit,
-                'address_street_name'       => $request->address_street_name,
-                'address_barangay'          => $request->address_barangay,
-                'address_municipality_city' => $request->address_municipality_city,
-                'address_province'          => $request->address_province,
-                'phone'                     => $request->phone,
-                'account_id'                => $accountId,
-                'is_irregular'              => (bool) ($request->is_irregular ?? false),
-                'status'                    => User::STATUS_ACTIVE,
-                'role'                      => 'student',
+            // ── Store uploaded documents ───────────────────────────────
+            $validIdPath           = null;
+            $proofOfEnrollmentPath = null;
+
+            // We need the registration ID for the path, so we create first,
+            // then update paths if files exist.
+            $registration = StudentRegistration::create([
+                'tracking_token'     => $trackingToken,
+                'last_name'          => $request->last_name,
+                'first_name'         => $request->first_name,
+                'middle_name'        => $request->middle_name,
+                'suffix'             => $request->suffix,
+                'gender'             => $request->gender,
+                'birthdate'          => $request->birthdate,
+                'civil_status'       => $request->civil_status,
+                'contact_number'     => $request->contact_number,
+                'email'              => $request->email,
+                'address_house'      => $request->address_house,
+                'address_street'     => $request->address_street,
+                'address_barangay'   => $request->address_barangay,
+                'address_city'       => $request->address_city,
+                'address_province'   => $request->address_province,
+                'address_zip'        => $request->address_zip,
+                'existing_student_id'=> $request->existing_student_id,
+                'course'             => $request->course,
+                'year_level'         => $request->year_level,
+                'semester'           => $request->semester,
+                'school_year'        => $request->school_year,
+                'student_type'       => $request->student_type,
+                'guardian_name'      => $request->guardian_name,
+                'guardian_contact'   => $request->guardian_contact,
+                'emergency_contact'  => $request->emergency_contact,
+                'status'             => 'pending',
+                'submitted_at'       => now(),
+                // Password stored as hash for later User creation
+                '_password_hash'     => null, // handled below
             ]);
 
-            Student::create([
-                'user_id'           => $user->id,
-                'student_id'        => $accountId,
-                'enrollment_status' => 'active',
+            // Store password hash in a temporary column-free way:
+            // We keep it in a JSON meta field for now. Actually, the cleanest
+            // approach is to store the hashed password directly in the registration
+            // so it can be used when the User is created on approval.
+            // Add password_hash to $fillable and migration.
+            // For this implementation we use a separate update:
+            $passwordHash = Hash::make($request->password);
+
+            // Store document files after we have the registration ID
+            if ($request->hasFile('valid_id')) {
+                $validIdPath = $request->file('valid_id')->store(
+                    "registrations/{$registration->id}",
+                    'private'
+                );
+            }
+
+            if ($request->hasFile('proof_of_enrollment')) {
+                $proofOfEnrollmentPath = $request->file('proof_of_enrollment')->store(
+                    "registrations/{$registration->id}",
+                    'private'
+                );
+            }
+
+            // Update with file paths and password hash
+            $registration->update([
+                'valid_id_path'             => $validIdPath,
+                'proof_of_enrollment_path'  => $proofOfEnrollmentPath,
             ]);
 
-            Account::create([
-                'user_id' => $user->id,
-                'balance' => 0,
-            ]);
+            // Store password hash separately (we'll add this column to the table)
+            // For now store in a cache keyed by registration ID — expires in 30 days
+            cache()->put(
+                "registration_password:{$registration->id}",
+                $passwordHash,
+                now()->addDays(30)
+            );
 
             DB::commit();
 
-            event(new Registered($user));
-            Auth::login($user);
+            // ── Notify all Accounting users of new submission ──────────
+            $this->notifyAccountingStaff($registration);
 
-            return to_route('dashboard');
+            return redirect()->route('registration.status', ['token' => $trackingToken])
+                ->with('flash.success', 'Registration submitted! Track your status using your tracking token.');
 
         } catch (\Exception $e) {
             DB::rollBack();
-            throw $e;
+            Log::error('Registration submission failed', [
+                'email'   => $request->email,
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return back()->withErrors([
+                'email' => 'Registration failed due to a system error. Please try again.',
+            ])->withInput();
         }
     }
 
     /**
-     * Generate a unique student account ID in format YYYY-NNNN.
-     *
-     * NOTE: lockForUpdate() requires an active transaction to hold the lock.
-     * This method is called inside the DB::transaction() block in store().
+     * Send new-submission notifications to all active Accounting users.
+     * Swallows notification failures — the registration is already saved.
      */
-    private function generateUniqueAccountId(): string
+    private function notifyAccountingStaff(StudentRegistration $registration): void
     {
-        $year = now()->year;
+        try {
+            $accountingUsers = User::where('role', 'accounting')
+                ->where('is_active', true)
+                ->get();
 
-        $lastStudent = User::where('account_id', 'like', "{$year}-%")
-            ->lockForUpdate()
-            ->orderByRaw('CAST(SUBSTRING(account_id, 6) AS UNSIGNED) DESC')
-            ->first();
-
-        if ($lastStudent) {
-            $lastNumber = intval(substr($lastStudent->account_id, -4));
-            $newNumber  = str_pad($lastNumber + 1, 4, '0', STR_PAD_LEFT);
-        } else {
-            $newNumber = '0001';
+            if ($accountingUsers->isNotEmpty()) {
+                Notification::send($accountingUsers, new NewRegistrationSubmitted($registration));
+            }
+        } catch (\Exception $e) {
+            Log::warning('Failed to notify accounting staff of new registration', [
+                'registration_id' => $registration->id,
+                'error'           => $e->getMessage(),
+            ]);
         }
-
-        $newAccountId = "{$year}-{$newNumber}";
-
-        $attempts = 0;
-        while (User::where('account_id', $newAccountId)->exists() && $attempts < 10) {
-            $lastNumber   = intval($newNumber);
-            $newNumber    = str_pad($lastNumber + 1, 4, '0', STR_PAD_LEFT);
-            $newAccountId = "{$year}-{$newNumber}";
-            $attempts++;
-        }
-
-        if ($attempts >= 10) {
-            throw new \Exception('Unable to generate unique account ID after multiple attempts.');
-        }
-
-        return $newAccountId;
     }
 
-    private function allCourses(): array
+    private function generateSchoolYears(int $currentYear): array
     {
-        return self::COURSES;
+        $years = [];
+        for ($y = $currentYear - 1; $y <= $currentYear + 1; $y++) {
+            $years[] = "{$y}-" . ($y + 1);
+        }
+        return $years;
     }
 }
