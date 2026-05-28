@@ -202,8 +202,8 @@
     <table style="width:100%; border-collapse:collapse; margin-bottom:10px;">
         <tr>
             <td style="width:70px; vertical-align:middle; padding-right:10px;">
-                <img src="file://{{ str_replace('\\', '/', public_path('images/ccdilogo.png')) }}"
-                     width="60" height="60" style="display:block;">
+                <img src="{{ public_path('images/ccdilogo.png') }}"
+                    width="60" height="60" style="display:block;">
             </td>
             <td style="vertical-align:middle; text-align:center;">
                 <h1>{{ strtoupper(config('school.name', 'Computer Communication Development Institute')) }}</h1>

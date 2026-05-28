@@ -507,6 +507,8 @@ class StudentFeeController extends Controller
                 'lab_units'            => $a->lab_units,
                 'lab_subjects'         => (int) ($a->lab_subjects ?? $a->lab_units),
                 'discount_type'        => $a->discount_type,
+                'discount_percentage'  => (float) ($a->discount_percentage ?? 0),
+                'discount_name'        => $a->discount_name,
                 'is_taking_nstp'       => $a->is_taking_nstp,
                 'fee_breakdown'        => [
                     [
@@ -666,6 +668,7 @@ class StudentFeeController extends Controller
             'tuition_per_unit'     => $tuitionPerUnit,
             'discount_type'        => $assessment->discount_type ?? 'none',
             'discount_percentage'  => (float) ($assessment->discount_percentage ?? 0),
+            'discount_name'        => $assessment->discount_name,
             'paymentTerms'         => $assessment->paymentTerms->sortBy('term_order')->map(fn ($t) => [
                 'id'         => $t->id,
                 'term_name'  => $t->term_name,
@@ -801,6 +804,26 @@ class StudentFeeController extends Controller
 
         $feeRates = AssessmentService::feeRatesForForm();
 
+        // ── Assessment subjects snapshot — for pre-populating Edit.vue subject list ──
+        $assessmentSubjects = AssessmentSubject::where('student_assessment_id', $assessment->id)
+            ->orderBy('sort_order')
+            ->get()
+            ->map(fn ($s) => [
+                'id'          => $s->subject_id,
+                'code'        => $s->code,
+                'name'        => $s->name,
+                'lec_units'   => (float) $s->lec_units,
+                'lab_units'   => (int) $s->lab_units,
+                'total_units' => (float) $s->lec_units + (int) $s->lab_units,
+                'is_nstp'     => (bool) $s->is_nstp,
+                'is_pathfit'  => (bool) $s->is_pathfit,
+                'is_billable' => (bool) $s->is_billable,
+                'year_level'  => $s->year_level ?? '',
+                'semester'    => $s->semester ?? '',
+                'course'      => $s->course ?? $user->course ?? '',
+            ])
+            ->all();
+
         return Inertia::render('StudentFees/Edit', [
             'student' => [
                 'id'           => $user->id,
@@ -811,14 +834,21 @@ class StudentFeeController extends Controller
                 'is_irregular' => (bool) $user->is_irregular,
             ],
             'assessment' => [
-                'id'             => $assessment->id,
-                'semester'       => $assessment->semester,
-                'school_year'    => $assessment->school_year,
-                'lec_units'      => (float) $assessment->lec_units,
-                'nstp_units'     => (float) $nstpUnits,
-                'lab_units'      => $assessment->lab_units,
-                'discount_type'  => $assessment->discount_type ?? 'none',
-                'is_taking_nstp' => $assessment->is_taking_nstp ?? false,
+                'id'                  => $assessment->id,
+                'semester'            => $assessment->semester,
+                'school_year'         => $assessment->school_year,
+                'lec_units'           => (float) $assessment->lec_units,
+                'nstp_units'          => (float) ($assessment->nstp_lec_units ?? $nstpUnits),
+                'lab_units'           => $assessment->lab_units,
+                'discount_type'       => $assessment->discount_type ?? 'none',
+                'discount_percentage' => (float) ($assessment->discount_percentage ?? 0),
+                'discount_name'       => $assessment->discount_name,
+                'is_taking_nstp'      => $assessment->is_taking_nstp ?? false,
+                // Pre-populated subject list for Edit.vue subject management table.
+                // Falls back to empty array for assessments created before the
+                // assessment_subjects migration (pre-snapshot). Edit.vue handles
+                // the empty case with a notice prompting manual subject entry.
+                'assessment_subjects' => $assessmentSubjects,
             ],
             'feeRates' => $feeRates,
         ]);
@@ -837,18 +867,22 @@ class StudentFeeController extends Controller
     public function update(Request $request, int $userId)
     {
         $validated = $request->validate([
-            'semester'            => ['required', 'in:1st,2nd,Summer'],
-            'school_year'         => ['required', 'string', 'max:20'],
-            'lec_units'           => ['required', 'numeric', 'min:0', 'max:50'],
-            'lab_units'           => ['required', 'integer', 'min:0', 'max:20'],
-            'nstp_lec_units'      => ['nullable', 'numeric', 'min:0', 'max:10'],
-            'discount_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'semester'             => ['required', 'in:1st,2nd,Summer'],
+            'school_year'          => ['required', 'string', 'max:20'],
+            'lec_units'            => ['required', 'numeric', 'min:0', 'max:50'],
+            'lab_units'            => ['required', 'integer', 'min:0', 'max:20'],
+            'nstp_lec_units'       => ['nullable', 'numeric', 'min:0', 'max:10'],
+            'discount_percentage'  => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'discount_name'        => ['nullable', 'string', 'max:150'],
+            'manual_subject_ids'   => ['nullable', 'array'],
+            'manual_subject_ids.*' => ['integer', 'exists:subjects,id'],
         ]);
 
         $validated['lec_units']           = (float) $validated['lec_units'];
         $validated['lab_units']           = (int) $validated['lab_units'];
         $validated['nstp_lec_units']      = (float) ($validated['nstp_lec_units'] ?? 0);
         $validated['discount_percentage'] = (float) ($validated['discount_percentage'] ?? 0.0);
+        $validated['discount_name']       = $validated['discount_name'] ?? null;
 
         $assessment = StudentAssessment::where('user_id', $userId)
             ->where('status', 'active')
@@ -883,8 +917,10 @@ class StudentFeeController extends Controller
                 'lab_units'           => $validated['lab_units'],
                 'discount_type'       => $validated['discount_percentage'] > 0 ? 'percentage' : 'none',
                 'discount_percentage' => $validated['discount_percentage'],
+                'discount_name'       => $validated['discount_name'],
                 'is_taking_nstp'      => $validated['nstp_lec_units'] > 0,
                 'tuition_fee'         => $fees['tuition_fee'],
+                'nstp_tuition'        => $fees['nstp_tuition'],
                 'lab_fee'             => $fees['lab_fee'],
                 'misc_fee'            => $fees['misc_fee'],
                 'total_assessment'    => $fees['total'],
@@ -908,14 +944,26 @@ class StudentFeeController extends Controller
             $student          = User::findOrFail($userId);
             $semesterNorm     = AssessmentService::normalizeSemester($validated['semester']);
             $yearLevelForSnap = $assessment->year_level ?? $student->year_level;
+            $manualIds        = $validated['manual_subject_ids'] ?? [];
 
-            $snapshotRows = AssessmentService::buildSubjectSnapshot(
-                $student->course,
-                $yearLevelForSnap,
-                $semesterNorm,
-                $rates,
-                $assessment->id,
-            );
+            if (! empty($manualIds)) {
+                // Use the exact subject list submitted by Edit.vue
+                $snapshotRows = AssessmentService::buildSubjectSnapshotFromIds(
+                    $manualIds,
+                    $rates,
+                    $assessment->id,
+                );
+            } else {
+                // Fallback: rebuild from curriculum (original behaviour, and the
+                // path taken while Edit.vue does not yet send manual_subject_ids)
+                $snapshotRows = AssessmentService::buildSubjectSnapshot(
+                    $student->course,
+                    $yearLevelForSnap,
+                    $semesterNorm,
+                    $rates,
+                    $assessment->id,
+                );
+            }
 
             if (! empty($snapshotRows)) {
                 \Illuminate\Support\Facades\DB::table('assessment_subjects')->insert($snapshotRows);
@@ -936,6 +984,7 @@ class StudentFeeController extends Controller
                         'lab_units'           => $validated['lab_units'],
                         'nstp_lec_units'      => $validated['nstp_lec_units'],
                         'discount_percentage' => $validated['discount_percentage'],
+                        'discount_name'       => $validated['discount_name'],
                         'tuition_fee'         => $fees['tuition_fee'],
                         'billable_tuition'    => $fees['billable_tuition'],
                         'nstp_tuition'        => $fees['nstp_tuition'],
@@ -1187,29 +1236,37 @@ class StudentFeeController extends Controller
             ->map(fn ($s) => ['label' => $s->label, 'amount' => (float) $s->amount])
             ->all();
 
-        $semesterMap = [
-            '1st'     => '1st Sem',
-            '2nd'     => '2nd Sem',
-            'Summer'  => 'Summer',
-            '1st Sem' => '1st Sem',
-            '2nd Sem' => '2nd Sem',
-        ];
-        $semesterForSubjects = $semesterMap[$assessment->semester] ?? $assessment->semester;
-
         $isIrregular = (bool) $user->is_irregular;
 
-        if ($isIrregular && !empty($assessment->subjects)) {
-            $subjectIds = is_array($assessment->subjects)
-                ? $assessment->subjects
-                : json_decode($assessment->subjects, true);
+        // ── Subject list — authoritative source is assessment_subjects snapshot ──
+        // The old path read $assessment->subjects (a ghost column that doesn't exist
+        // in student_assessments) — it always returned null, so irregular students
+        // always fell through to the standard curriculum query and got wrong subjects.
+        //
+        // Correct approach: query assessment_subjects (written at store/update time).
+        // Fall back to curriculum query ONLY for pre-migration assessments that
+        // pre-date the assessment_subjects table (no rows for that assessment_id).
+        $subjectRows = DB::table('assessment_subjects')
+            ->where('student_assessment_id', $assessment->id)
+            ->orderBy('sort_order')
+            ->get();
 
-            $subjects = \DB::table('subjects')
-                ->whereIn('id', $subjectIds ?? [])
-                ->where('is_active', 1)
-                ->orderBy('id')
-                ->get();
+        if ($subjectRows->isNotEmpty()) {
+            // Post-migration assessments — use the immutable snapshot
+            $subjects = $subjectRows;
         } else {
-            $subjects = \DB::table('subjects')
+            // Pre-migration fallback — curriculum query (may be inaccurate for
+            // irregular students but is the best we can do for legacy data)
+            $semesterMap = [
+                '1st'     => '1st Sem',
+                '2nd'     => '2nd Sem',
+                'Summer'  => 'Summer',
+                '1st Sem' => '1st Sem',
+                '2nd Sem' => '2nd Sem',
+            ];
+            $semesterForSubjects = $semesterMap[$assessment->semester] ?? $assessment->semester;
+
+            $subjects = DB::table('subjects')
                 ->where('course', $assessment->course)
                 ->where('year_level', $assessment->year_level)
                 ->where('semester', $semesterForSubjects)

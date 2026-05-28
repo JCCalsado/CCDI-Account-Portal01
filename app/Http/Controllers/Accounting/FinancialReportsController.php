@@ -410,7 +410,16 @@ class FinancialReportsController extends Controller
 
         $yearTotalPaid = Transaction::where('kind', 'payment')
             ->where('status', 'paid')
-            ->where('year', $startYear)
+            ->where(function ($q) use ($startYear) {
+                // 1st and 2nd semester payments occur in $startYear.
+                // Summer payments occur in $startYear + 1 (e.g. SY 2025-2026 Summer = June/July 2026).
+                $q->where('year', $startYear)
+                  ->orWhere(function ($q2) use ($startYear) {
+                      $q2->where('year', $startYear + 1)
+                         ->where('semester', 'Summer');
+                  });
+            })
+            ->whereHas('assessment', fn ($q) => $q->where('school_year', $schoolYear))
             ->sum('amount');
 
         $yearTotalOutstanding = StudentPaymentTerm::whereHas('assessment', function ($q) use ($schoolYear) {
@@ -433,7 +442,10 @@ class FinancialReportsController extends Controller
         // ── Per-semester summary row (for summary cards in PDF) ───────────
         $semesterSummaries = [];
         foreach ($semesters as $sem) {
-            $semYear = $startYear;
+            // Summer semester runs in the NEXT calendar year (e.g. SY 2025-2026 Summer → year 2026).
+            // 1st and 2nd semesters run in $startYear.
+            $semYear = $sem === 'Summer' ? $startYear + 1 : $startYear;
+
             $semesterSummaries[$sem] = [
                 'assessed'    => (float) StudentAssessment::where('school_year', $schoolYear)->where('semester', $sem)->sum('total_assessment'),
                 'paid'        => (float) Transaction::where('kind', 'payment')->where('status', 'paid')->where('year', $semYear)->where('semester', $sem)->sum('amount'),

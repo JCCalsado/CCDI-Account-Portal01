@@ -96,7 +96,7 @@
         <table width="100%" style="border-collapse:collapse; margin-bottom:6px;">
             <tr>
                 <td width="56" style="vertical-align:middle; text-align:center;">
-                    <img src="file://{{ str_replace('\\', '/', public_path('images/logo.png')) }}"
+                    <img src="{{ public_path('images/ccdilogo.png') }}"
                          width="48" height="48" style="display:block;">
                 </td>
                 <td style="vertical-align:middle; text-align:center;">
@@ -115,7 +115,7 @@
             $terms   = $assessment->paymentTerms->sortBy('term_order');
         @endphp
 
-        <div class="student-block {{ $i > 0 && $i % 3 === 0 ? 'page-break' : '' }}">
+        <div class="student-block {{ $i % 3 === 2 ? 'page-break' : '' }}">
 
             {{-- ── Student name + meta ── --}}
             <div class="student-name">
@@ -127,9 +127,9 @@
                 {{ $assessment->course }} &nbsp;|&nbsp;
                 Year {{ $assessment->year_level }} &nbsp;|&nbsp;
                 Assessment No: {{ $assessment->assessment_number }}
-                @if($assessment->discount_type && $assessment->discount_percentage > 0)
+                @if($assessment->discount_percentage > 0)
                     <span class="discount-badge">
-                        {{ $assessment->discount_type }} {{ number_format($assessment->discount_percentage, 0) }}%
+                        {{ $assessment->discount_name ?? $assessment->discount_type }} {{ number_format($assessment->discount_percentage, 0) }}%
                     </span>
                 @endif
             </div>
@@ -190,29 +190,52 @@
                                     <td>Tuition Fee</td>
                                     <td style="text-align:right">&#8369;{{ number_format($assessment->tuition_fee, 2) }}</td>
                                 </tr>
+                                @php
+                                    {{-- BUG-05 FIX: Recompute lab fee with entrepreneurship.
+                                         $assessment->lab_fee stores only raw lab cost.
+                                         entrepreneurship_fee (₱600) is a separate line in
+                                         AssessmentService::compute() and is not baked into
+                                         the stored lab_fee column. We reverse-engineer it
+                                         from total_assessment to stay accurate for all rows. --}}
+                                    $storedEntrepFee = max(0.0, round(
+                                        (float) $assessment->total_assessment
+                                        - (float) $assessment->tuition_fee
+                                        - (float) $assessment->lab_fee
+                                        - (float) $assessment->misc_fee,
+                                        2
+                                    ));
+                                    $displayLabFee = round((float) $assessment->lab_fee + $storedEntrepFee, 2);
+                                @endphp
                                 <tr>
                                     <td>Laboratory Fee</td>
-                                    <td style="text-align:right">&#8369;{{ number_format($assessment->lab_fee, 2) }}</td>
+                                    <td style="text-align:right">&#8369;{{ number_format($displayLabFee, 2) }}</td>
                                 </tr>
                                 <tr>
                                     <td>Miscellaneous Fee</td>
                                     <td style="text-align:right">&#8369;{{ number_format($assessment->misc_fee, 2) }}</td>
                                 </tr>
-                                @if($assessment->discount_type && $assessment->discount_percentage > 0)
+                                @if($assessment->discount_percentage > 0)
                                 @php
-                                    $discountAmount = ($assessment->tuition_fee * $assessment->discount_percentage / 100);
+                                    {{-- BUG-06 FIX: Use the stored discount_saving column.
+                                         Do NOT recompute as tuition_fee × pct/100 — tuition_fee
+                                         is the POST-discount value; applying the percentage again
+                                         produces roughly half the actual saving. --}}
+                                    $discountSaving = (float) ($assessment->discount_saving ?? 0);
+                                    $discountLabel  = $assessment->discount_name
+                                        ?? ($assessment->discount_type !== 'none' ? $assessment->discount_type : 'Discount');
                                 @endphp
                                 <tr>
-                                    <td style="color:#1e40af;">Discount ({{ $assessment->discount_type }})</td>
+                                    <td style="color:#1e40af;">{{ $discountLabel }} ({{ number_format($assessment->discount_percentage, 0) }}% off)</td>
                                     <td style="text-align:right; color:#1e40af;">
-                                        &minus;&#8369;{{ number_format($discountAmount, 2) }}
+                                        &minus;&#8369;{{ number_format($discountSaving, 2) }}
                                     </td>
                                 </tr>
                                 @endif
                                 <tr class="subtotal-row">
                                     <td>Subtotal</td>
                                     <td style="text-align:right">
-                                        &#8369;{{ number_format($assessment->tuition_fee + $assessment->lab_fee + $assessment->misc_fee, 2) }}
+                                        {{-- Subtotal = total_assessment (already the post-discount, post-entrep total) --}}
+                                        &#8369;{{ number_format($assessment->total_assessment, 2) }}
                                     </td>
                                 </tr>
                             </tbody>

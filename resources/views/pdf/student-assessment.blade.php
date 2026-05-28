@@ -313,16 +313,34 @@
                 </thead>
                 <tbody>
                     @php
-                        // Use subjects passed from controller (from subjects table)
+                        // Use subjects passed from controller (from assessment_subjects snapshot or
+                        // curriculum fallback). Both sources provide lec_units and lab_units columns.
                         $subjectRows = collect($subjects ?? [])->map(function($s) {
                             return [
                                 'code'  => $s->code,
                                 'name'  => $s->name,
-                                'units' => (float)($s->lec_units ?? $s->units ?? 0) + (float)($s->lab_units ?? 0),
+                                // lec_units + lab_units per subject row (both columns exist on
+                                // assessment_subjects; curriculum fallback subjects table also has them)
+                                'units' => (float)($s->lec_units ?? 0) + (float)($s->lab_units ?? 0),
                             ];
                         });
 
-                        $totalUnits = (float)$assessment->lec_units + (float)($assessment->nstp_lec_units ?? 0) + (float)$assessment->lab_units;
+                        // BUG-08 FIX: $assessment->lab_units is a count of lab subjects,
+                        // NOT a sum of lab unit values. Adding it directly to lec_units
+                        // produces the wrong total if lab subjects carry more than 1 unit each.
+                        //
+                        // Correct approach: sum the actual unit values from the subject snapshot.
+                        // If the snapshot is available (post-migration), this is exact.
+                        // If we are on the curriculum fallback, it is still more accurate than
+                        // using the raw lab_units count.
+                        $totalUnitsFromSubjects = $subjectRows->sum('units');
+
+                        // If the snapshot is empty (no subjects at all), fall back to the
+                        // stored assessment columns as a last resort.
+                        $totalUnits = $totalUnitsFromSubjects > 0
+                            ? $totalUnitsFromSubjects
+                            : (float)$assessment->lec_units + (float)($assessment->nstp_lec_units ?? 0) + (float)$assessment->lab_units;
+
                         $minRows    = 12;
                         $emptyRows  = max(0, $minRows - $subjectRows->count());
                     @endphp
