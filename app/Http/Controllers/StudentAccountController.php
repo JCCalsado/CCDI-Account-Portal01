@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Enums\PaymentStatus;
 use App\Models\Account;
+use App\Models\AssessmentSubject;
 use App\Models\Notification;
 use App\Models\StudentAssessment;
 use App\Models\StudentEnrollment;
@@ -32,7 +33,10 @@ class StudentAccountController extends Controller
 
         $allAssessments = StudentAssessment::where('user_id', $user->id)
             ->where('status', 'active')
-            ->with(['paymentTerms' => fn ($q) => $q->orderBy('term_order')])
+            ->with([
+                'paymentTerms'      => fn ($q) => $q->orderBy('term_order'),
+                'assessmentSubjects' => fn ($q) => $q->orderBy('sort_order'),
+            ])
             ->orderBy('school_year')
             ->get()
             ->map(function ($a) {
@@ -103,6 +107,34 @@ class StudentAccountController extends Controller
                         'status'     => $t->status,
                         'due_date'   => $t->due_date,
                     ])->values()->all(),
+
+                    // ── Per-subject billing snapshot ──────────────────────────────
+                    // Sourced from assessment_subjects (written at assessment creation).
+                    // Empty for assessments created before the snapshot feature existed.
+                    'enrolled_subjects' => $a->assessmentSubjects->map(fn ($s) => [
+                        'subject_id'         => $s->subject_id,
+                        'code'               => $s->code,
+                        'name'               => $s->name,
+                        'lec_units'          => (float) $s->lec_units,
+                        'lab_units'          => (int) $s->lab_units,
+                        'total_units'        => (float) $s->lec_units + (int) $s->lab_units,
+                        'is_nstp'            => (bool) $s->is_nstp,
+                        'is_pathfit'         => (bool) $s->is_pathfit,
+                        'is_billable'        => (bool) $s->is_billable,
+                        'nstp_billing_units' => (float) $s->nstp_billing_units,
+                        'tuition_fee'        => (float) $s->tuition_fee,
+                        'lab_fee'            => (float) $s->lab_fee,
+                        'total_fee'          => (float) $s->total_fee,
+                    ])->values()->all(),
+
+                    // ── Aggregate totals across all subjects in this assessment ──
+                    'subject_totals' => $a->assessmentSubjects->isNotEmpty() ? [
+                        'lec_units'        => round($a->assessmentSubjects->sum(fn ($s) => (float) $s->lec_units), 1),
+                        'lab_units'        => $a->assessmentSubjects->sum(fn ($s) => (int) $s->lab_units),
+                        'total_units'      => round($a->assessmentSubjects->sum(fn ($s) => (float) $s->lec_units + (int) $s->lab_units), 1),
+                        'subject_count'    => $a->assessmentSubjects->count(),
+                        'total_subject_fee'=> round($a->assessmentSubjects->sum(fn ($s) => (float) $s->total_fee), 2),
+                    ] : null,
                 ];
             });
 

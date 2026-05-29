@@ -685,14 +685,7 @@ const processedTermCount = computed((): number =>
 
                                     <!-- Status badge -->
                                     <td class="px-4 py-3 text-sm">
-                                        @php
-                                        <!--
-                                            statusDisplay maps internal status values to human labels.
-                                            'processed' = balance carried forward → shown as "Carried Forward"
-                                            so reviewers immediately understand the term is closed and
-                                            the unpaid amount has moved to the next term.
-                                        -->
-                                        @endphp
+                                        <!-- statusDisplay: 'processed' = balance carried forward → shown as "Carried Forward" -->
                                         <span
                                             class="rounded-full px-2.5 py-1 text-xs font-semibold"
                                             :class="{

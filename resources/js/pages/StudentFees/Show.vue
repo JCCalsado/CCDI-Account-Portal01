@@ -25,7 +25,10 @@ import {
     CreditCard,
     Download,
     FlaskConical,
+    GraduationCap,
+    History,
     Plus,
+    ReceiptText,
 } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 
@@ -75,10 +78,20 @@ interface Assessment {
     year_level: string;
     total_assessment: number;
     tuition_fee: number;
+    lab_fee: number;
+    misc_fee: number;
     tuition_per_unit?: number;
+    lec_units?: number;
+    nstp_lec_units?: number;
+    lab_units?: number;
     other_fees: number;
+    status?: string;
+    discount_name?: string | null;
+    discount_percentage?: number;
+    is_taking_nstp?: boolean;
     fee_breakdown: FeeBreakdownItem[];
     paymentTerms?: PaymentTerm[];
+    enrolled_subjects?: AssessmentSubjectRow[];
 }
 
 interface Props {
@@ -1009,6 +1022,99 @@ const paymentMethodBadgeClass = (method: string): string => {
     return 'rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 capitalize';
 };
 
+// ─── Academic History ───────────────────────────────────────────────────────
+// Chronological list of ALL assessments (active + completed), each enriched
+// with a subject snapshot, payment term summary, and balance status.
+// Used by the Academic History card for accounting staff.
+
+type AcademicHistoryEntry = {
+    id:                 number;
+    semester:           string;
+    school_year:        string;
+    year_level:         string;
+    course:             string | null;
+    status:             string;
+    total_assessment:   number;
+    tuition_fee:        number;
+    lab_fee:            number;
+    misc_fee:           number;
+    lec_units:          number;
+    nstp_lec_units:     number;
+    lab_units:          number;
+    discount_name:      string | null;
+    discount_percentage:number;
+    is_taking_nstp:     boolean;
+    totalPaid:          number;
+    balance:            number;
+    fullyPaid:          boolean;
+    paymentTerms:       any[];
+    enrolled_subjects:  any[];
+    subjectCount:       number;
+};
+
+const academicHistory = computed<AcademicHistoryEntry[]>(() => {
+    const all = (props.allAssessments ?? []) as any[];
+    return [...all]
+        .sort((a, b) => {
+            // Sort oldest first: school_year ASC, then 1st < 2nd < Summer
+            const semOrd: Record<string, number> = { '1st': 1, '2nd': 2, 'Summer': 3 };
+            if (a.school_year !== b.school_year) return a.school_year.localeCompare(b.school_year);
+            return (semOrd[a.semester] ?? 9) - (semOrd[b.semester] ?? 9);
+        })
+        .map((a) => {
+            const terms         = (a.paymentTerms ?? []) as any[];
+            const balance       = terms.reduce((s: number, t: any) => s + Math.max(0, Number(t.balance ?? 0)), 0);
+            const totalPaid     = Math.max(0, Number(a.total_assessment ?? 0) - balance);
+            const enrolled      = (a.enrolled_subjects ?? []) as any[];
+            return {
+                id:                  a.id,
+                semester:            a.semester,
+                school_year:         a.school_year,
+                year_level:          a.year_level ?? '—',
+                course:              a.course ?? null,
+                status:              a.status ?? 'unknown',
+                total_assessment:    Number(a.total_assessment ?? 0),
+                tuition_fee:         Number(a.tuition_fee ?? 0),
+                lab_fee:             Number(a.lab_fee ?? 0),
+                misc_fee:            Number(a.misc_fee ?? 0),
+                lec_units:           Number(a.lec_units ?? 0),
+                nstp_lec_units:      Number(a.nstp_lec_units ?? 0),
+                lab_units:           Number(a.lab_units ?? 0),
+                discount_name:       a.discount_name ?? null,
+                discount_percentage: Number(a.discount_percentage ?? 0),
+                is_taking_nstp:      Boolean(a.is_taking_nstp),
+                totalPaid:           Math.round(totalPaid * 100) / 100,
+                balance:             Math.round(balance  * 100) / 100,
+                fullyPaid:           balance <= 0,
+                paymentTerms:        terms,
+                enrolled_subjects:   enrolled,
+                subjectCount:        enrolled.length,
+            };
+        });
+});
+
+// Track which semester row is expanded in the Academic History card
+const expandedHistoryIds = ref<Set<number>>(new Set());
+function toggleHistoryRow(id: number) {
+    if (expandedHistoryIds.value.has(id)) {
+        expandedHistoryIds.value.delete(id);
+    } else {
+        expandedHistoryIds.value.add(id);
+    }
+}
+
+// Grand totals across all semesters — for the summary footer
+const academicTotals = computed(() => {
+    const list = academicHistory.value;
+    return {
+        semesters:         list.length,
+        totalAssessed:     list.reduce((s, e) => s + e.total_assessment, 0),
+        totalPaid:         list.reduce((s, e) => s + e.totalPaid,        0),
+        totalBalance:      list.reduce((s, e) => s + e.balance,          0),
+        completedCount:    list.filter((e) => e.fullyPaid).length,
+    };
+});
+
 </script>
 
 <template>
@@ -1596,6 +1702,330 @@ const paymentMethodBadgeClass = (method: string): string => {
                             </div>
                         </div>
                     </div>
+                </CardContent>
+            </Card>
+
+            <!-- ── Academic History ─────────────────────────────────────────── -->
+            <!-- Shows ALL assessments (active + completed) for this student.    -->
+            <!-- Each row is collapsible: expands to show the subject snapshot   -->
+            <!-- and the payment term breakdown for that semester.               -->
+            <Card v-if="isAccounting || isAdmin">
+                <CardHeader>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <CardTitle class="flex items-center gap-2">
+                                <GraduationCap class="h-5 w-5 text-blue-600" />
+                                Academic History
+                            </CardTitle>
+                            <CardDescription class="mt-1">
+                                {{ academicHistory.length }} semester{{ academicHistory.length !== 1 ? 's' : '' }} on record
+                                &mdash;
+                                {{ academicTotals.completedCount }} fully paid,
+                                {{ academicHistory.length - academicTotals.completedCount }} with balance
+                            </CardDescription>
+                        </div>
+                        <!-- Grand-total summary chips -->
+                        <div class="hidden gap-4 text-right sm:flex">
+                            <div>
+                                <p class="text-xs text-gray-400">Total Assessed</p>
+                                <p class="text-sm font-bold text-gray-800">{{ formatCurrency(academicTotals.totalAssessed) }}</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-gray-400">Total Paid</p>
+                                <p class="text-sm font-bold text-green-700">{{ formatCurrency(academicTotals.totalPaid) }}</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-gray-400">Outstanding</p>
+                                <p class="text-sm font-bold" :class="academicTotals.totalBalance > 0 ? 'text-red-600' : 'text-green-700'">
+                                    {{ formatCurrency(academicTotals.totalBalance) }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </CardHeader>
+
+                <CardContent class="p-0">
+
+                    <!-- Empty state -->
+                    <div v-if="academicHistory.length === 0" class="flex flex-col items-center justify-center py-14 text-gray-400">
+                        <History class="mb-3 h-10 w-10 opacity-30" />
+                        <p class="text-sm font-medium">No assessments on record</p>
+                        <p class="mt-1 text-xs">Create an assessment to start tracking this student's academic history.</p>
+                    </div>
+
+                    <!-- Semester rows -->
+                    <div v-else class="divide-y">
+                        <div
+                            v-for="entry in academicHistory"
+                            :key="entry.id"
+                            class="overflow-hidden"
+                        >
+                            <!-- ── Row header — click to expand ── -->
+                            <button
+                                type="button"
+                                class="w-full cursor-pointer select-none px-5 py-4 text-left transition-colors hover:bg-gray-50/70"
+                                @click="toggleHistoryRow(entry.id)"
+                            >
+                                <div class="flex items-center justify-between gap-4">
+
+                                    <!-- Left: semester label + badges -->
+                                    <div class="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+                                        <!-- Status dot -->
+                                        <span
+                                            class="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full sm:mt-0"
+                                            :class="entry.fullyPaid ? 'bg-green-400' : 'bg-amber-400'"
+                                        />
+
+                                        <!-- Semester + school year -->
+                                        <div>
+                                            <p class="font-semibold text-gray-900">
+                                                {{ entry.semester === '1st' ? '1st Semester' : entry.semester === '2nd' ? '2nd Semester' : 'Summer' }}
+                                                <span class="ml-1 text-gray-500 font-normal">· SY {{ entry.school_year }}</span>
+                                            </p>
+                                            <p class="text-xs text-gray-400">
+                                                {{ entry.year_level }}
+                                                <span v-if="entry.course"> · {{ entry.course }}</span>
+                                            </p>
+                                        </div>
+
+                                        <!-- Chips row -->
+                                        <div class="flex flex-wrap items-center gap-1.5">
+                                            <!-- Fully-paid / has-balance -->
+                                            <span
+                                                class="rounded-full px-2 py-0.5 text-xs font-semibold"
+                                                :class="entry.fullyPaid
+                                                    ? 'bg-green-100 text-green-700'
+                                                    : 'bg-amber-100 text-amber-700'"
+                                            >
+                                                {{ entry.fullyPaid ? 'Fully Paid' : `Balance: ${formatCurrency(entry.balance)}` }}
+                                            </span>
+
+                                            <!-- Discount -->
+                                            <span
+                                                v-if="entry.discount_percentage > 0"
+                                                class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200"
+                                            >
+                                                {{ entry.discount_name ? `${entry.discount_name} (${entry.discount_percentage}%)` : `${entry.discount_percentage}% discount` }}
+                                            </span>
+
+                                            <!-- NSTP -->
+                                            <span
+                                                v-if="entry.is_taking_nstp"
+                                                class="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200"
+                                            >
+                                                NSTP
+                                            </span>
+
+                                            <!-- Subject count -->
+                                            <span
+                                                v-if="entry.subjectCount > 0"
+                                                class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600"
+                                            >
+                                                {{ entry.subjectCount }} subject{{ entry.subjectCount !== 1 ? 's' : '' }}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Right: assessment total + chevron -->
+                                    <div class="flex flex-shrink-0 items-center gap-4 text-right">
+                                        <div>
+                                            <p class="text-xs text-gray-400">Assessment</p>
+                                            <p class="text-sm font-bold text-gray-800">{{ formatCurrency(entry.total_assessment) }}</p>
+                                        </div>
+                                        <ChevronDown
+                                            class="h-4 w-4 text-gray-400 transition-transform duration-200"
+                                            :class="{ 'rotate-180': expandedHistoryIds.has(entry.id) }"
+                                        />
+                                    </div>
+                                </div>
+                            </button>
+
+                            <!-- ── Expanded detail ── -->
+                            <div
+                                v-if="expandedHistoryIds.has(entry.id)"
+                                class="border-t bg-gray-50/60 px-5 pb-5 pt-4"
+                            >
+                                <div class="grid gap-5 md:grid-cols-2">
+
+                                    <!-- Fee summary -->
+                                    <div class="rounded-lg border bg-white p-4 shadow-sm">
+                                        <p class="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                            <ReceiptText class="h-3.5 w-3.5" /> Fee Summary
+                                        </p>
+                                        <div class="space-y-1.5 text-sm">
+                                            <div class="flex justify-between">
+                                                <span class="text-gray-500">
+                                                    Tuition
+                                                    <span class="text-xs text-gray-400">
+                                                        ({{ entry.lec_units + entry.nstp_lec_units }} lec units)
+                                                    </span>
+                                                </span>
+                                                <span class="font-medium">{{ formatCurrency(entry.tuition_fee) }}</span>
+                                            </div>
+                                            <div v-if="entry.discount_percentage > 0" class="flex justify-between text-xs text-emerald-600 pl-2">
+                                                <span>
+                                                    incl. {{ entry.discount_name ?? 'Discount' }} ({{ entry.discount_percentage }}% off)
+                                                </span>
+                                            </div>
+                                            <div class="flex justify-between">
+                                                <span class="text-gray-500">
+                                                    Lab. Fee
+                                                    <span class="text-xs text-gray-400">({{ entry.lab_units }} subjects)</span>
+                                                </span>
+                                                <span class="font-medium">{{ formatCurrency(entry.lab_fee) }}</span>
+                                            </div>
+                                            <div class="flex justify-between">
+                                                <span class="text-gray-500">Misc. Fee</span>
+                                                <span class="font-medium">{{ formatCurrency(entry.misc_fee) }}</span>
+                                            </div>
+                                            <div class="mt-1 flex justify-between border-t pt-2 font-bold">
+                                                <span>Total Assessment</span>
+                                                <span class="text-blue-700">{{ formatCurrency(entry.total_assessment) }}</span>
+                                            </div>
+                                            <div class="flex justify-between text-xs">
+                                                <span class="text-gray-500">Paid</span>
+                                                <span class="font-semibold text-green-700">{{ formatCurrency(entry.totalPaid) }}</span>
+                                            </div>
+                                            <div class="flex justify-between text-xs">
+                                                <span class="text-gray-500">Remaining</span>
+                                                <span
+                                                    class="font-semibold"
+                                                    :class="entry.balance > 0 ? 'text-red-600' : 'text-green-700'"
+                                                >
+                                                    {{ formatCurrency(entry.balance) }}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <!-- Payment terms mini-table -->
+                                        <div v-if="entry.paymentTerms.length" class="mt-4">
+                                            <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Payment Schedule</p>
+                                            <div class="space-y-1">
+                                                <div
+                                                    v-for="term in entry.paymentTerms"
+                                                    :key="term.id"
+                                                    class="flex items-center justify-between rounded px-2 py-1.5 text-xs"
+                                                    :class="{
+                                                        'bg-green-50 text-green-800':  term.status === 'paid',
+                                                        'bg-blue-50  text-blue-800':   term.status === 'processed',
+                                                        'bg-amber-50 text-amber-800':  term.status === 'partial',
+                                                        'bg-gray-50  text-gray-600':   ['pending','unpaid'].includes(term.status),
+                                                        'bg-red-50   text-red-700':    term.status === 'overdue',
+                                                    }"
+                                                >
+                                                    <span class="font-medium">{{ term.term_name }}</span>
+                                                    <span class="flex items-center gap-2">
+                                                        <span>{{ formatCurrency(term.amount) }}</span>
+                                                        <span
+                                                            class="rounded-full px-1.5 py-0.5 text-xs font-semibold capitalize"
+                                                            :class="{
+                                                                'bg-green-200 text-green-900':  term.status === 'paid',
+                                                                'bg-blue-200  text-blue-900':   term.status === 'processed',
+                                                                'bg-amber-200 text-amber-900':  term.status === 'partial',
+                                                                'bg-gray-200  text-gray-700':   ['pending','unpaid'].includes(term.status),
+                                                                'bg-red-200   text-red-800':    term.status === 'overdue',
+                                                            }"
+                                                        >
+                                                            {{ term.status === 'processed' ? 'Carried Fwd' : term.status }}
+                                                        </span>
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Subject snapshot -->
+                                    <div class="rounded-lg border bg-white shadow-sm overflow-hidden">
+                                        <div class="px-4 py-3 border-b bg-gray-50 flex items-center gap-2">
+                                            <BookOpen class="h-3.5 w-3.5 text-blue-500" />
+                                            <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                Enrolled Subjects
+                                                <span v-if="entry.subjectCount" class="ml-1 font-bold text-blue-600">
+                                                    ({{ entry.subjectCount }})
+                                                </span>
+                                            </p>
+                                        </div>
+
+                                        <!-- No snapshot available -->
+                                        <div
+                                            v-if="entry.enrolled_subjects.length === 0"
+                                            class="flex flex-col items-center justify-center py-8 text-gray-400 text-xs"
+                                        >
+                                            <BookOpen class="mb-2 h-6 w-6 opacity-30" />
+                                            <p>No subject snapshot</p>
+                                            <p class="mt-0.5 opacity-70">Assessment predates per-subject records</p>
+                                        </div>
+
+                                        <!-- Subject rows -->
+                                        <div v-else class="overflow-auto max-h-72">
+                                            <table class="w-full text-xs">
+                                                <thead class="sticky top-0 bg-gray-50 text-gray-500 uppercase tracking-wide">
+                                                    <tr>
+                                                        <th class="px-3 py-2 text-left font-semibold">Code</th>
+                                                        <th class="px-3 py-2 text-left font-semibold">Subject</th>
+                                                        <th class="px-2 py-2 text-center font-semibold w-10">Lec</th>
+                                                        <th class="px-2 py-2 text-center font-semibold w-10">Lab</th>
+                                                        <th class="px-2 py-2 text-right font-semibold w-20">Fee</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody class="divide-y divide-gray-100">
+                                                    <tr
+                                                        v-for="subj in entry.enrolled_subjects"
+                                                        :key="subj.subject_id ?? subj.code"
+                                                        :class="{
+                                                            'bg-amber-50/70': subj.is_nstp,
+                                                            'bg-sky-50/50':   subj.is_pathfit,
+                                                            'bg-white':       !subj.is_nstp && !subj.is_pathfit,
+                                                        }"
+                                                    >
+                                                        <td class="px-3 py-2 font-mono font-semibold text-gray-700">{{ subj.code }}</td>
+                                                        <td class="px-3 py-2 text-gray-800 max-w-[160px] truncate" :title="subj.name">
+                                                            {{ subj.name }}
+                                                            <span v-if="subj.is_nstp" class="ml-1 text-amber-600 font-bold text-xs">NSTP</span>
+                                                            <span v-else-if="subj.is_pathfit" class="ml-1 text-sky-600 font-bold text-xs">PATHFIT</span>
+                                                        </td>
+                                                        <td class="px-2 py-2 text-center font-mono text-gray-700">
+                                                            <template v-if="subj.is_nstp && subj.nstp_billing_units !== subj.lec_units">
+                                                                <span class="text-amber-700 font-semibold">{{ subj.nstp_billing_units }}</span>
+                                                                <span class="block text-gray-400 font-normal" style="font-size:10px">({{ subj.lec_units }} acad.)</span>
+                                                            </template>
+                                                            <template v-else>{{ subj.lec_units || '—' }}</template>
+                                                        </td>
+                                                        <td class="px-2 py-2 text-center font-mono text-gray-700">{{ subj.lab_units || '—' }}</td>
+                                                        <td class="px-2 py-2 text-right font-mono text-gray-700">
+                                                            <template v-if="subj.is_billable">
+                                                                {{ formatCurrency(subj.total_fee) }}
+                                                            </template>
+                                                            <span v-else class="text-gray-300">—</span>
+                                                        </td>
+                                                    </tr>
+                                                </tbody>
+                                                <!-- Totals footer -->
+                                                <tfoot class="border-t-2 border-gray-200 bg-gray-50">
+                                                    <tr>
+                                                        <td colspan="2" class="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                                            Totals
+                                                        </td>
+                                                        <td class="px-2 py-2 text-center font-mono font-bold text-blue-700">
+                                                            {{ entry.lec_units + entry.nstp_lec_units }}
+                                                        </td>
+                                                        <td class="px-2 py-2 text-center font-mono font-bold text-gray-700">
+                                                            {{ entry.lab_units }}
+                                                        </td>
+                                                        <td class="px-2 py-2 text-right font-mono font-bold text-blue-700">
+                                                            {{ formatCurrency(entry.total_assessment - entry.misc_fee) }}
+                                                        </td>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                </div><!-- /grid -->
+                            </div><!-- /expanded detail -->
+                        </div><!-- /v-for entry -->
+                    </div><!-- /semester rows -->
+
                 </CardContent>
             </Card>
 

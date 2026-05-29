@@ -544,6 +544,29 @@ class StudentFeeController extends Controller
                     'status'     => $t->status,
                     'due_date'   => $t->due_date,
                 ])->values()->all(),
+
+                // ── Per-subject billing snapshot ─────────────────────────────
+                // Sourced from assessment_subjects (written at assessment creation).
+                // Empty array for pre-snapshot (legacy) assessments.
+                'enrolled_subjects' => AssessmentSubject::where('student_assessment_id', $a->id)
+                    ->orderBy('sort_order')
+                    ->get()
+                    ->map(fn ($s) => [
+                        'subject_id'         => $s->subject_id,
+                        'code'               => $s->code,
+                        'name'               => $s->name,
+                        'lec_units'          => (float) $s->lec_units,
+                        'lab_units'          => (int)   $s->lab_units,
+                        'is_nstp'            => (bool)  $s->is_nstp,
+                        'is_pathfit'         => (bool)  $s->is_pathfit,
+                        'is_billable'        => (bool)  $s->is_billable,
+                        'nstp_billing_units' => (float) $s->nstp_billing_units,
+                        'tuition_fee'        => (float) $s->tuition_fee,
+                        'lab_fee'            => (float) $s->lab_fee,
+                        'total_fee'          => (float) $s->total_fee,
+                    ])
+                    ->values()
+                    ->all(),
             ];
         })->values()->all();
 
