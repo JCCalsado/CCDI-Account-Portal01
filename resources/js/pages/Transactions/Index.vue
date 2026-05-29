@@ -4,9 +4,10 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, router } from '@inertiajs/vue3';
-import { BookOpen, ChevronDown, FlaskConical, Receipt } from 'lucide-vue-next';
+import { BookOpen, ChevronDown, Receipt } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
+
 const { formatCurrency } = useDataFormatting();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -33,11 +34,12 @@ interface Transaction {
     meta?: Record<string, any>;
 }
 
-// EnrolledSubject mirrors the shape produced by shapeAssessmentForTransactions()
-// in TransactionController. Every field comes from the assessment_subjects snapshot
-// — never reconstructed from aggregate columns or config rates.
+/**
+ * Immutable per-subject billing snapshot from assessment_subjects.
+ * Populated by the backend — never reconstructed on the frontend.
+ */
 interface EnrolledSubject {
-    subject_id: number;
+    subject_id: number | null;
     code: string;
     name: string;
     lec_units: number;
@@ -52,13 +54,6 @@ interface EnrolledSubject {
     total_fee: number;
 }
 
-interface SubjectTotals {
-    lec_units: number;
-    lab_units: number;
-    total_units: number;
-    subject_count: number;
-}
-
 interface Assessment {
     id: number;
     school_year: string;
@@ -66,19 +61,21 @@ interface Assessment {
     year_level: string;
     course: string | null;
     total_assessment: number;
+    lec_units: number;
+    lab_units: number;
     tuition_fee: number;
     lab_fee: number;
     misc_fee: number;
-    // The authoritative subject snapshot — replaces the old fake fee_breakdown rows
+    is_taking_nstp: boolean;
+    status: string;
+    // ── Real subject snapshot from assessment_subjects ─────────────────────
     enrolled_subjects: EnrolledSubject[];
-    subject_totals: SubjectTotals;
-    // Kept for backwards compat — 3-row aggregate used in term summary header
-    fee_breakdown: Array<{
-        category: string;
-        name: string;
-        units?: number | null;
-        amount: number;
-    }>;
+}
+
+interface TermSummary {
+    total_assessment: number;
+    total_paid: number;
+    current_balance: number;
 }
 
 interface Props {
@@ -95,10 +92,6 @@ interface Props {
     } | null;
     currentTerm: string;
     allAssessments: Assessment[];
-    // DEPRECATED: was used by the old buildSubjectPanel() which reconstructed
-    // subjects from fee_breakdown rows filtered by category === 'Tuition'.
-    // Now unused — subjects come from enrolled_subjects on each assessment.
-    enrolledSubjectsByAssessment: Record<number, number[]>;
     backUrl?: string;
 }
 
@@ -156,12 +149,6 @@ const assessmentByTermKey = computed(() => {
     return map;
 });
 
-interface TermSummary {
-    total_assessment: number;
-    total_paid: number;
-    current_balance: number;
-}
-
 const calculateTermSummary = (termKey: string, transactions: Transaction[]): TermSummary => {
     const totalAssessment = assessmentByTermKey.value[termKey] ?? 0;
     const payments = transactions
@@ -185,21 +172,68 @@ const currentTermAssessment = computed((): Assessment | null => {
     );
 });
 
-// ─── Subject panels — powered by enrolled_subjects snapshot ───────────────────
+// ─── Subject panel — real data from enrolled_subjects snapshot ────────────────
 //
-// OLD approach (DELETED):
-//   buildSubjectPanel() filtered fee_breakdown rows by category === 'Tuition'
-//   or 'Laboratory', then merged them by subject_id. This was broken because:
-//     ① The old fake fee_breakdown had no subject_id, code, or subject name
-//     ② The subjectMap loop was a no-op — every row had sid === undefined
-//     ③ The enrolledIds cross-reference hit the wrong source of truth
-//     ④ NSTP was invisible (no individual subject row existed)
+// Old implementation (removed):
+//   buildSubjectPanel() reconstructed subjects from fee_breakdown rows filtered
+//   by category === 'Tuition'. That produced broken output because:
+//     1. fee_breakdown had only 3 rows (aggregate), not per-subject rows
+//     2. subject_id, code, lec/lab units were unavailable in the aggregate
+//     3. NSTP appeared as a tuition lump, not as a named subject
+//     4. Enrollment cross-reference via student_enrollments was unreliable
 //
-// NEW approach:
-//   enrolled_subjects on each Assessment is the assessment_subjects snapshot
-//   loaded by TransactionController via eager-loading. Each subject already
-//   has code, name, lec_units, lab_units, per-subject fees. Zero reconstruction
-//   needed. We just find the right assessment and render its subjects directly.
+// New implementation:
+//   enrolled_subjects comes directly from assessment_subjects (backend snapshot).
+//   All fields are real, historical, and require zero frontend reconstruction.
+
+interface SubjectPanel {
+    assessmentId: number;
+    termKey: string;
+    subjects: EnrolledSubject[];
+    totalLecUnits: number;
+    totalLabUnits: number;
+    // Financial and billing fields below are computed but intentionally not
+    // rendered in the student-facing template. They remain available here in
+    // case admin/accounting views ever need them without a controller change.
+    totalBillableUnits: number;
+    totalTuition: number;
+    totalLab: number;
+    totalFee: number;
+    subjectCount: number;
+    hasLab: boolean;
+    hasNstp: boolean;
+}
+
+function buildSubjectPanel(assessment: Assessment, termKey: string): SubjectPanel | null {
+    const subjects = assessment.enrolled_subjects ?? [];
+    if (subjects.length === 0) return null;
+
+    const totalLecUnits = subjects.reduce((s, sub) => s + sub.lec_units, 0);
+    const totalLabUnits = subjects.reduce((s, sub) => s + sub.lab_units, 0);
+    const totalBillableUnits = subjects.reduce((s, sub) => {
+        if (sub.is_nstp) return s + sub.nstp_billing_units;
+        if (!sub.is_billable) return s;
+        return s + sub.lec_units + sub.lab_units;
+    }, 0);
+    const totalTuition = subjects.reduce((s, sub) => s + sub.tuition_fee, 0);
+    const totalLab     = subjects.reduce((s, sub) => s + sub.lab_fee, 0);
+    const totalFee     = subjects.reduce((s, sub) => s + sub.total_fee, 0);
+
+    return {
+        assessmentId:       assessment.id,
+        termKey,
+        subjects,
+        totalLecUnits,
+        totalLabUnits,
+        totalBillableUnits,
+        totalTuition,
+        totalLab,
+        totalFee,
+        subjectCount:       subjects.length,
+        hasLab:             subjects.some((s) => s.lab_units > 0),
+        hasNstp:            subjects.some((s) => s.is_nstp),
+    };
+}
 
 const expandedSubjectTerms = ref<Set<number>>(new Set());
 
@@ -211,18 +245,26 @@ const toggleSubjectTerm = (assessmentId: number) => {
     }
 };
 
-// Map termKey → Assessment (or null when no assessment exists or has no subjects)
-const assessmentByTerm = computed((): Record<string, Assessment | null> => {
-    const result: Record<string, Assessment | null> = {};
+const subjectPanelsByTerm = computed(() => {
+    const result: Record<string, SubjectPanel | null> = {};
+
     for (const termKey of Object.keys(filteredTransactionsByTermWithAssessments.value)) {
         const parts      = termKey.split(' ');
         const schoolYear = parts[0];
         const semester   = parts.slice(1).join(' ');
-        const match      = props.allAssessments.find(
+
+        const matchingAssessment = props.allAssessments.find(
             (a) => a.school_year === schoolYear && a.semester === semester,
         );
-        result[termKey] = (match && (match.enrolled_subjects?.length ?? 0) > 0) ? match : null;
+
+        if (!matchingAssessment) {
+            result[termKey] = null;
+            continue;
+        }
+
+        result[termKey] = buildSubjectPanel(matchingAssessment, termKey);
     }
+
     return result;
 });
 
@@ -230,9 +272,7 @@ const assessmentByTerm = computed((): Record<string, Assessment | null> => {
 
 const semesterSortOrder: Record<string, number> = {
     '1st': 1,
-    '1st Sem': 1,
     '2nd': 2,
-    '2nd Sem': 2,
     'Summer': 3,
 };
 
@@ -240,14 +280,17 @@ const latestTermKey = computed((): string | null => {
     const keys = Object.keys(props.transactionsByTerm ?? {});
     if (keys.length === 0) return null;
 
-    return keys.slice().sort((a, b) => {
-        const [syA, semA = ''] = a.split(' ');
-        const [syB, semB = ''] = b.split(' ');
-        const yearA = parseInt(syA?.split('-')[0] ?? '0', 10);
-        const yearB = parseInt(syB?.split('-')[0] ?? '0', 10);
-        if (yearA !== yearB) return yearA - yearB;
-        return (semesterSortOrder[semA] ?? 0) - (semesterSortOrder[semB] ?? 0);
-    }).at(-1) ?? null;
+    return keys
+        .slice()
+        .sort((a, b) => {
+            const [syA, semA = ''] = a.split(' ');
+            const [syB, semB = ''] = b.split(' ');
+            const yearA = parseInt(syA?.split('-')[0] ?? '0', 10);
+            const yearB = parseInt(syB?.split('-')[0] ?? '0', 10);
+            if (yearA !== yearB) return yearA - yearB;
+            return (semesterSortOrder[semA] ?? 0) - (semesterSortOrder[semB] ?? 0);
+        })
+        .at(-1) ?? null;
 });
 
 const filteredTransactionsByTerm = computed(() => {
@@ -314,16 +357,19 @@ const toYearRange = (year: string | number | null | undefined): string => {
     return isNaN(y) ? String(year) : `${y}-${y + 1}`;
 };
 
-const canDownloadTermSummary = (transactions: Transaction[]): boolean => {
-    return transactions.some((t) => t.kind === 'payment' && t.status === 'paid');
-};
+// ─── Receipt helpers ──────────────────────────────────────────────────────────
+
+const canDownloadTermSummary = (transactions: Transaction[]): boolean =>
+    transactions.some((t) => t.kind === 'payment' && t.status === 'paid');
 
 const downloadReceipt = (transactionId: number) => {
-    window.open(route('transactions.receipt', { transaction: transactionId }), '_blank');
+    const url = route('transactions.receipt', { transaction: transactionId });
+    window.open(url, '_blank');
 };
 
 const downloadTermSummary = (termKey: string) => {
-    window.open(route('transactions.download') + '?term=' + encodeURIComponent(termKey), '_blank');
+    const url = route('transactions.download') + '?term=' + encodeURIComponent(termKey);
+    window.open(url, '_blank');
 };
 
 const viewTransaction = (transaction: Transaction) => {
@@ -357,22 +403,13 @@ const formatPaymentMethod = (m: string): string => {
 
 const displayRefNumber = (t: Transaction): string => {
     const channel = (t.payment_channel ?? '').toLowerCase();
-    if (channel === 'cash') return t.or_number ?? '—';
-    return t.reference ?? '—';
+    return channel === 'cash' ? (t.or_number ?? '—') : (t.reference ?? '—');
 };
 
 const displayRefLabel = (t: Transaction): string => {
     const channel = (t.payment_channel ?? '').toLowerCase();
     return channel === 'cash' ? 'OR No.' : 'Ref No.';
 };
-
-// Subject row colour helper — matches AccountOverview convention
-function subjectRowClass(s: EnrolledSubject): string {
-    if (s.is_nstp)       return 'hover:bg-amber-50/50';
-    if (s.is_pathfit)    return 'hover:bg-sky-50/50';
-    if (s.lab_units > 0) return 'hover:bg-purple-50/30';
-    return 'hover:bg-gray-50';
-}
 </script>
 
 <template>
@@ -505,9 +542,7 @@ function subjectRowClass(s: EnrolledSubject): string {
                             <div class="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50">
                                 <Receipt class="h-7 w-7 text-blue-400" />
                             </div>
-                            <h3 class="mb-1 text-base font-semibold text-gray-700">
-                                No payments recorded yet
-                            </h3>
+                            <h3 class="mb-1 text-base font-semibold text-gray-700">No payments recorded yet</h3>
                             <p class="mb-5 max-w-sm text-sm text-gray-500">
                                 Your account has been assessed for this term.
                                 Make your first payment to get started.
@@ -521,20 +556,15 @@ function subjectRowClass(s: EnrolledSubject): string {
                             </button>
                         </div>
 
-                        <!-- Current assessment details card -->
                         <div
                             v-if="currentTermAssessment && termKey === currentTerm"
                             class="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-5"
                         >
-                            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-blue-600">
-                                Assessment Summary
-                            </p>
+                            <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-blue-600">Assessment Summary</p>
                             <div class="grid grid-cols-2 gap-4 sm:grid-cols-3">
                                 <div>
                                     <p class="text-xs text-gray-500">Year Level</p>
-                                    <p class="mt-0.5 text-sm font-semibold text-gray-800">
-                                        {{ currentTermAssessment.year_level }}
-                                    </p>
+                                    <p class="mt-0.5 text-sm font-semibold text-gray-800">{{ currentTermAssessment.year_level }}</p>
                                 </div>
                                 <div>
                                     <p class="text-xs text-gray-500">Term</p>
@@ -550,7 +580,7 @@ function subjectRowClass(s: EnrolledSubject): string {
                                 </div>
                             </div>
                             <p class="mt-3 text-xs text-blue-500">
-                                Your full subject breakdown is shown below.
+                                Your enrolled subjects are shown in the panel below.
                             </p>
                         </div>
                     </div>
@@ -565,7 +595,7 @@ function subjectRowClass(s: EnrolledSubject): string {
                                     <th v-if="isStaff" class="p-3 font-semibold">Student</th>
                                     <th class="p-3 font-semibold">Method</th>
                                     <th class="p-3 font-semibold">Category</th>
-                                    <th class="p-3 font-semibold">Year & Semester</th>
+                                    <th class="p-3 font-semibold">Year &amp; Semester</th>
                                     <th class="p-3 font-semibold">Amount</th>
                                     <th class="p-3 font-semibold">Status</th>
                                     <th class="p-3 font-semibold">Date</th>
@@ -575,12 +605,8 @@ function subjectRowClass(s: EnrolledSubject): string {
                             <tbody>
                                 <tr v-for="t in transactions" :key="t.id" class="border-b transition-colors hover:bg-gray-50">
                                     <td class="p-3 font-mono text-xs">
-                                        <p class="font-medium text-gray-800">
-                                            {{ displayRefNumber(t) }}
-                                        </p>
-                                        <p class="mt-0.5 font-sans text-xs text-gray-400">
-                                            {{ displayRefLabel(t) }}
-                                        </p>
+                                        <p class="font-medium text-gray-800">{{ displayRefNumber(t) }}</p>
+                                        <p class="mt-0.5 font-sans text-xs text-gray-400">{{ displayRefLabel(t) }}</p>
                                     </td>
                                     <td v-if="isStaff" class="p-3 text-sm">
                                         <div>
@@ -589,21 +615,17 @@ function subjectRowClass(s: EnrolledSubject): string {
                                         </div>
                                     </td>
                                     <td class="p-3 text-sm">
-                                        <span v-if="t.kind === 'charge'" class="text-gray-400 italic text-xs">—</span>
+                                        <span v-if="t.kind === 'charge'" class="text-xs italic text-gray-400">—</span>
                                         <span v-else>{{ formatPaymentMethod(t.payment_channel ?? '') }}</span>
                                     </td>
-                                    <td class="p-3 text-sm">
-                                        {{ t.meta?.term_name ?? t.type }}
-                                    </td>
+                                    <td class="p-3 text-sm">{{ t.meta?.term_name ?? t.type }}</td>
                                     <td class="p-3 text-sm">
                                         <span v-if="t.year || t.semester" class="font-medium">
                                             {{ toYearRange(t.year) }} {{ t.semester }}
                                         </span>
                                         <span v-else class="text-gray-400">—</span>
                                     </td>
-                                    <td class="p-3 font-semibold text-gray-800">
-                                        {{ formatCurrency(t.amount) }}
-                                    </td>
+                                    <td class="p-3 font-semibold text-gray-800">{{ formatCurrency(t.amount) }}</td>
                                     <td class="p-3">
                                         <span
                                             class="rounded-full px-2 py-1 text-xs font-semibold"
@@ -632,15 +654,13 @@ function subjectRowClass(s: EnrolledSubject): string {
                                             >
                                                 View
                                             </button>
-
                                             <a
                                                 v-if="!isStaff && t.status === 'awaiting_proof' && t.payment_channel === 'bank_transfer'"
                                                 :href="route('payment.proof.show', { transaction: t.id })"
-                                                class="rounded-lg bg-orange-600 px-3 py-1 text-xs text-white transition-colors hover:bg-orange-700"
+                                                class="rounded-lg bg-orange-500 px-3 py-1 text-xs text-white transition-colors hover:bg-orange-600"
                                             >
                                                 Upload Proof
                                             </a>
-
                                             <button
                                                 v-if="t.kind === 'payment' && t.status === 'paid'"
                                                 @click="downloadReceipt(t.id)"
@@ -649,7 +669,6 @@ function subjectRowClass(s: EnrolledSubject): string {
                                             >
                                                 📄 Receipt
                                             </button>
-
                                             <span
                                                 v-if="t.kind === 'payment' && t.status === 'awaiting_approval'"
                                                 class="cursor-not-allowed rounded-lg bg-gray-200 px-3 py-1 text-xs text-gray-500"
@@ -657,16 +676,6 @@ function subjectRowClass(s: EnrolledSubject): string {
                                             >
                                                 ⏳ Pending
                                             </span>
-
-                                            <button
-                                                v-if="t.status === 'pending' && t.kind === 'charge' && !isStaff"
-                                                @click="payNow"
-                                                :disabled="!canMakePayment"
-                                                class="rounded-lg px-3 py-1 text-xs transition-colors"
-                                                :class="canMakePayment ? 'bg-red-600 text-white hover:bg-red-700' : 'cursor-not-allowed bg-gray-400 text-gray-200'"
-                                            >
-                                                Pay Now
-                                            </button>
                                         </div>
                                     </td>
                                 </tr>
@@ -675,208 +684,81 @@ function subjectRowClass(s: EnrolledSubject): string {
                     </div>
                     <!-- ══ END TRANSACTION TABLE ══ -->
 
-                    <!-- ══ ENROLLED SUBJECTS PANEL ══
-                         Replaces the old buildSubjectPanel() approach.
-                         assessmentByTerm[termKey] is non-null only when:
-                           1. An assessment exists for this term key
-                           2. assessment_subjects rows exist (enrolled_subjects.length > 0)
-                         Staff see this panel too — it uses the same data.
-                    -->
-                    <div v-if="assessmentByTerm[termKey]" class="border-t border-gray-100">
-
-                        <!-- Toggle button -->
+                    <!-- ── Enrolled Subjects Panel ───────────────────────────── -->
+                    <!-- Only shown for student-facing view (staff branch sends empty allAssessments) -->
+                    <div v-if="!isStaff && subjectPanelsByTerm[termKey]" class="border-t border-gray-100">
+                        <!-- Accordion header -->
                         <button
                             type="button"
                             class="flex w-full items-center justify-between bg-indigo-50 px-5 py-3 text-left transition-colors hover:bg-indigo-100 select-none"
-                            @click="toggleSubjectTerm(assessmentByTerm[termKey]!.id)"
+                            @click="toggleSubjectTerm(subjectPanelsByTerm[termKey]!.assessmentId)"
                         >
                             <div class="flex items-center gap-2">
                                 <BookOpen class="h-4 w-4 text-indigo-500" />
                                 <span class="text-sm font-semibold text-indigo-800">
-                                    Enrolled Subjects — {{ termKey }}
+                                    Enrolled Subjects
                                 </span>
                                 <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
-                                    {{ assessmentByTerm[termKey]!.subject_totals.subject_count }} subjects
+                                    {{ subjectPanelsByTerm[termKey]!.subjectCount }} subjects
                                 </span>
                                 <span class="text-xs text-indigo-500">
-                                    · {{ assessmentByTerm[termKey]!.subject_totals.total_units }} total units
+                                    · {{ subjectPanelsByTerm[termKey]!.totalLecUnits + subjectPanelsByTerm[termKey]!.totalLabUnits }} total units
                                 </span>
                             </div>
                             <ChevronDown
                                 class="h-4 w-4 text-indigo-600 transition-transform duration-200"
-                                :class="{ 'rotate-180': expandedSubjectTerms.has(assessmentByTerm[termKey]!.id) }"
+                                :class="{ 'rotate-180': expandedSubjectTerms.has(subjectPanelsByTerm[termKey]!.assessmentId) }"
                             />
                         </button>
 
                         <!-- Expanded subject table -->
                         <div
-                            v-if="expandedSubjectTerms.has(assessmentByTerm[termKey]!.id)"
-                            class="border-t border-gray-100 bg-gray-50"
+                            v-if="expandedSubjectTerms.has(subjectPanelsByTerm[termKey]!.assessmentId)"
+                            class="border-t border-gray-100"
                         >
-                            <!-- Legend -->
-                            <div class="flex flex-wrap items-center gap-4 border-b border-gray-100 bg-white px-6 py-2.5 text-xs text-gray-500">
-                                <span class="flex items-center gap-1.5">
-                                    <span class="inline-block h-3 w-3 rounded-sm bg-amber-100 ring-1 ring-amber-300"></span>
-                                    NSTP (special billing)
-                                </span>
-                                <span class="flex items-center gap-1.5">
-                                    <span class="inline-block h-3 w-3 rounded-sm bg-sky-100 ring-1 ring-sky-300"></span>
-                                    PE / PathFit
-                                </span>
-                                <span v-if="assessmentByTerm[termKey]!.subject_totals.lab_units > 0" class="flex items-center gap-1.5 text-purple-600">
-                                    <FlaskConical class="h-3 w-3" />
-                                    Has laboratory component
-                                </span>
-                            </div>
-
-                            <div class="overflow-x-auto">
-                                <table class="min-w-full text-sm">
-                                    <thead>
-                                        <tr class="border-b border-gray-200 bg-gray-100 text-xs font-semibold tracking-wide text-gray-500 uppercase">
-                                            <th class="px-5 py-2.5 text-left">Code</th>
-                                            <th class="px-5 py-2.5 text-left">Subject Name</th>
-                                            <th class="px-5 py-2.5 text-center">Lec</th>
-                                            <th class="px-5 py-2.5 text-center">Lab</th>
-                                            <th class="px-5 py-2.5 text-center">Total</th>
-                                            <th class="px-5 py-2.5 text-right">Unit Cost</th>
-                                            <th class="px-5 py-2.5 text-right">Lab Fee</th>
-                                            <th class="px-5 py-2.5 text-right">Total</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody class="divide-y divide-gray-100">
-                                        <tr
-                                            v-for="subject in assessmentByTerm[termKey]!.enrolled_subjects"
-                                            :key="subject.subject_id"
-                                            :class="['transition-colors', subjectRowClass(subject)]"
-                                        >
-                                            <!-- Code -->
-                                            <td class="px-5 py-3">
-                                                <span class="rounded bg-indigo-50 px-2 py-0.5 font-mono text-xs font-semibold text-indigo-700">
-                                                    {{ subject.code }}
-                                                </span>
-                                            </td>
-
-                                            <!-- Name + type badges -->
-                                            <td class="px-5 py-3">
-                                                <div class="flex items-center gap-1.5">
-                                                    <span class="font-medium text-gray-900">{{ subject.name }}</span>
-                                                    <FlaskConical
-                                                        v-if="subject.lab_units > 0"
-                                                        class="h-3.5 w-3.5 flex-shrink-0 text-purple-500"
-                                                        title="Has laboratory component"
-                                                    />
-                                                    <span
-                                                        v-if="subject.is_nstp"
-                                                        class="rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-700"
-                                                    >
-                                                        NSTP
-                                                    </span>
-                                                    <span
-                                                        v-if="subject.is_pathfit"
-                                                        class="rounded-full bg-sky-100 px-1.5 py-0.5 text-xs font-semibold text-sky-700"
-                                                    >
-                                                        PE
-                                                    </span>
-                                                </div>
-                                            </td>
-
-                                            <!-- Lec units — NSTP shows both academic and billable -->
-                                            <td class="px-5 py-3 text-center">
-                                                <template v-if="subject.is_nstp && subject.nstp_billing_units !== subject.lec_units">
-                                                    <span class="block font-medium text-gray-700">{{ subject.lec_units }}</span>
-                                                    <span class="block text-xs text-amber-600" title="Billable units">
-                                                        ({{ subject.nstp_billing_units }} billed)
-                                                    </span>
-                                                </template>
-                                                <span v-else class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
-                                                    {{ subject.lec_units }}
-                                                </span>
-                                            </td>
-
-                                            <!-- Lab units -->
-                                            <td class="px-5 py-3 text-center">
-                                                <span v-if="subject.lab_units > 0" class="rounded-full bg-purple-50 px-2 py-0.5 text-xs font-semibold text-purple-700">
-                                                    {{ subject.lab_units }}
-                                                </span>
-                                                <span v-else class="text-xs text-gray-300">—</span>
-                                            </td>
-
-                                            <!-- Total units -->
-                                            <td class="px-5 py-3 text-center">
-                                                <span class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
-                                                    {{ subject.total_units }}
-                                                </span>
-                                            </td>
-
-                                            <!-- Tuition fee (unit cost) -->
-                                            <td class="px-5 py-3 text-right">
-                                                <p class="font-medium text-gray-900">{{ formatCurrency(subject.tuition_fee) }}</p>
-                                            </td>
-
-                                            <!-- Lab fee -->
-                                            <td class="px-5 py-3 text-right">
-                                                <span v-if="subject.lab_fee > 0" class="font-medium text-purple-700">
-                                                    {{ formatCurrency(subject.lab_fee) }}
-                                                </span>
-                                                <span v-else class="text-xs text-gray-300">—</span>
-                                            </td>
-
-                                            <!-- Subject total -->
-                                            <td class="px-5 py-3 text-right font-semibold text-gray-900">
-                                                {{ formatCurrency(subject.total_fee) }}
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                    <tfoot>
-                                        <tr class="border-t-2 border-gray-200 bg-gray-50 text-sm font-semibold">
-                                            <td colspan="2" class="px-5 py-3 text-gray-700">
-                                                Subtotal — {{ assessmentByTerm[termKey]!.subject_totals.subject_count }} subjects
-                                            </td>
-                                            <td class="px-5 py-3 text-center text-gray-700">
-                                                {{ assessmentByTerm[termKey]!.subject_totals.lec_units }}
-                                            </td>
-                                            <td class="px-5 py-3 text-center text-gray-700">
-                                                <span v-if="assessmentByTerm[termKey]!.subject_totals.lab_units > 0">
-                                                    {{ assessmentByTerm[termKey]!.subject_totals.lab_units }}
-                                                </span>
-                                                <span v-else class="font-normal text-gray-300">—</span>
-                                            </td>
-                                            <td class="px-5 py-3 text-center text-blue-700">
-                                                {{ assessmentByTerm[termKey]!.subject_totals.total_units }}
-                                            </td>
-                                            <td class="px-5 py-3 text-right text-gray-900">
-                                                {{ formatCurrency(assessmentByTerm[termKey]!.tuition_fee) }}
-                                            </td>
-                                            <td class="px-5 py-3 text-right text-purple-700">
-                                                <span v-if="assessmentByTerm[termKey]!.subject_totals.lab_units > 0">
-                                                    {{ formatCurrency(assessmentByTerm[termKey]!.lab_fee) }}
-                                                </span>
-                                                <span v-else class="font-normal text-gray-300">—</span>
-                                            </td>
-                                            <td class="px-5 py-3 text-right text-indigo-700">
-                                                {{ formatCurrency(assessmentByTerm[termKey]!.tuition_fee + assessmentByTerm[termKey]!.lab_fee) }}
-                                            </td>
-                                        </tr>
-                                    </tfoot>
-                                </table>
-                            </div>
-
-                            <!-- NSTP billing note — shown only when NSTP subject is present -->
-                            <div
-                                v-if="assessmentByTerm[termKey]!.enrolled_subjects.some(s => s.is_nstp)"
-                                class="border-t border-gray-100 bg-amber-50 px-5 py-2.5 text-xs text-amber-800"
-                            >
-                                <strong>NSTP Billing Note:</strong>
-                                NSTP carries its academic units but is billed at a reduced rate per CHED Memorandum Order.
-                                The "(billed)" figure in the Lec column reflects the actual charged units.
-                            </div>
-
-                            <div class="border-t border-gray-100 bg-white px-5 py-2.5 text-xs text-gray-400">
-                                Miscellaneous fees (registration, library, athletics, etc.) are fixed per semester and are not listed per subject above.
-                            </div>
+                            <table class="min-w-full text-sm">
+                                <thead class="border-b border-gray-200 bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    <tr>
+                                        <th class="px-5 py-3 text-left">Code</th>
+                                        <th class="px-5 py-3 text-left">Subject Name</th>
+                                        <th class="px-5 py-3 text-center">Units</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-100">
+                                    <tr
+                                        v-for="subject in subjectPanelsByTerm[termKey]!.subjects"
+                                        :key="subject.subject_id ?? subject.code"
+                                        class="hover:bg-gray-50"
+                                    >
+                                        <td class="px-5 py-3">
+                                            <span class="rounded bg-indigo-50 px-2 py-0.5 font-mono text-xs font-semibold text-indigo-700">
+                                                {{ subject.code }}
+                                            </span>
+                                        </td>
+                                        <td class="px-5 py-3 font-medium text-gray-900">
+                                            {{ subject.name }}
+                                        </td>
+                                        <td class="px-5 py-3 text-center">
+                                            <span class="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-700">
+                                                {{ subject.lec_units + subject.lab_units }}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                                <tfoot class="border-t-2 border-gray-200 bg-gray-50 text-sm font-semibold">
+                                    <tr>
+                                        <td colspan="2" class="px-5 py-3 text-gray-700">
+                                            Total — {{ subjectPanelsByTerm[termKey]!.subjectCount }} subject{{ subjectPanelsByTerm[termKey]!.subjectCount !== 1 ? 's' : '' }}
+                                        </td>
+                                        <td class="px-5 py-3 text-center text-indigo-700">
+                                            {{ subjectPanelsByTerm[termKey]!.totalLecUnits + subjectPanelsByTerm[termKey]!.totalLabUnits }}
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                            </table>
                         </div>
                     </div>
-                    <!-- ══ END ENROLLED SUBJECTS PANEL ══ -->
+                    <!-- ── End Enrolled Subjects Panel ── -->
 
                 </div>
             </div>
@@ -1028,14 +910,6 @@ function subjectRowClass(s: EnrolledSubject): string {
                             >
                                 ⏳ Awaiting Verification — Receipt Not Yet Available
                             </span>
-                            <Button
-                                v-if="selectedTransaction.status === 'pending' && selectedTransaction.kind === 'charge' && !isStaff"
-                                :disabled="!canMakePayment"
-                                variant="destructive"
-                                @click="payNow(); closeDetailsDialog();"
-                            >
-                                {{ canMakePayment ? 'Pay Now' : 'Cannot Pay' }}
-                            </Button>
                         </div>
                     </div>
                 </DialogContent>

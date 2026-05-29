@@ -3,7 +3,7 @@ import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, Link, useForm, usePage } from '@inertiajs/vue3';
-import { AlertCircle, Bell, Calendar, CalendarClock, CheckCircle, Clock } from 'lucide-vue-next';
+import { AlertCircle, Bell, Calendar, CalendarClock, CheckCircle, Clock, Megaphone, XCircle } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 
 const { formatCurrency, formatDate, getTransactionStatusConfig, formatTransactionType } = useDataFormatting();
@@ -298,6 +298,98 @@ const visibleNotifications  = computed(() =>
     showAllNotifications.value ? activeNotifications.value : activeNotifications.value.slice(0, 3),
 );
 const hasMoreNotifications = computed(() => activeNotifications.value.length > 3);
+
+// ── Notification type config ──────────────────────────────────────────────────
+// Covers all types the backend can produce. The old template only checked
+// `=== 'payment_due'` for the left-border colour, so payment_approved got a
+// blue border instead of green and payment_rejected got blue instead of red.
+// This map drives both the border colour and the due-date / Pay Now logic.
+
+const notifTypeConfig: Record<string, {
+    borderClass:  string;
+    badgeClass:   string;
+    icon:         any;
+    iconClass:    string;
+    hasDueDate:   boolean;
+    hasPayNow:    boolean;
+}> = {
+    payment_due: {
+        borderClass: 'border-l-4 border-l-amber-500',
+        badgeClass:  'bg-amber-100 text-amber-800',
+        icon:        CalendarClock,
+        iconClass:   'text-amber-500',
+        hasDueDate:  true,
+        hasPayNow:   true,
+    },
+    payment_due_notice: {
+        borderClass: 'border-l-4 border-l-amber-400',
+        badgeClass:  'bg-amber-100 text-amber-700',
+        icon:        CalendarClock,
+        iconClass:   'text-amber-400',
+        hasDueDate:  true,
+        hasPayNow:   true,
+    },
+    deadline: {
+        borderClass: 'border-l-4 border-l-red-500',
+        badgeClass:  'bg-red-100 text-red-800',
+        icon:        AlertCircle,
+        iconClass:   'text-red-500',
+        hasDueDate:  true,
+        hasPayNow:   false,
+    },
+    warning: {
+        borderClass: 'border-l-4 border-l-orange-500',
+        badgeClass:  'bg-orange-100 text-orange-800',
+        icon:        AlertCircle,
+        iconClass:   'text-orange-500',
+        hasDueDate:  false,
+        hasPayNow:   false,
+    },
+    payment_approved: {
+        borderClass: 'border-l-4 border-l-emerald-500',
+        badgeClass:  'bg-emerald-100 text-emerald-800',
+        icon:        CheckCircle,
+        iconClass:   'text-emerald-500',
+        hasDueDate:  false,
+        hasPayNow:   false,
+    },
+    payment_rejected: {
+        borderClass: 'border-l-4 border-l-red-500',
+        badgeClass:  'bg-red-100 text-red-800',
+        icon:        XCircle,
+        iconClass:   'text-red-500',
+        hasDueDate:  false,
+        hasPayNow:   false,
+    },
+    reminder: {
+        borderClass: 'border-l-4 border-l-blue-400',
+        badgeClass:  'bg-blue-100 text-blue-800',
+        icon:        Bell,
+        iconClass:   'text-blue-400',
+        hasDueDate:  false,
+        hasPayNow:   false,
+    },
+    announcement: {
+        borderClass: 'border-l-4 border-l-blue-500',
+        badgeClass:  'bg-blue-100 text-blue-800',
+        icon:        Megaphone,
+        iconClass:   'text-blue-500',
+        hasDueDate:  false,
+        hasPayNow:   false,
+    },
+    general: {
+        borderClass: 'border-l-4 border-l-blue-400',
+        badgeClass:  'bg-blue-100 text-blue-700',
+        icon:        Megaphone,
+        iconClass:   'text-blue-400',
+        hasDueDate:  false,
+        hasPayNow:   false,
+    },
+};
+
+function getNotifConfig(type: string | null) {
+    return notifTypeConfig[type ?? 'general'] ?? notifTypeConfig.general;
+}
 
 const dismissNotification = (id: number) => {
     hiddenNotifications.value.add(id);
@@ -796,11 +888,7 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                 v-for="notification in visibleNotifications"
                                 :key="notification.id"
                                 class="ccdi-card p-4 transition-all hover:shadow-md"
-                                :class="
-                                    notification.type === 'payment_due'
-                                        ? 'border-l-4 border-l-amber-500'
-                                        : 'border-l-4 border-l-blue-500'
-                                "
+                                :class="getNotifConfig(notification.type).borderClass"
                             >
                                 <div class="mb-2 flex items-start justify-between gap-2">
                                     <h3 class="flex-1 text-sm font-semibold text-foreground">{{ notification.title }}</h3>
@@ -812,7 +900,7 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                         ✕
                                     </button>
                                 </div>
-                                <div v-if="notification.type === 'payment_due' && notification.due_date" class="mb-2">
+                                <div v-if="getNotifConfig(notification.type).hasDueDate && notification.due_date" class="mb-2">
                                     <span
                                         class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
                                         :class="
@@ -834,7 +922,7 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                         <p v-if="notification.end_date">Until: {{ formatDate(notification.end_date) }}</p>
                                     </div>
                                     <Link
-                                        v-if="notification.type === 'payment_due' && notification.payment_term_id"
+                                        v-if="getNotifConfig(notification.type).hasPayNow && notification.payment_term_id"
                                         :href="route('student.account', { tab: 'payment', term_id: notification.payment_term_id })"
                                         class="flex-shrink-0 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-emerald-700"
                                     >

@@ -3,23 +3,23 @@
 namespace App\Http\Controllers;
 
 use App\Enums\PaymentStatus;
-use App\Enums\UserRoleEnum;
-use App\Events\PaymentRecorded;
+use Barryvdh\DomPDF\Facade\Pdf;
 use App\Models\AssessmentSubject;
-use App\Models\StudentAssessment;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Models\StudentPaymentTerm;
+use App\Models\StudentAssessment;
 use App\Models\Workflow;
-use App\Services\AccountService;
-use App\Services\StudentPaymentService;
-use App\Services\WorkflowService;
-use Barryvdh\DomPDF\Facade\Pdf;
+use App\Enums\UserRoleEnum;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
-use Illuminate\Support\Str;
 use Inertia\Inertia;
+use Illuminate\Support\Str;
+use App\Services\AccountService;
+use App\Services\WorkflowService;
+use App\Services\StudentPaymentService;
+use App\Events\PaymentRecorded;
 
 class TransactionController extends Controller
 {
@@ -33,89 +33,66 @@ class TransactionController extends Controller
     {
         $user = $request->user();
 
-        $isStaffRole = in_array($user->role->value, ['admin', 'accounting', 'super_admin']);
-
-        $transactionMapper = fn ($t) => [
-            'id'              => $t->id,
-            'kind'            => $t->kind,
-            'type'            => $t->type ?? ucfirst($t->kind),
-            'amount'          => (float) $t->amount,
-            'reference'       => $t->reference,
-            'or_number'       => $t->or_number ?? null,
-            'status'          => $t->status,
-            'year'            => $t->year,
-            'semester'        => $t->semester,
-            'payment_channel' => $t->payment_channel ?? ($t->meta['payment_method'] ?? null),
-            'meta'            => $t->meta,
-            'created_at'      => $t->created_at?->toDateTimeString(),
-            'user'            => $t->user,
-        ];
-
-        if ($isStaffRole) {
+        if (in_array($user->role->value, ['admin', 'accounting'])) {
+            // ── Staff branch ─────────────────────────────────────────────────
             $transactions = Transaction::with('user')
                 ->where('kind', 'payment')
                 ->orderByDesc('year')
                 ->orderByDesc('semester')
                 ->get()
-                ->map($transactionMapper)
+                ->map(fn ($t) => $this->shapeTransaction($t, withUser: true))
                 ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
 
-            $currentTerm   = $this->getCurrentTerm();
-            $allAssessments = [];
-        } else {
-            // ── Student branch ────────────────────────────────────────────────
+            $currentTerm = $this->getCurrentTerm();
 
-            $transactions = $user->transactions()
-                ->with('user')
-                ->where('kind', 'payment')
-                ->orderByDesc('year')
-                ->orderByDesc('semester')
-                ->get()
-                ->map($transactionMapper)
-                ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
-
-            $latestAssessment = StudentAssessment::where('user_id', $user->id)
-                ->where('status', 'active')
-                ->latest()
-                ->first();
-
-            $currentTerm = $latestAssessment
-                ? trim("{$latestAssessment->school_year} {$latestAssessment->semester}")
-                : $this->getCurrentTerm();
-
-            // ── Load assessments with the authoritative subject snapshot ──────
-            // assessment_subjects is the immutable billing snapshot created at
-            // assessment time. We must never reconstruct it from aggregate
-            // columns (lec_units × rate) — that approach:
-            //   ① loses subject names, codes, and individual unit counts
-            //   ② breaks for irregular students with non-preset unit counts
-            //   ③ makes NSTP invisible (1.5 billing units not representable)
-            //   ④ is historically inaccurate if fee rates change later
-            $allAssessments = StudentAssessment::where('user_id', $user->id)
-                ->where('status', '!=', 'cancelled')
-                ->with([
-                    'assessmentSubjects' => fn ($q) => $q->orderBy('sort_order'),
-                ])
-                ->orderByDesc('created_at')
-                ->get()
-                ->map(fn ($a) => $this->shapeAssessmentForTransactions($a))
-                ->values()
-                ->toArray();
+            return Inertia::render('Transactions/Index', [
+                'transactionsByTerm'  => $transactions,
+                'account'             => $user->account,
+                'currentTerm'         => $currentTerm,
+                // Staff do not see subject panels — empty arrays
+                'allAssessments'      => [],
+                'backUrl'             => route('accounting.dashboard'),
+            ]);
         }
+
+        // ── Student branch ────────────────────────────────────────────────────
+        $transactions = $user->transactions()
+            ->with('user')
+            ->where('kind', 'payment')
+            ->orderByDesc('year')
+            ->orderByDesc('semester')
+            ->get()
+            ->map(fn ($t) => $this->shapeTransaction($t, withUser: false))
+            ->groupBy(fn ($txn) => $this->getTransactionGroupKey((object) $txn));
+
+        // ── Active assessment + current term label ─────────────────────────
+        $latestAssessment = StudentAssessment::where('user_id', $user->id)
+            ->where('status', 'active')
+            ->latest()
+            ->first();
+
+        $currentTerm = $latestAssessment
+            ? trim("{$latestAssessment->school_year} {$latestAssessment->semester}")
+            : $this->getCurrentTerm();
+
+        // ── All assessments with real subject snapshots ────────────────────
+        // Load assessmentSubjects eager — one query, not N+1.
+        // assessment_subjects is the authoritative, immutable billing snapshot.
+        // Never reconstruct subject lists from fee_settings or curriculum presets.
+        $allAssessments = StudentAssessment::where('user_id', $user->id)
+            ->where('status', '!=', 'cancelled')
+            ->with(['assessmentSubjects' => fn ($q) => $q->orderBy('sort_order')])
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn ($a) => $this->shapeAssessmentForTransactions($a))
+            ->toArray();
 
         return Inertia::render('Transactions/Index', [
             'transactionsByTerm' => $transactions,
             'account'            => $user->account,
             'currentTerm'        => $currentTerm,
             'allAssessments'     => $allAssessments,
-            // enrolledSubjectsByAssessment is now DEPRECATED — the frontend
-            // buildSubjectPanel() function is being replaced by real data from
-            // assessment_subjects. We pass an empty object for backwards compat
-            // during the transition so old code paths don't throw.
-            'enrolledSubjectsByAssessment' => [],
-            'backUrl' => $isStaffRole
-                ? route('accounting.dashboard')
-                : route('student.dashboard'),
+            'backUrl'            => route('student.dashboard'),
         ]);
     }
 
@@ -276,7 +253,8 @@ class TransactionController extends Controller
             ->orderBy('year', 'desc')
             ->orderBy('created_at', 'desc');
 
-        $termKey        = $request->input('term');
+        $termKey = $request->input('term');
+
         $termStartYear  = null;
         $termSchoolYear = null;
         $termSem        = null;
@@ -382,7 +360,8 @@ class TransactionController extends Controller
                 }
             }
 
-            $paymentService  = new StudentPaymentService();
+            $paymentService = new StudentPaymentService();
+
             $assessment      = $term->assessment;
             $transactionYear = $assessment
                 ? explode('-', $assessment->school_year)[0]
@@ -456,17 +435,44 @@ class TransactionController extends Controller
     // ─── Private helpers ──────────────────────────────────────────────────────
 
     /**
-     * Shape an assessment for the Transactions/Index page.
+     * Shape a transaction row for the frontend.
+     */
+    private function shapeTransaction(Transaction $t, bool $withUser): array
+    {
+        $row = [
+            'id'              => $t->id,
+            'kind'            => $t->kind,
+            'type'            => $t->type ?? ucfirst($t->kind),
+            'amount'          => (float) $t->amount,
+            'reference'       => $t->reference,
+            'or_number'       => $t->or_number ?? null,
+            'status'          => $t->status,
+            'year'            => $t->year,
+            'semester'        => $t->semester,
+            'payment_channel' => $t->payment_channel ?? ($t->meta['payment_method'] ?? null),
+            'meta'            => $t->meta,
+            'created_at'      => $t->created_at?->toDateTimeString(),
+            'paid_at'         => $t->paid_at ?? null,
+        ];
+
+        if ($withUser) {
+            $row['user'] = $t->user;
+        }
+
+        return $row;
+    }
+
+    /**
+     * Shape a StudentAssessment for the Transactions/Index frontend prop.
      *
-     * Key difference from old code:
-     *   OLD: fake fee_breakdown reconstructed from aggregate columns × hardcoded
-     *        config rates — no subject names, no NSTP visibility, rates stale.
-     *   NEW: enrolled_subjects from the assessment_subjects snapshot — each row
-     *        has code, name, lec_units, lab_units, per-subject fees. Zero extra
-     *        queries because assessmentSubjects is already eager-loaded.
+     * Key change: enrolled_subjects comes from assessment_subjects (immutable
+     * billing snapshot), not from a recalculation of aggregate columns.
+     * This means subject names, codes, and per-subject fees are always correct —
+     * even for NSTP, irregular students, and old assessments with changed rates.
      */
     private function shapeAssessmentForTransactions(StudentAssessment $a): array
     {
+        // assessmentSubjects is already eager-loaded — zero extra queries.
         $subjects = $a->assessmentSubjects->map(fn (AssessmentSubject $s) => [
             'subject_id'         => $s->subject_id,
             'code'               => $s->code,
@@ -483,70 +489,24 @@ class TransactionController extends Controller
             'total_fee'          => (float) $s->total_fee,
         ])->values()->all();
 
-        $totalLecUnits = collect($subjects)->sum('lec_units');
-        $totalLabUnits = collect($subjects)->sum('lab_units');
-
         return [
-            'id'               => $a->id,
-            'school_year'      => $a->school_year,
-            'semester'         => $a->semester,
-            'year_level'       => $a->year_level,
-            'course'           => $a->course ?? null,
-            'total_assessment' => (float) $a->total_assessment,
-            'tuition_fee'      => (float) $a->tuition_fee,
-            'lab_fee'          => (float) $a->lab_fee,
-            'misc_fee'         => (float) $a->misc_fee,
+            'id'                => $a->id,
+            'school_year'       => $a->school_year,
+            'semester'          => $a->semester,
+            'year_level'        => $a->year_level,
+            'course'            => $a->course ?? null,
+            'total_assessment'  => (float) $a->total_assessment,
+            'lec_units'         => (float) $a->lec_units,
+            'lab_units'         => (int)   $a->lab_units,
+            'tuition_fee'       => (float) $a->tuition_fee,
+            'lab_fee'           => (float) $a->lab_fee,
+            'misc_fee'          => (float) $a->misc_fee,
+            'is_taking_nstp'    => (bool)  $a->is_taking_nstp,
+            'status'            => $a->status,
 
-            // The canonical subject snapshot — use this; ignore fee_breakdown
+            // ── Real subject snapshot ─────────────────────────────────────────
             'enrolled_subjects' => $subjects,
-
-            'subject_totals' => [
-                'lec_units'     => $totalLecUnits,
-                'lab_units'     => $totalLabUnits,
-                'total_units'   => $totalLecUnits + $totalLabUnits,
-                'subject_count' => count($subjects),
-            ],
-
-            // Kept for backwards compat with any template still reading it.
-            // The 3-row aggregate is still accurate for the summary header.
-            'fee_breakdown' => [
-                [
-                    'category' => 'Tuition',
-                    'name'     => 'Tuition Fee',
-                    'units'    => (float) $a->lec_units + (float) ($a->nstp_lec_units ?? 0),
-                    'amount'   => (float) $a->tuition_fee,
-                ],
-                [
-                    'category' => 'Laboratory',
-                    'name'     => 'Laboratory Fee',
-                    'units'    => (int) $a->lab_units,
-                    'amount'   => (float) $a->lab_fee,
-                ],
-                [
-                    'category' => 'Miscellaneous',
-                    'name'     => 'Miscellaneous Fee',
-                    'units'    => null,
-                    'amount'   => (float) $a->misc_fee,
-                ],
-            ],
         ];
-    }
-
-    private function startPaymentApprovalWorkflow(int $transactionId, int $userId): void
-    {
-        $workflow = Workflow::active()
-            ->where('type', 'payment_approval')
-            ->first();
-
-        if (!$workflow) {
-            throw new \Exception(
-                'No active payment_approval workflow found. ' .
-                'Please run: php artisan db:seed --class=PaymentApprovalWorkflowSeeder'
-            );
-        }
-
-        $transaction = Transaction::findOrFail($transactionId);
-        $this->workflowService->startWorkflow($workflow, $transaction, $userId);
     }
 
     private function getTransactionGroupKey(object $txn): string

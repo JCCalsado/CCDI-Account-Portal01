@@ -6,10 +6,18 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useDataFormatting } from '@/composables/useDataFormatting';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { Head, Link, usePage, useForm, router } from '@inertiajs/vue3';
-import { AlertCircle, BookOpen, CalendarClock, CheckCircle, Clock, FlaskConical, XCircle } from 'lucide-vue-next';
+import {
+    AlertCircle,
+    BookOpen,
+    CalendarClock,
+    CheckCircle,
+    Clock,
+    XCircle,
+} from 'lucide-vue-next';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
-const { formatCurrency, formatDate, getPaymentTermStatusConfig, getTransactionStatusConfig, getAssessmentStatusConfig } = useDataFormatting();
+const { formatCurrency, formatDate, getPaymentTermStatusConfig, getTransactionStatusConfig, getAssessmentStatusConfig } =
+    useDataFormatting();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,8 +45,13 @@ type Transaction = {
 
 type Account = { id: number; balance: number; user_id: number };
 
+/**
+ * Immutable per-subject billing snapshot from assessment_subjects.
+ * All monetary fields are locked at assessment creation time — never
+ * recalculated from live fee_settings.
+ */
 type EnrolledSubject = {
-    subject_id: number;
+    subject_id: number | null;
     code: string;
     name: string;
     lec_units: number;
@@ -61,6 +74,14 @@ type SubjectTotals = {
     total_subject_fee: number;
 };
 
+type FeeBreakdownItem = {
+    category: string;
+    name: string;
+    code?: string;
+    units?: number | null;
+    amount: number;
+};
+
 type Assessment = {
     id: number;
     assessment_number: string;
@@ -68,6 +89,8 @@ type Assessment = {
     semester: string;
     school_year: string;
     tuition_fee: number;
+    lab_fee: number;
+    misc_fee: number;
     other_fees: number;
     total_assessment: number;
     status: string;
@@ -75,17 +98,10 @@ type Assessment = {
     is_irregular?: boolean;
     middle_initial?: string | null;
     student_name?: string;
-    enrolled_subjects?: EnrolledSubject[];
-    subject_totals?: SubjectTotals;
-};
-
-type FeeBreakdownItem = {
-    category: string;
-    name: string;
-    code?: string;
-    units?: number | null;
-    amount: number;
-    subject_id?: number;
+    is_taking_nstp?: boolean;
+    discount_type?: string | null;
+    discount_percentage?: number;
+    discount_name?: string | null;
 };
 
 type PaymentTerm = {
@@ -117,6 +133,33 @@ type Notification = {
     created_at: string;
 };
 
+type AssessmentShape = {
+    id: number;
+    assessment_number: string;
+    year_level: string;
+    semester: string;
+    school_year: string;
+    course: string | null;
+    total_assessment: number;
+    tuition_fee: number;
+    lab_fee: number;
+    misc_fee: number;
+    other_fees: number;
+    lec_units: number;
+    nstp_lec_units: number;
+    lab_units: number;
+    is_taking_nstp: boolean;
+    discount_type: string | null;
+    discount_percentage: number;
+    discount_name: string | null;
+    fee_breakdown: FeeBreakdownItem[];
+    // ── NEW: real subject snapshot from assessment_subjects ───────────────────
+    enrolled_subjects: EnrolledSubject[];
+    subject_totals: SubjectTotals;
+    status: string;
+    created_at: string;
+};
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 const page = usePage();
@@ -140,22 +183,7 @@ const props = withDefaults(
             term_name: string;
             created_at: string;
         }>;
-        allAssessments?: Array<{
-            id: number;
-            assessment_number: string;
-            year_level: string;
-            semester: string;
-            school_year: string;
-            course: string | null;
-            total_assessment: number;
-            tuition_fee: number;
-            other_fees: number;
-            fee_breakdown: FeeBreakdownItem[];
-            enrolled_subjects?: EnrolledSubject[];
-            subject_totals?: SubjectTotals;
-            status: string;
-            created_at: string;
-        }>;
+        allAssessments?: AssessmentShape[];
     }>(),
     {
         tab: 'fees',
@@ -250,73 +278,54 @@ const totalAssessmentFee = computed(() => {
 
 const remainingBalance = computed(() => {
     if (props.paymentTerms && props.paymentTerms.length > 0) {
-        return Math.max(0, Math.round(
-            props.paymentTerms.reduce((sum, t) => sum + Number(t.balance || 0), 0) * 100,
-        ) / 100);
+        return Math.max(
+            0,
+            Math.round(props.paymentTerms.reduce((sum, t) => sum + Number(t.balance || 0), 0) * 100) / 100,
+        );
     }
     return 0;
 });
 
 const totalPaid = computed(() => props.totalPaid);
 
-// ── Fee breakdown computeds ───────────────────────────────────────────────────
+// ── Current assessment shape ──────────────────────────────────────────────────
 
-const currentFeeBreakdown = computed<FeeBreakdownItem[]>(() => {
-    if (!props.latestAssessment) return [];
-    return (
-        props.allAssessments.find((a) => a.id === props.latestAssessment!.id)
-            ?.fee_breakdown ?? []
-    );
+const currentAssessmentShape = computed<AssessmentShape | null>(() => {
+    if (!props.latestAssessment) return null;
+    return props.allAssessments.find((a) => a.id === props.latestAssessment!.id) ?? null;
 });
+
+// ── Fee breakdown (aggregate 3-row table) ────────────────────────────────────
+
+const currentFeeBreakdown = computed<FeeBreakdownItem[]>(() =>
+    currentAssessmentShape.value?.fee_breakdown ?? [],
+);
 
 const totalBreakdownUnits = computed<number>(() =>
     currentFeeBreakdown.value.reduce(
-        (sum, item) =>
-            item.units !== null && item.units !== undefined ? sum + item.units : sum,
+        (sum, item) => (item.units !== null && item.units !== undefined ? sum + item.units : sum),
         0,
     ),
 );
 
-// ── Enrolled subjects for the current assessment ──────────────────────────────
-//
-// Source of truth is allAssessments[n].enrolled_subjects, which is the
-// assessment_subjects snapshot passed from StudentAccountController.
-// We never derive this from fee_breakdown — that data is lossy (no code,
-// no NSTP breakdown, no per-subject fees).
+// ── Enrolled subjects (real snapshot from assessment_subjects) ────────────────
 
-const currentEnrolledSubjects = computed<EnrolledSubject[]>(() => {
-    if (!props.latestAssessment) return [];
-    return (
-        props.allAssessments.find((a) => a.id === props.latestAssessment!.id)
-            ?.enrolled_subjects ?? []
-    );
-});
-
-const currentSubjectTotals = computed<SubjectTotals | null>(() => {
-    if (!props.latestAssessment) return null;
-    return (
-        props.allAssessments.find((a) => a.id === props.latestAssessment!.id)
-            ?.subject_totals ?? null
-    );
-});
-
-// NSTP subjects need a special callout — split them from regular subjects
-// so the template can display the billing-unit clarification note.
-const nstpSubjects = computed(() =>
-    currentEnrolledSubjects.value.filter((s) => s.is_nstp),
+const enrolledSubjects = computed<EnrolledSubject[]>(() =>
+    currentAssessmentShape.value?.enrolled_subjects ?? [],
 );
 
-const regularSubjects = computed(() =>
-    currentEnrolledSubjects.value.filter((s) => !s.is_nstp),
+const hasEnrolledSubjects = computed(() => enrolledSubjects.value.length > 0);
+
+const subjectTotals = computed(() => currentAssessmentShape.value?.subject_totals ?? null);
+
+// ── Subject unit totals for the simplified header display ─────────────────────
+// Only total academic units is shown to students — billing units are internal.
+const totalAcademicUnits = computed(() =>
+    enrolledSubjects.value.reduce((sum, s) => sum + s.lec_units + s.lab_units, 0),
 );
 
-// Colour-coding helper — mirrors Transactions/Index row colouring convention
-function subjectRowClass(subject: EnrolledSubject): string {
-    if (subject.is_nstp) return 'bg-amber-50/50 hover:bg-amber-50';
-    if (subject.is_pathfit) return 'bg-sky-50/50 hover:bg-sky-50';
-    if (subject.lab_units > 0) return 'hover:bg-purple-50/30';
-    return 'hover:bg-gray-50';
-}
+// ── Subject accordion state ───────────────────────────────────────────────────
+const subjectsExpanded = ref(true);
 
 // ── Payment terms ─────────────────────────────────────────────────────────────
 
@@ -325,14 +334,6 @@ const firstUnpaidTermId = computed(() => {
         ?.filter((t) => t.balance > 0)
         .sort((a, b) => a.term_order - b.term_order);
     return unpaid?.[0]?.id ?? null;
-});
-
-const nextPaymentDue = computed(() => {
-    const unpaid = props.paymentTerms
-        ?.filter((t) => t.balance > 0)
-        .sort((a, b) => a.term_order - b.term_order);
-    if (!unpaid?.length) return null;
-    return unpaid[0];
 });
 
 const isOverdue = (dueDate: string | null | undefined): boolean => {
@@ -346,8 +347,8 @@ const isOverdue = (dueDate: string | null | undefined): boolean => {
 
 // ── Pending approvals ─────────────────────────────────────────────────────────
 
-const hasPendingPayments = computed(() =>
-    props.pendingApprovalPayments && props.pendingApprovalPayments.length > 0,
+const hasPendingPayments = computed(
+    () => props.pendingApprovalPayments && props.pendingApprovalPayments.length > 0,
 );
 
 // ── Payment history ───────────────────────────────────────────────────────────
@@ -386,15 +387,9 @@ const CASH_CHANNELS = new Set(['cash', 'cash_payment', 'over_the_counter']);
 function getTransactionDisplayRef(txn: Transaction): { label: string; value: string } {
     const channel = (txn.payment_channel ?? '').toLowerCase();
     if (CASH_CHANNELS.has(channel)) {
-        return {
-            label: 'OR No.',
-            value: txn.or_number ?? txn.reference ?? 'N/A',
-        };
+        return { label: 'OR No.', value: txn.or_number ?? txn.reference ?? 'N/A' };
     }
-    return {
-        label: 'Ref No.',
-        value: txn.reference ?? 'N/A',
-    };
+    return { label: 'Ref No.', value: txn.reference ?? 'N/A' };
 }
 
 // ── Pay Now navigation ────────────────────────────────────────────────────────
@@ -405,6 +400,16 @@ const goToPayment = (termId?: number) => {
     if (props.latestAssessment?.id) params.assessment_id = props.latestAssessment.id;
     router.get(route('payment.create'), params);
 };
+
+// ── Discount label helper ─────────────────────────────────────────────────────
+
+const discountLabel = computed(() => {
+    const a = currentAssessmentShape.value;
+    if (!a?.discount_type || a.discount_type === 'none') return null;
+    if (a.discount_name) return a.discount_name;
+    if (a.discount_type === 'percentage') return `${a.discount_percentage}% Discount`;
+    return 'Discount Applied';
+});
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -540,6 +545,12 @@ onUnmounted(() => {
                         >
                             {{ latestAssessment.is_irregular ? 'Irregular' : 'Regular' }}
                         </span>
+                        <span
+                            v-if="discountLabel"
+                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700"
+                        >
+                            🎓 {{ discountLabel }}
+                        </span>
                     </div>
                 </div>
 
@@ -578,7 +589,7 @@ onUnmounted(() => {
                     >
                         {{ formatCurrency(remainingBalance) }}
                     </p>
-                    <p v-if="remainingBalance <= 0" class="mt-0.5 text-xs text-emerald-600 font-medium">✓ Fully paid</p>
+                    <p v-if="remainingBalance <= 0" class="mt-0.5 text-xs font-medium text-emerald-600">✓ Fully paid</p>
                 </div>
             </div>
 
@@ -609,10 +620,10 @@ onUnmounted(() => {
                             <BookOpen :size="14" />
                             Enrolled Subjects
                             <span
-                                v-if="currentEnrolledSubjects.length"
+                                v-if="hasEnrolledSubjects"
                                 class="rounded-full bg-indigo-100 px-1.5 py-0.5 text-xs font-semibold text-indigo-700"
                             >
-                                {{ currentEnrolledSubjects.length }}
+                                {{ enrolledSubjects.length }}
                             </span>
                         </button>
                         <button
@@ -631,7 +642,7 @@ onUnmounted(() => {
 
                 <div class="p-6">
 
-                    <!-- ── FEES TAB ──────────────────────────────────────── -->
+                    <!-- ══ FEES TAB ════════════════════════════════════════════ -->
                     <div v-if="activeTab === 'fees'">
                         <h2 class="mb-4 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                             Current Assessment
@@ -734,10 +745,7 @@ onUnmounted(() => {
                                                 >
                                                     Locked
                                                 </span>
-                                                <span
-                                                    v-else
-                                                    class="rounded bg-green-100 px-2 py-1 text-xs text-green-700"
-                                                >
+                                                <span v-else class="rounded bg-green-100 px-2 py-1 text-xs text-green-700">
                                                     Paid ✓
                                                 </span>
                                             </td>
@@ -782,13 +790,9 @@ onUnmounted(() => {
                                         </tbody>
                                         <tfoot class="border-t-2 border-gray-300 bg-gray-50">
                                             <tr>
-                                                <td class="px-4 py-3 font-bold text-gray-900">
-                                                    Total Assessment Fee
-                                                </td>
+                                                <td class="px-4 py-3 font-bold text-gray-900">Total Assessment Fee</td>
                                                 <td class="px-4 py-3 text-center font-bold text-gray-700">
-                                                    <span v-if="totalBreakdownUnits > 0">
-                                                        {{ totalBreakdownUnits }}
-                                                    </span>
+                                                    <span v-if="totalBreakdownUnits > 0">{{ totalBreakdownUnits }}</span>
                                                     <span v-else class="text-gray-400">—</span>
                                                 </td>
                                                 <td class="px-4 py-3 text-right text-base font-bold text-gray-900">
@@ -797,6 +801,16 @@ onUnmounted(() => {
                                             </tr>
                                         </tfoot>
                                     </table>
+                                </div>
+
+                                <!-- Shortcut to subjects tab -->
+                                <div v-if="hasEnrolledSubjects" class="mt-3 text-right">
+                                    <button
+                                        @click="activeTab = 'subjects'"
+                                        class="text-xs font-medium text-indigo-600 hover:text-indigo-800 hover:underline"
+                                    >
+                                        View enrolled subjects →
+                                    </button>
                                 </div>
                             </template>
                         </div>
@@ -832,211 +846,92 @@ onUnmounted(() => {
                         </div>
                     </div>
 
-                    <!-- ── ENROLLED SUBJECTS TAB ──────────────────────── -->
+                    <!-- ══ ENROLLED SUBJECTS TAB ══════════════════════════════ -->
                     <div v-if="activeTab === 'subjects'">
-                        <div class="mb-5 flex items-center justify-between">
-                            <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                                Enrolled Subjects — {{ latestAssessment?.semester }} {{ latestAssessment?.school_year }}
-                            </h2>
-                            <div v-if="currentSubjectTotals" class="flex items-center gap-4 text-xs text-gray-500">
-                                <span>
-                                    Lecture: <strong class="text-gray-800">{{ currentSubjectTotals.lec_units }} units</strong>
-                                </span>
-                                <span>
-                                    Lab: <strong class="text-gray-800">{{ currentSubjectTotals.lab_units }} units</strong>
-                                </span>
-                                <span>
-                                    Total: <strong class="text-blue-700">{{ currentSubjectTotals.total_units }} units</strong>
-                                </span>
+                        <!-- Header row -->
+                        <div class="mb-5 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                                <h2 class="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                                    Enrolled Subjects
+                                </h2>
+                                <p v-if="latestAssessment" class="mt-0.5 text-sm text-gray-500">
+                                    {{ latestAssessment.semester }} · {{ latestAssessment.school_year }}
+                                </p>
+                            </div>
+                            <div v-if="hasEnrolledSubjects" class="flex items-center gap-3 text-sm text-gray-600">
+                                <span class="font-medium">{{ enrolledSubjects.length }} subject{{ enrolledSubjects.length !== 1 ? 's' : '' }}</span>
+                                <span class="text-gray-300">·</span>
+                                <span>{{ totalAcademicUnits }} total units</span>
                             </div>
                         </div>
 
-                        <!-- No assessment state -->
-                        <div v-if="!latestAssessment" class="rounded-lg border border-dashed border-gray-200 py-12 text-center">
-                            <BookOpen :size="40" class="mx-auto mb-3 text-gray-300" />
-                            <p class="text-sm text-gray-400">No assessment available for this semester.</p>
-                        </div>
-
-                        <!-- No subjects state — assessment exists but subjects table is empty -->
+                        <!-- No assessment -->
                         <div
-                            v-else-if="currentEnrolledSubjects.length === 0"
+                            v-if="!latestAssessment"
                             class="rounded-lg border border-dashed border-gray-200 py-12 text-center"
                         >
                             <BookOpen :size="40" class="mx-auto mb-3 text-gray-300" />
-                            <p class="text-sm font-medium text-gray-500">No subject records found for this assessment.</p>
+                            <p class="text-sm text-gray-400">No assessment found for this account.</p>
+                        </div>
+
+                        <!-- Assessment exists but no subject records (e.g. irregular student) -->
+                        <div
+                            v-else-if="!hasEnrolledSubjects"
+                            class="rounded-lg border border-dashed border-gray-200 py-10 text-center"
+                        >
+                            <BookOpen :size="40" class="mx-auto mb-3 text-gray-300" />
+                            <p class="text-sm font-semibold text-gray-600">No subject records available.</p>
                             <p class="mt-1 text-xs text-gray-400">
-                                This may be an older assessment created before per-subject snapshots were introduced.
-                                Contact the registrar's office if you need a detailed subject breakdown.
+                                Contact the Accounting Office for your enrollment details.
                             </p>
                         </div>
 
-                        <!-- Subject table -->
+                        <!-- Subject list -->
                         <template v-else>
-
-                            <!-- Legend -->
-                            <div class="mb-3 flex flex-wrap items-center gap-4 text-xs text-gray-500">
-                                <span class="flex items-center gap-1.5">
-                                    <span class="inline-block h-3 w-3 rounded-sm bg-amber-100 ring-1 ring-amber-300"></span>
-                                    NSTP (special billing)
-                                </span>
-                                <span class="flex items-center gap-1.5">
-                                    <span class="inline-block h-3 w-3 rounded-sm bg-sky-100 ring-1 ring-sky-300"></span>
-                                    PE / PathFit
-                                </span>
-                                <span class="flex items-center gap-1.5">
-                                    <FlaskConical :size="12" class="text-purple-500" />
-                                    Has laboratory component
-                                </span>
-                            </div>
-
-                            <div class="overflow-hidden rounded-lg border border-gray-200">
+                            <div class="overflow-hidden rounded-xl border border-gray-200">
                                 <table class="min-w-full text-sm">
-                                    <thead class="border-b border-gray-200 bg-gray-50">
+                                    <thead class="border-b border-gray-200 bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500">
                                         <tr>
-                                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Code</th>
-                                            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Subject Name</th>
-                                            <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-gray-500">Lec</th>
-                                            <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-gray-500">Lab</th>
-                                            <th class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-gray-500">Total</th>
-                                            <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">Tuition</th>
-                                            <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">Lab Fee</th>
-                                            <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">Subject Total</th>
+                                            <th class="px-5 py-3 text-left">Code</th>
+                                            <th class="px-5 py-3 text-left">Subject Name</th>
+                                            <th class="px-5 py-3 text-center">Units</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-gray-100">
                                         <tr
-                                            v-for="subject in currentEnrolledSubjects"
-                                            :key="subject.subject_id"
-                                            :class="['transition-colors', subjectRowClass(subject)]"
+                                            v-for="subject in enrolledSubjects"
+                                            :key="subject.subject_id ?? subject.code"
+                                            class="hover:bg-gray-50"
                                         >
-                                            <!-- Code -->
-                                            <td class="px-4 py-3">
+                                            <td class="px-5 py-3">
                                                 <span class="rounded bg-indigo-50 px-2 py-0.5 font-mono text-xs font-semibold text-indigo-700">
                                                     {{ subject.code }}
                                                 </span>
                                             </td>
-
-                                            <!-- Name + badges -->
-                                            <td class="px-4 py-3">
-                                                <div class="flex items-center gap-1.5">
-                                                    <span class="font-medium text-gray-900">{{ subject.name }}</span>
-                                                    <FlaskConical
-                                                        v-if="subject.lab_units > 0"
-                                                        :size="13"
-                                                        class="flex-shrink-0 text-purple-500"
-                                                        title="Has laboratory component"
-                                                    />
-                                                    <span
-                                                        v-if="subject.is_nstp"
-                                                        class="rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-700"
-                                                    >
-                                                        NSTP
-                                                    </span>
-                                                    <span
-                                                        v-if="subject.is_pathfit"
-                                                        class="rounded-full bg-sky-100 px-1.5 py-0.5 text-xs font-semibold text-sky-700"
-                                                    >
-                                                        PE
-                                                    </span>
-                                                </div>
+                                            <td class="px-5 py-3 font-medium text-gray-900">
+                                                {{ subject.name }}
                                             </td>
-
-                                            <!-- Lec units -->
-                                            <td class="px-4 py-3 text-center text-gray-700">
-                                                <!--
-                                                    NSTP billing clarification:
-                                                    academic units (lec_units) vs billable units (nstp_billing_units).
-                                                    Show both so the student isn't confused by the discrepancy.
-                                                -->
-                                                <template v-if="subject.is_nstp && subject.nstp_billing_units !== subject.lec_units">
-                                                    <span class="block font-medium">{{ subject.lec_units }}</span>
-                                                    <span class="block text-xs text-amber-600" title="Billable units (charged rate)">
-                                                        ({{ subject.nstp_billing_units }} billable)
-                                                    </span>
-                                                </template>
-                                                <template v-else>
-                                                    {{ subject.lec_units }}
-                                                </template>
-                                            </td>
-
-                                            <!-- Lab units -->
-                                            <td class="px-4 py-3 text-center text-gray-700">
-                                                <span v-if="subject.lab_units > 0">{{ subject.lab_units }}</span>
-                                                <span v-else class="text-xs text-gray-300">—</span>
-                                            </td>
-
-                                            <!-- Total units -->
-                                            <td class="px-4 py-3 text-center">
-                                                <span class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
-                                                    {{ subject.total_units }}
+                                            <td class="px-5 py-3 text-center">
+                                                <span class="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-700">
+                                                    {{ subject.lec_units + subject.lab_units }}
                                                 </span>
-                                            </td>
-
-                                            <!-- Tuition fee -->
-                                            <td class="px-4 py-3 text-right text-gray-800">
-                                                {{ formatCurrency(subject.tuition_fee) }}
-                                            </td>
-
-                                            <!-- Lab fee -->
-                                            <td class="px-4 py-3 text-right">
-                                                <span v-if="subject.lab_fee > 0" class="font-medium text-purple-700">
-                                                    {{ formatCurrency(subject.lab_fee) }}
-                                                </span>
-                                                <span v-else class="text-xs text-gray-300">—</span>
-                                            </td>
-
-                                            <!-- Subject total fee -->
-                                            <td class="px-4 py-3 text-right font-semibold text-gray-900">
-                                                {{ formatCurrency(subject.total_fee) }}
                                             </td>
                                         </tr>
                                     </tbody>
-                                    <tfoot class="border-t-2 border-gray-300 bg-gray-50">
+                                    <tfoot class="border-t-2 border-gray-200 bg-gray-50 text-sm font-semibold">
                                         <tr>
-                                            <td colspan="2" class="px-4 py-3 font-bold text-gray-900">
-                                                Total — {{ currentSubjectTotals?.subject_count ?? currentEnrolledSubjects.length }} subjects
+                                            <td colspan="2" class="px-5 py-3 text-gray-700">
+                                                Total — {{ enrolledSubjects.length }} subject{{ enrolledSubjects.length !== 1 ? 's' : '' }}
                                             </td>
-                                            <td class="px-4 py-3 text-center font-bold text-gray-700">
-                                                {{ currentSubjectTotals?.lec_units ?? '—' }}
-                                            </td>
-                                            <td class="px-4 py-3 text-center font-bold text-gray-700">
-                                                {{ (currentSubjectTotals?.lab_units ?? 0) > 0 ? currentSubjectTotals!.lab_units : '—' }}
-                                            </td>
-                                            <td class="px-4 py-3 text-center font-bold text-blue-700">
-                                                {{ currentSubjectTotals?.total_units ?? '—' }}
-                                            </td>
-                                            <td colspan="2" class="px-4 py-3"></td>
-                                            <td class="px-4 py-3 text-right font-bold text-gray-900">
-                                                {{ currentSubjectTotals ? formatCurrency(currentSubjectTotals.total_subject_fee) : '—' }}
-                                            </td>
+                                            <td class="px-5 py-3 text-center text-indigo-700">{{ totalAcademicUnits }}</td>
                                         </tr>
                                     </tfoot>
                                 </table>
                             </div>
-
-                            <!-- NSTP billing footnote — only shown when NSTP subjects exist -->
-                            <div
-                                v-if="nstpSubjects.length > 0"
-                                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800"
-                            >
-                                <strong>NSTP Billing Note:</strong>
-                                NSTP subjects carry
-                                <strong>{{ nstpSubjects[0].lec_units }} academic units</strong>
-                                but are billed at
-                                <strong>{{ nstpSubjects[0].nstp_billing_units }} units</strong>
-                                per CHED Memorandum Order guidelines.
-                                The fee shown above reflects the billable rate.
-                            </div>
-
-                            <!-- Misc fee footnote -->
-                            <p class="mt-2 text-xs text-gray-400">
-                                Miscellaneous fees (registration, library, athletics, etc.) are fixed per semester
-                                and are not broken down per subject above.
-                            </p>
                         </template>
                     </div>
 
-                    <!-- ── HISTORY TAB ───────────────────────────────────── -->
+                    <!-- ══ HISTORY TAB ════════════════════════════════════════ -->
                     <div v-if="activeTab === 'history'">
                         <h2 class="mb-4 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                             Payment History
