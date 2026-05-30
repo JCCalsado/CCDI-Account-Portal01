@@ -1077,7 +1077,7 @@ class StudentFeeController extends Controller
                 });
             })
             ->when($course, fn ($query) => $query->where('course', $course))
-            ->select('id', 'code', 'name', 'lec_units', 'lab_units', 'year_level', 'semester', 'course', 'is_active')
+            ->select('id', 'code', 'name', 'lec_units', 'lab_units', 'year_level', 'semester', 'course', 'is_active', 'is_nstp')
             ->orderBy('course')
             ->orderBy('year_level')
             ->orderBy('semester')
@@ -1096,12 +1096,9 @@ class StudentFeeController extends Controller
                 'year_level'  => $s->year_level,
                 'semester'    => $s->semester,
                 'course'      => $s->course,
-                'is_nstp'     => AssessmentService::isNstpSubjectPublic($s->code, $s->name),
-                // PATHFIT is a regular billable subject — lec units count toward tuition.
-                // Only NSTP has special billing treatment (fixed 1.5-unit override).
-                // is_pathfit is kept purely for display/annotation purposes in the UI.
-                'is_pathfit'  => AssessmentService::isPathfitSubjectPublic($s->code, $s->name),
-                'is_billable' => ! AssessmentService::isNstpSubjectPublic($s->code, $s->name),
+                'is_nstp'     => (bool) $s->is_nstp,
+                'is_pathfit'  => false, // PATHFIT has no special billing — flag retired
+                'is_billable' => ! (bool) $s->is_nstp,
             ])->values(),
         ]);
     }

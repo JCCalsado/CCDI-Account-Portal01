@@ -22,8 +22,10 @@ use Illuminate\Support\Facades\DB;
  * Billing rules applied here:
  *   - lec_units  → billable lecture units (used for tuition calculation)
  *   - lab_units  → lab units (> 0 means lab fee charged for this subject)
- *   - NSTP subjects: lec_units set per curriculum, billing excluded in AssessmentService
- *   - PATHFIT/PE subjects: lec_units set per curriculum, billing excluded in AssessmentService
+ *   - is_nstp    → explicitly seeded; true when code contains 'NSTP' (case-insensitive)
+ *                  12 NSTP subjects across 6 programs are flagged.
+ *                  AssessmentService reads this flag directly — no string-sniffing.
+ *   - PATHFIT/PE subjects: treated as regular billable subjects (no special billing)
  *   - Lab fee is charged ONCE per subject where lab_units > 0, NOT per lab unit
  */
 class EnhancedSubjectSeeder extends Seeder
@@ -50,6 +52,7 @@ class EnhancedSubjectSeeder extends Seeder
                 'units'          => $lecUnits + $labUnits, // total — kept for legacy compat
                 'lec_units'      => $lecUnits,
                 'lab_units'      => $labUnits,
+                'is_nstp'        => (bool) str_contains(strtoupper($s['code']), 'NSTP'),
                 'price_per_unit' => 0.00, // not used for billing — AssessmentService computes from fee_settings
                 'year_level'     => $s['year_level'],
                 'semester'       => $s['semester'],
@@ -69,6 +72,10 @@ class EnhancedSubjectSeeder extends Seeder
         }
 
         $this->command->info('EnhancedSubjectSeeder: inserted ' . count($rows) . ' subjects.');
+
+        // Verification: count flagged NSTP subjects — must equal 12 (2 per program × 6 programs)
+        $nstpCount = collect($rows)->where('is_nstp', true)->count();
+        $this->command->info("EnhancedSubjectSeeder: {$nstpCount} NSTP subjects flagged (expected 12).");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
