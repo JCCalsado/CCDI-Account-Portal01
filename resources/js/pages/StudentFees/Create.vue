@@ -271,7 +271,10 @@ function existingTermIsPaid(student: PreselectedStudent): boolean {
 }
 
 function selectStudent(student: PreselectedStudent) {
-  if (student.has_existing_assessment) {
+  // Only intercept when the existing assessment is NOT fully paid.
+  // existingTermIsPaid() cross-references paid_semesters — a paid assessment
+  // is just history and should never trigger a duplicate-billing warning.
+  if (student.has_existing_assessment && !existingTermIsPaid(student)) {
     pendingStudentSelection.value      = student
     showExistingAssessmentModal.value  = true
     searchResults.value                = []
@@ -431,8 +434,6 @@ const nstpLecUnits = computed(() =>
     .reduce((sum, s) => sum + (s.lec_units ?? 0), 0)
 )
 
-// The actual academic lec_units on the first NSTP subject row (for display/annotation only)
-const nstpAcademicUnits = computed(() => nstpSubject.value?.lec_units ?? 0)
 
 // ─── Derived billing counts from subject list ─────────────────────────────────
 
@@ -935,12 +936,9 @@ function semLabel(s: string) {
                         </p>
                       </td>
                       <td class="px-4 py-2.5 text-center font-mono">
-                        <!-- NSTP: show fixed billing units with academic annotation -->
+                        <!-- Lec units — same source for NSTP and regular: subject.lec_units from DB -->
                         <template v-if="subj.is_nstp">
-                          <span class="font-semibold text-amber-700">1.5</span>
-                          <span class="block text-xs font-normal font-sans text-gray-400 leading-tight">
-                            {{ subj.lec_units }} acad.
-                          </span>
+                          <span class="font-semibold text-amber-700">{{ subj.lec_units }}</span>
                         </template>
                         <template v-else>
                           <span class="text-gray-700">{{ subj.lec_units || '—' }}</span>
@@ -988,7 +986,7 @@ function semLabel(s: string) {
                       <td class="px-4 py-2.5 text-center font-mono font-bold text-blue-700">
                         {{ totalLecUnits }}
                         <span v-if="hasNstp" class="block text-xs font-normal text-amber-600 whitespace-nowrap">
-                          {{ derivedLecUnits }} + 1.5
+                          {{ derivedLecUnits }} + {{ nstpLecUnits }}
                         </span>
                       </td>
                       <td class="px-4 py-2.5 text-center font-mono font-bold text-gray-700">
@@ -1284,7 +1282,7 @@ function semLabel(s: string) {
                 </Label>
                 <p class="text-xs text-muted-foreground">
                   <template v-if="hasNstp">
-                    For partial discounts (&lt;100%): applies to all {{ totalLecUnits }} billing units (including NSTP 1.5).
+                    For partial discounts (&lt;100%): applies to all {{ totalLecUnits }} billing units (including NSTP {{ nstpLecUnits }}).
                     At exactly 100%: all billable units waived, NSTP ({{ formatCurrency(nstpTuition) }}) charged at full price.
                     Lab and misc fees are never discounted.
                   </template>
