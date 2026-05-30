@@ -9,7 +9,7 @@ import {
 import { type NavItem } from '@/types';
 import { Link, usePage } from '@inertiajs/vue3';
 import {
-    Banknote, BarChart3, Bell, CheckCircle2, ClipboardList,
+    Banknote, BarChart3, Bell, BookOpen, CheckCircle2, ClipboardList,
     CreditCard, GraduationCap, History, LayoutGrid, Receipt, Settings, Users,
 } from 'lucide-vue-next';
 import { computed } from 'vue';
@@ -37,6 +37,7 @@ const mainNavItems = computed<NavItem[]>(() => {
         { title: 'Student Overview',  href: safeRoute('student-fees.index'),            icon: GraduationCap, roles: ['admin'] },
         { title: 'Student Archive',   href: safeRoute('students.archive'),              icon: History,       roles: ['admin'] },
         { title: 'Financial Reports', href: safeRoute('accounting.financial-reports'),  icon: BarChart3,     roles: ['admin'] },
+        { title: 'Subjects',          href: safeRoute('accounting.subjects.index'),     icon: BookOpen,      roles: ['admin'] },
         {
             title: 'Registration Approvals',
             href: safeRoute('accounting.registrations.index'),
@@ -46,11 +47,12 @@ const mainNavItems = computed<NavItem[]>(() => {
         },
 
         // ── Accounting ────────────────────────────────────────────────
-        { title: 'Accounting Dashboard',   href: safeRoute('accounting.dashboard'),           icon: Banknote,     roles: ['accounting'] },
-        { title: 'Student Fee Management', href: safeRoute('student-fees.index'),             icon: Receipt,      roles: ['accounting'] },
-        { title: 'Financial Reports',      href: safeRoute('accounting.financial-reports'),   icon: BarChart3,    roles: ['accounting'] },
-        { title: 'Fee Settings',           href: safeRoute('accounting.fee-settings.index'),  icon: Settings,     roles: ['accounting'] },
-        { title: 'Payment Approvals',      href: safeRoute('approvals.index'),                icon: CheckCircle2, roles: ['accounting'] },
+        { title: 'Accounting Dashboard',   href: safeRoute('accounting.dashboard'),          icon: Banknote,     roles: ['accounting'] },
+        { title: 'Student Fee Management', href: safeRoute('student-fees.index'),            icon: Receipt,      roles: ['accounting'] },
+        { title: 'Financial Reports',      href: safeRoute('accounting.financial-reports'),  icon: BarChart3,    roles: ['accounting'] },
+        { title: 'Fee Settings',           href: safeRoute('accounting.fee-settings.index'), icon: Settings,     roles: ['accounting'] },
+        { title: 'Subjects',               href: safeRoute('accounting.subjects.index'),     icon: BookOpen,     roles: ['accounting'] },
+        { title: 'Payment Approvals',      href: safeRoute('approvals.index'),               icon: CheckCircle2, roles: ['accounting'] },
         {
             title: 'Registration Approvals',
             href: safeRoute('accounting.registrations.index'),

@@ -3,6 +3,7 @@
 use App\Http\Controllers\Accounting\FinancialReportsController;
 use App\Http\Controllers\Accounting\FeeSettingsController;
 use App\Http\Controllers\Accounting\PresetSubjectController;
+use App\Http\Controllers\Accounting\SubjectController;
 use App\Http\Controllers\AccountingDashboardController;
 use App\Http\Controllers\AccountingTransactionController;
 use App\Http\Controllers\AdminController;
@@ -77,8 +78,6 @@ Route::middleware(['auth', 'verified', 'role:admin,accounting'])
         Route::get('/search', [StudentFeeController::class, 'search'])->name('search');
         Route::get('/latest-assessment', [StudentFeeController::class, 'getLatestAssessmentData'])->name('latest-assessment');
         Route::get('/{userId}/export-pdf', [StudentFeeController::class, 'exportPdf'])->whereNumber('userId')->name('export-pdf');
-
-        // Show must be registered BEFORE accounting-only routes take over the wildcard
         Route::get('/{userId}', [StudentFeeController::class, 'show'])->whereNumber('userId')->name('show');
     });
 
@@ -88,19 +87,11 @@ Route::middleware(['auth', 'verified', 'role:accounting'])
     ->name('student-fees.')
     ->group(function () {
         Route::get('/curriculum-units', [StudentFeeController::class, 'getCurriculumUnits'])->name('curriculum-units');
-
-        // ✅ FIX: subjectSearch route — the controller method existed but had no
-        //    route. Every call to route('student-fees.subject-search') was a 404.
-        //    Registered here (accounting-only, GET) alongside curriculum-units
-        //    since both are fetch endpoints used by the Create.vue form.
         Route::get('/subjects/search', [StudentFeeController::class, 'subjectSearch'])->name('subject-search');
-
         Route::get('/create', [StudentFeeController::class, 'create'])->name('create');
         Route::post('/', [StudentFeeController::class, 'store'])->name('store');
-
         Route::get('/create-student', [StudentFeeController::class, 'createStudent'])->name('create-student');
         Route::post('/store-student', [StudentFeeController::class, 'storeStudent'])->name('store-student');
-
         Route::post('/{userId}/payments', [StudentFeeController::class, 'storePayment'])->whereNumber('userId')->name('payments.store');
         Route::post('/{user}/drop', [StudentFeeController::class, 'drop'])->whereNumber('user')->name('drop');
         Route::get('/{userId}/edit', [StudentFeeController::class, 'edit'])->whereNumber('userId')->name('edit');
@@ -181,14 +172,27 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
     Route::patch('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'updatePreset'])->name('accounting.fee-settings.presets.update');
     Route::delete('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'destroyPreset'])->name('accounting.fee-settings.presets.destroy');
 
-    // ── Preset Subject Management ────────────────────────────────────
+    // ── Preset Subject Management ────────────────────────────────────────────
     Route::prefix('fee-settings/presets/{preset}/subjects')
         ->name('accounting.fee-settings.preset-subjects.')
         ->group(function () {
             Route::get('/',                   [PresetSubjectController::class, 'index'])  ->name('index');
             Route::post('/',                  [PresetSubjectController::class, 'store'])  ->name('store');
             Route::delete('/{presetSubject}', [PresetSubjectController::class, 'destroy'])->name('destroy');
-            Route::post('/sync',              [PresetSubjectController::class, 'sync'])  ->name('sync');
+            Route::post('/sync',              [PresetSubjectController::class, 'sync'])   ->name('sync');
+        });
+
+    // ── Subject Registry ─────────────────────────────────────────────────────
+    Route::prefix('subjects')
+        ->name('accounting.subjects.')
+        ->group(function () {
+            Route::get('/',                    [SubjectController::class, 'index'])        ->name('index');
+            Route::get('/create',              [SubjectController::class, 'create'])       ->name('create');
+            Route::post('/',                   [SubjectController::class, 'store'])        ->name('store');
+            Route::get('/{subject}/edit',      [SubjectController::class, 'edit'])         ->name('edit');
+            Route::put('/{subject}',           [SubjectController::class, 'update'])       ->name('update');
+            Route::delete('/{subject}',        [SubjectController::class, 'destroy'])      ->name('destroy');
+            Route::patch('/{subject}/inline',  [SubjectController::class, 'inlineUpdate']) ->name('inline-update');
         });
 
     Route::get('notifications', [NotificationController::class, 'index'])->name('accounting.notifications.index');
@@ -257,17 +261,16 @@ if (app()->environment(['local', 'staging'])) {
 // ============================================
 // REGISTRATION APPROVAL ROUTES (Accounting + Admin)
 // ============================================
-
 Route::middleware(['auth', 'verified', 'role:accounting,admin'])
     ->prefix('accounting/registrations')
     ->name('accounting.registrations.')
     ->group(function () {
-        Route::get('/',                                [RegistrationApprovalController::class, 'index'])         ->name('index');
-        Route::get('/{registration}',                  [RegistrationApprovalController::class, 'show'])          ->name('show');
-        Route::post('/{registration}/approve',         [RegistrationApprovalController::class, 'approve'])       ->name('approve');
-        Route::post('/{registration}/reject',          [RegistrationApprovalController::class, 'reject'])        ->name('reject');
+        Route::get('/',                                [RegistrationApprovalController::class, 'index'])          ->name('index');
+        Route::get('/{registration}',                  [RegistrationApprovalController::class, 'show'])           ->name('show');
+        Route::post('/{registration}/approve',         [RegistrationApprovalController::class, 'approve'])        ->name('approve');
+        Route::post('/{registration}/reject',          [RegistrationApprovalController::class, 'reject'])         ->name('reject');
         Route::post('/{registration}/request-revision',[RegistrationApprovalController::class, 'requestRevision'])->name('request-revision');
-        Route::get('/{registration}/documents/{type}', [RegistrationApprovalController::class, 'serveDocument']) ->name('document');
+        Route::get('/{registration}/documents/{type}', [RegistrationApprovalController::class, 'serveDocument'])  ->name('document');
     });
 
 require __DIR__ . '/settings.php';
