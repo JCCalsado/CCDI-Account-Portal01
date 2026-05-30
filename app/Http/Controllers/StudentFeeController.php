@@ -1169,7 +1169,17 @@ class StudentFeeController extends Controller
                 ]);
             }
 
-            $nstpLecUnits = $preset->has_nstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
+            // has_nstp column was dropped from course_unit_presets (2026-05-30 migration).
+            // For the preset-only path (no subject rows), derive NSTP units by querying
+            // the subjects table directly. If no NSTP subject exists, returns 0.
+            $nstpLecUnits = (float) Subject::where('course', $student->course)
+                ->where('year_level', $effectiveYearLevel)
+                ->where('semester', $semesterDb)
+                ->where('is_nstp', true)
+                ->where('is_active', true)
+                ->sum('lec_units');
+
+            $hasNstp = $nstpLecUnits > 0;
 
             return response()->json([
                 'found'              => true,
@@ -1178,8 +1188,8 @@ class StudentFeeController extends Controller
                 'billable_lec_units' => $preset->lec_units,
                 'lab_subject_count'  => $preset->lab_subject_count,
                 'nstp_lec_units'     => $nstpLecUnits,
-                'has_nstp'           => $preset->has_nstp,
-                'preset_has_nstp'    => $preset->has_nstp,
+                'has_nstp'           => $hasNstp,
+                'preset_has_nstp'    => $hasNstp,
                 'pathfit_units'      => 0,
                 'subjects'           => [],
                 'course'             => $student->course,
@@ -1188,8 +1198,12 @@ class StudentFeeController extends Controller
             ]);
         }
 
-        $hasNstp      = $curriculum['has_nstp'] || ($preset?->has_nstp ?? false);
-        $nstpLecUnits = $hasNstp ? AssessmentService::NSTP_MINIMUM_UNITS : 0;
+        // AssessmentService::getCurriculumUnits() already accumulated nstp_lec_units
+        // from the actual subject rows (subject->lec_units where is_nstp = true).
+        // Use that directly — do NOT reference AssessmentService::NSTP_MINIMUM_UNITS,
+        // which no longer exists after the refactor.
+        $hasNstp      = $curriculum['has_nstp'];
+        $nstpLecUnits = $curriculum['nstp_lec_units'];
 
         return response()->json([
             'found'              => true,
@@ -1199,7 +1213,7 @@ class StudentFeeController extends Controller
             'lab_subject_count'  => $curriculum['lab_subject_count'],
             'nstp_lec_units'     => $nstpLecUnits,
             'has_nstp'           => $hasNstp,
-            'preset_has_nstp'    => $preset?->has_nstp ?? false,
+            'preset_has_nstp'    => $hasNstp,
             'pathfit_units'      => $curriculum['pathfit_units'],
             'subjects'           => $curriculum['subjects'],
             'course'             => $student->course,
