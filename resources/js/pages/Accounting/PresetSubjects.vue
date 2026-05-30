@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { router, useForm } from '@inertiajs/vue3'
+import { router } from '@inertiajs/vue3'
 import AppLayout from '@/layouts/AppLayout.vue'
 import Breadcrumbs from '@/components/Breadcrumbs.vue'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,6 @@ interface Preset {
     lec_units: number
     lab_units: number
     lab_subject_count: number
-    has_nstp: boolean
     is_active: boolean
 }
 
@@ -33,7 +32,6 @@ interface LinkedSubject {
     lec_units: number
     lab_units: number
     is_nstp: boolean
-    is_pathfit: boolean
     sort_order: number
     tuition_fee: number
     lab_fee: number
@@ -94,16 +92,15 @@ const selectedAvailableSubject = computed(() =>
     props.availableSubjects.find((s) => s.id === selectedSubId.value) ?? null
 )
 
-// Preview the fee that would be saved for the selected subject
+// Preview the fee that would be saved for the selected subject.
+// Uses subject.lec_units directly — lec_units is the source of truth for all subjects,
+// including NSTP (the DB value is already 1.5 for all NSTP subjects at CCDI).
 const addPreviewFee = computed(() => {
     const s = selectedAvailableSubject.value
     if (!s) return null
-    if (s.is_nstp) {
-        const tuition = 1.5 * props.rates.tuition_per_unit
-        return { tuition_fee: tuition, lab_fee: 0, total_fee: tuition }
-    }
+
     const tuition = s.lec_units * props.rates.tuition_per_unit
-    const lab     = s.lab_units > 0 ? props.rates.lab_fee_per_subject : 0
+    const lab     = (!s.is_nstp && s.lab_units > 0) ? props.rates.lab_fee_per_subject : 0
     return { tuition_fee: tuition, lab_fee: lab, total_fee: tuition + lab }
 })
 
@@ -115,9 +112,9 @@ function addSubject() {
         { subject_id: selectedSubId.value },
         {
             onFinish: () => {
-                addSaving.value   = false
+                addSaving.value     = false
                 selectedSubId.value = null
-                showAddForm.value  = false
+                showAddForm.value   = false
             },
         }
     )
@@ -164,8 +161,11 @@ const totalLab = computed(() =>
 const grandTotal = computed(() =>
     props.linkedSubjects.reduce((s, r) => s + r.total_fee, 0)
 )
+
+// Billable = any subject that is NOT NSTP.
+// PATHFIT has no special classification — it is billable like any other subject.
 const billableSubjects = computed(() =>
-    props.linkedSubjects.filter((s) => !s.is_nstp && !s.is_pathfit)
+    props.linkedSubjects.filter((s) => !s.is_nstp)
 )
 </script>
 
@@ -261,7 +261,11 @@ const billableSubjects = computed(() =>
                         >
                             <p class="font-semibold text-blue-800 mb-1.5">Fee Preview (current rates)</p>
                             <div class="flex justify-between text-gray-600">
-                                <span>Tuition ({{ selectedAvailableSubject?.is_nstp ? '1.5 NSTP units' : `${selectedAvailableSubject?.lec_units} units` }} × {{ formatCurrency(rates.tuition_per_unit) }})</span>
+                                <span>
+                                    Tuition
+                                    ({{ selectedAvailableSubject?.lec_units }} units
+                                    × {{ formatCurrency(rates.tuition_per_unit) }})
+                                </span>
                                 <span class="font-mono">{{ formatCurrency(addPreviewFee.tuition_fee) }}</span>
                             </div>
                             <div v-if="addPreviewFee.lab_fee > 0" class="flex justify-between text-gray-600">
@@ -337,15 +341,11 @@ const billableSubjects = computed(() =>
                                                 v-if="ps.is_nstp"
                                                 class="inline-flex items-center text-xs font-medium text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded"
                                             >NSTP</span>
-                                            <span
-                                                v-if="ps.is_pathfit"
-                                                class="inline-flex items-center text-xs font-medium text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded"
-                                            >PE</span>
                                         </div>
                                     </td>
                                     <td class="px-4 py-3 text-gray-800">{{ ps.name }}</td>
                                     <td class="px-3 py-3 text-center font-mono">
-                                        {{ ps.is_nstp ? '1.5*' : ps.lec_units }}
+                                        {{ ps.lec_units }}
                                     </td>
                                     <td class="px-3 py-3 text-center font-mono">{{ ps.lab_units }}</td>
 
@@ -417,7 +417,7 @@ const billableSubjects = computed(() =>
                 </CardContent>
             </Card>
 
-            <!-- Rate reference + NSTP footnote -->
+            <!-- Rate reference -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Card class="bg-muted/50">
                     <CardContent class="pt-4 space-y-1.5 text-xs text-muted-foreground">
@@ -441,16 +441,16 @@ const billableSubjects = computed(() =>
                             <div>
                                 <p class="font-semibold">NSTP Billing Rule</p>
                                 <p class="mt-0.5 text-amber-700">
-                                    NSTP subjects are always billed at <strong>1.5 units</strong> (₱{{ (1.5 * rates.tuition_per_unit).toFixed(2) }})
-                                    regardless of the lec_units stored in the subjects table. The table above marks NSTP as
-                                    "1.5*" in the LEC column to reflect this.
+                                    NSTP subjects are billed at their actual <strong>lec_units</strong> value from the
+                                    subjects table (currently 1.5 for all CCDI NSTP subjects). The LEC column above
+                                    reflects the exact value that will be billed.
                                 </p>
                             </div>
                         </div>
                         <div class="flex items-start gap-2 mt-2">
                             <Info class="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
                             <div>
-                                <p class="font-semibold">Subject totals here exclude misc & entrepreneurship fees</p>
+                                <p class="font-semibold">Subject totals here exclude misc &amp; entrepreneurship fees</p>
                                 <p class="mt-0.5 text-amber-700">
                                     The Grand Total above covers tuition + lab only.
                                     Miscellaneous (₱4,700) and Entrepreneurship (₱600) are fixed charges

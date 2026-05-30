@@ -42,6 +42,8 @@ interface PreselectedStudent {
   is_irregular: boolean
   remaining_balance: number
   paid_semesters: PaidSemester[]
+  has_existing_assessment: boolean
+  existing_assessment_term: string | null
 }
 
 interface SubjectRow {
@@ -55,7 +57,6 @@ interface SubjectRow {
   semester: string
   course: string
   is_nstp: boolean
-  is_pathfit: boolean
   is_billable: boolean
 }
 
@@ -203,6 +204,27 @@ const hasRemainingBalance = computed(
   () => (selectedStudent.value?.remaining_balance ?? 0) > 0,
 )
 
+// ─── Existing-assessment confirmation modal ───────────────────────────────────
+
+const pendingStudentSelection  = ref<PreselectedStudent | null>(null)
+const showExistingAssessmentModal = ref(false)
+
+function commitStudentSelection(student: PreselectedStudent) {
+  selectedStudent.value   = student
+  paidSemesters.value     = student.paid_semesters ?? []
+  searchResults.value     = []
+  studentSearch.value     = ''
+  selectedSubjects.value  = []
+  curriculumMessage.value = ''
+
+  const next              = computeNextSemesterAndYear(paidSemesters.value, student.year_level)
+  form.user_id            = student.id
+  form.semester           = next.semester
+  form.school_year        = next.school_year
+  form.year_level         = next.year_level
+  computedYearLevel.value = next.year_level
+}
+
 // ─── Paid Semester Helpers ────────────────────────────────────────────────────
 
 function isSemesterPaid(semester: string): boolean {
@@ -229,20 +251,47 @@ async function searchStudents() {
   }, 300)
 }
 
-function selectStudent(student: PreselectedStudent) {
-  selectedStudent.value   = student
-  paidSemesters.value     = student.paid_semesters ?? []
-  searchResults.value     = []
-  studentSearch.value     = ''
-  selectedSubjects.value  = []
-  curriculumMessage.value = ''
+/**
+ * Returns true when the student's latest existing assessment term
+ * is already present in paid_semesters — meaning it is fully settled.
+ *
+ * Green badge case  → paid, no real risk, just informational history.
+ * Amber badge case  → unpaid active assessment; creating another is a real collision.
+ */
+function existingTermIsPaid(student: PreselectedStudent): boolean {
+  if (!student.existing_assessment_term || !student.paid_semesters?.length) return false
 
-  const next              = computeNextSemesterAndYear(paidSemesters.value, student.year_level)
-  form.user_id            = student.id
-  form.semester           = next.semester
-  form.school_year        = next.school_year
-  form.year_level         = next.year_level
-  computedYearLevel.value = next.year_level
+  return student.paid_semesters.some((ps) => {
+    // DB semester format: '1st Sem', '2nd Sem', 'Summer'
+    // existing_assessment_term is built as: semester + ' ' + school_year
+    // e.g. '1st Sem 2026-2027'
+    const expected = ps.semester + ' ' + ps.school_year
+    return student.existing_assessment_term === expected
+  })
+}
+
+function selectStudent(student: PreselectedStudent) {
+  if (student.has_existing_assessment) {
+    pendingStudentSelection.value      = student
+    showExistingAssessmentModal.value  = true
+    searchResults.value                = []
+    return
+  }
+  commitStudentSelection(student)
+}
+
+function confirmExistingAssessment() {
+  if (pendingStudentSelection.value) {
+    commitStudentSelection(pendingStudentSelection.value)
+  }
+  showExistingAssessmentModal.value = false
+  pendingStudentSelection.value     = null
+}
+
+function cancelExistingAssessment() {
+  showExistingAssessmentModal.value = false
+  pendingStudentSelection.value     = null
+  studentSearch.value               = ''
 }
 
 function clearStudent() {
@@ -358,14 +407,12 @@ watch([selectedStudent, () => form.semester], () => {
 // Removing the NSTP subject from the list is how Accounting opts out of NSTP billing.
 //
 // NSTP billing rule:
-//   - Academic lec_units on the NSTP subject row are IGNORED for billing.
-//   - NSTP is always billed at a fixed 1.5 units regardless of the listed value.
+//   - NSTP subjects accumulate their actual lec_units into nstpLecUnits (currently 1.5 in DB).
+//   - subjects.lec_units is the source of truth — no hardcoded constant.
 //   - nstpLecUnits feeds directly into totalLecUnits alongside derivedLecUnits.
 //   - NSTP subjects have is_billable=false so they are excluded from derivedLecUnits.
-//   - At 100% discount: billable units → ₱0; NSTP (1.5 units) is charged at full price.
-//   - At partial discount: discount applies to the full totalLecUnits (incl. NSTP 1.5).
-
-const NSTP_BILLING_UNITS = 1.5
+//   - At 100% discount: billable units → ₱0; NSTP units are charged at full price.
+//   - At partial discount: discount applies to the full totalLecUnits (incl. NSTP units).
 
 const hasNstp = computed(() =>
   selectedSubjects.value.some(s => s.is_nstp),
@@ -375,10 +422,16 @@ const nstpSubject = computed(() =>
   selectedSubjects.value.find(s => s.is_nstp) ?? null,
 )
 
-// The fixed billing units added for NSTP when it is present in the list
-const nstpLecUnits = computed(() => hasNstp.value ? NSTP_BILLING_UNITS : 0)
+// Sum actual lec_units from all NSTP subjects in the selection.
+// subjects.lec_units is the source of truth (currently 1.5 for all CCDI NSTP subjects).
+// No hardcoded constant — if the unit value changes in the DB, billing follows automatically.
+const nstpLecUnits = computed(() =>
+  selectedSubjects.value
+    .filter(s => s.is_nstp)
+    .reduce((sum, s) => sum + (s.lec_units ?? 0), 0)
+)
 
-// The actual academic lec_units on the NSTP subject row (for display/annotation only)
+// The actual academic lec_units on the first NSTP subject row (for display/annotation only)
 const nstpAcademicUnits = computed(() => nstpSubject.value?.lec_units ?? 0)
 
 // ─── Derived billing counts from subject list ─────────────────────────────────
@@ -616,7 +669,7 @@ function semLabel(s: string) {
                     class="w-full text-left px-4 py-3 hover:bg-accent transition-colors border-b last:border-0"
                     @click="selectStudent(s)"
                   >
-                    <p class="font-medium text-sm flex items-center gap-2">
+                    <p class="font-medium text-sm flex items-center gap-2 flex-wrap">
                       {{ s.name }}
                       <span v-if="s.is_irregular" class="text-xs text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">Irregular</span>
                       <span v-if="s.paid_semesters?.length"
@@ -624,6 +677,24 @@ function semLabel(s: string) {
                         <CheckCircle2 class="h-3 w-3" />
                         {{ s.paid_semesters.length }} sem{{ s.paid_semesters.length > 1 ? 's' : '' }} paid
                       </span>
+                      <template v-if="s.has_existing_assessment">
+                        <!-- Green: existing assessment is fully paid — informational only -->
+                        <span
+                          v-if="existingTermIsPaid(s)"
+                          class="inline-flex items-center gap-1 text-[10px] font-semibold bg-green-100 text-green-800 border border-green-300 px-1.5 py-0.5 rounded"
+                        >
+                          <CheckCircle2 class="h-3 w-3" />
+                          Paid: {{ s.existing_assessment_term }}
+                        </span>
+                        <!-- Amber: existing assessment is NOT fully paid — real warning -->
+                        <span
+                          v-else
+                          class="inline-flex items-center gap-1 text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded"
+                        >
+                          <AlertTriangle class="h-3 w-3" />
+                          Unpaid: {{ s.existing_assessment_term }}
+                        </span>
+                      </template>
                     </p>
                     <p class="text-xs text-muted-foreground">
                       <span class="font-medium">Acct. Id.</span> {{ s.account_id }}
@@ -827,7 +898,7 @@ function semLabel(s: string) {
                       {{ totalLecUnits }} billing units
                     </p>
                     <p v-if="hasNstp" class="text-xs text-amber-600">
-                      {{ derivedLecUnits }} regular + 1.5 NSTP
+                      {{ derivedLecUnits }} regular + {{ nstpLecUnits }} NSTP
                     </p>
                   </div>
                 </div>
@@ -879,18 +950,18 @@ function semLabel(s: string) {
                         {{ subj.lab_units || '—' }}
                       </td>
                       <td class="px-4 py-2.5 text-center">
-                        <!-- NSTP: special fixed-unit billing rule, shown separately -->
+                        <!-- NSTP: billed at subject.lec_units (DB is source of truth) -->
                         <!-- All other subjects (including PATHFIT) are fully billable -->
                         <template v-if="subj.is_nstp">
                           <span class="inline-flex flex-col items-center gap-0.5 rounded-lg bg-amber-100 border border-amber-300 px-2.5 py-1 text-amber-800">
                             <span class="text-xs font-bold leading-tight">NSTP</span>
-                            <span class="text-xs font-normal text-amber-600 leading-tight whitespace-nowrap">billed: 1.5 units</span>
+                            <span class="text-xs font-normal text-amber-600 leading-tight whitespace-nowrap">billed: {{ subj.lec_units }} units</span>
                           </span>
                         </template>
                         <template v-else>
                           <span class="inline-flex items-center gap-1 rounded-full bg-green-100 border border-green-300 px-2 py-0.5 text-xs font-semibold text-green-800">
                             <CheckCircle2 class="h-3 w-3" />
-                            {{ subj.is_pathfit ? 'PATHFIT' : 'Billable' }}
+                            Billable
                           </span>
                         </template>
                       </td>
@@ -931,10 +1002,7 @@ function semLabel(s: string) {
                           </span>
                           <span v-if="hasNstp" class="flex items-center gap-1">
                             <span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
-                            NSTP: <strong class="text-amber-700">1.5 billed</strong>
-                            <span v-if="nstpAcademicUnits !== NSTP_BILLING_UNITS" class="text-gray-400">
-                              ({{ nstpAcademicUnits }} academic)
-                            </span>
+                            NSTP: <strong class="text-amber-700">{{ nstpLecUnits }} billed</strong>
                           </span>
                           <span class="flex items-center gap-1">
                             <span class="w-2 h-2 rounded-full bg-orange-400 inline-block"></span>
@@ -958,9 +1026,9 @@ function semLabel(s: string) {
                       NSTP billing active — {{ formatCurrency(nstpTuition) }}
                     </p>
                     <p class="text-xs text-amber-700 mt-0.5 leading-relaxed">
-                      <strong>{{ nstpSubject?.code }}</strong> is billed at a fixed
-                      <strong>1.5 units ({{ formatCurrency(nstpTuition) }})</strong>
-                      regardless of its listed {{ nstpAcademicUnits }}-unit academic count.
+                      <strong>{{ nstpSubject?.code }}</strong> is billed at
+                      <strong>{{ nstpLecUnits }} units ({{ formatCurrency(nstpTuition) }})</strong>
+                      — the value in the subjects table is the authoritative billing unit count.
                       <template v-if="pct === 100">
                         At <strong>100% discount</strong>, NSTP is excluded from the full waiver
                         and charged at full price.
@@ -974,7 +1042,7 @@ function semLabel(s: string) {
                   </div>
                   <div class="shrink-0 text-right">
                     <p class="text-xs font-mono font-bold text-amber-800">{{ formatCurrency(nstpTuition) }}</p>
-                    <p class="text-xs text-amber-600">1.5 units</p>
+                    <p class="text-xs text-amber-600">{{ nstpLecUnits }} units</p>
                   </div>
                 </div>
               </div>
@@ -1060,11 +1128,11 @@ function semLabel(s: string) {
                         <div class="shrink-0 flex flex-col items-end gap-0.5">
                           <span v-if="s.is_nstp"
                                 class="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">
-                            NSTP · billed 1.5 units
+                            NSTP · billed {{ s.lec_units }} units
                           </span>
                           <span v-else
                                 class="text-xs font-semibold text-green-700 bg-green-100 border border-green-200 px-1.5 py-0.5 rounded">
-                            {{ s.is_pathfit ? 'PATHFIT · Billable' : 'Billable' }}
+                            Billable
                           </span>
                           <Plus class="h-3.5 w-3.5 text-blue-500 mt-1" />
                         </div>
@@ -1146,7 +1214,7 @@ function semLabel(s: string) {
                   <p class="font-semibold">100% Discount — NSTP Exception</p>
                   <p class="text-xs text-amber-800 mt-0.5">
                     All billable lecture units ({{ derivedLecUnits }}) are fully discounted to ₱0.
-                    NSTP (1.5 units, {{ formatCurrency(nstpTuition) }}) is excluded from the 100% discount
+                    NSTP ({{ nstpLecUnits }} units, {{ formatCurrency(nstpTuition) }}) is excluded from the 100% discount
                     and charged at full price.
                   </p>
                 </div>
@@ -1258,7 +1326,7 @@ function semLabel(s: string) {
                       <span>{{ formatCurrency(rawBillableTuition) }}</span>
                     </div>
                     <div class="flex justify-between text-amber-700 text-xs">
-                      <span>NSTP tuition (1.5 units × {{ formatCurrency(rate) }})</span>
+                      <span>NSTP tuition ({{ nstpLecUnits }} units × {{ formatCurrency(rate) }})</span>
                       <span>{{ formatCurrency(nstpTuition) }}</span>
                     </div>
                     <div class="flex justify-between text-green-800 text-xs font-medium border-t border-green-100 pt-1">
@@ -1296,7 +1364,7 @@ function semLabel(s: string) {
                   </div>
                   <template v-if="hasNstp">
                     <div class="flex justify-between text-amber-800 text-xs font-medium">
-                      <span>NSTP (1.5 units — excluded from 100% discount)</span>
+                      <span>NSTP ({{ nstpLecUnits }} units — excluded from 100% discount)</span>
                       <span>{{ formatCurrency(nstpTuition) }}</span>
                     </div>
                   </template>
@@ -1361,7 +1429,7 @@ function semLabel(s: string) {
                     <span class="block text-xs">
                       {{ totalLecUnits }} lec × {{ formatCurrency(feeRates.tuition_per_unit) }}
                       <span v-if="hasNstp" class="text-amber-600">
-                        ({{ derivedLecUnits }} + 1.5 NSTP)
+                        ({{ derivedLecUnits }} + {{ nstpLecUnits }} NSTP)
                       </span>
                     </span>
                   </span>
@@ -1483,5 +1551,51 @@ function semLabel(s: string) {
 
       </div>
     </div>
+
+    <!-- ─── Existing Assessment Confirmation Modal ───────────────────────── -->
+    <Teleport to="body">
+      <div
+        v-if="showExistingAssessmentModal"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      >
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/50" @click="cancelExistingAssessment" />
+
+        <!-- Dialog -->
+        <div class="relative z-10 w-full max-w-md rounded-lg border bg-white shadow-xl p-6 space-y-4">
+          <div class="flex items-start gap-3">
+            <div class="shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
+              <AlertTriangle class="h-5 w-5 text-amber-600" />
+            </div>
+            <div>
+              <h3 class="text-base font-semibold text-gray-900">Unpaid Assessment Exists</h3>
+              <p class="mt-1 text-sm text-gray-600">
+                <strong>{{ pendingStudentSelection?.name }}</strong> already has an
+                <strong>unpaid</strong> assessment for
+                <strong>{{ pendingStudentSelection?.existing_assessment_term }}</strong>.
+              </p>
+              <p class="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                Creating a second assessment for the same term will result in duplicate billing.
+                Only continue if this is intentional (e.g. correcting a previous assessment).
+              </p>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" @click="cancelExistingAssessment">
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              class="bg-amber-600 hover:bg-amber-700 text-white"
+              @click="confirmExistingAssessment"
+            >
+              Yes, Continue
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
   </AppLayout>
 </template>

@@ -1045,15 +1045,23 @@ class StudentFeeController extends Controller
             ->limit(10)
             ->get()
             ->map(function ($u) {
+                $latestAssessment = StudentAssessment::where('user_id', $u->id)
+                    ->orderByDesc('created_at')
+                    ->first(['semester', 'school_year']);
+
                 return [
-                    'id'                => $u->id,
-                    'name'              => $this->buildStudentName($u),
-                    'account_id'        => $u->account_id,
-                    'course'            => $u->course,
-                    'year_level'        => $u->year_level,
-                    'is_irregular'      => (bool) $u->is_irregular,
-                    'remaining_balance' => max(0, (float) ($u->account?->balance ?? 0)),
-                    'paid_semesters'    => $this->getPaidSemesters($u->id),
+                    'id'                       => $u->id,
+                    'name'                     => $this->buildStudentName($u),
+                    'account_id'               => $u->account_id,
+                    'course'                   => $u->course,
+                    'year_level'               => $u->year_level,
+                    'is_irregular'             => (bool) $u->is_irregular,
+                    'remaining_balance'        => max(0, (float) ($u->account?->balance ?? 0)),
+                    'paid_semesters'           => $this->getPaidSemesters($u->id),
+                    'has_existing_assessment'  => $latestAssessment !== null,
+                    'existing_assessment_term' => $latestAssessment
+                        ? $latestAssessment->semester . ' ' . $latestAssessment->school_year
+                        : null,
                 ];
             });
 
