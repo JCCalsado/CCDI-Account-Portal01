@@ -15,7 +15,6 @@ use App\Enums\UserRoleEnum;
 use App\Enums\PaymentStatus;
 use App\Services\AssessmentService;
 use App\Services\AccountService;
-use App\Services\DiscountService;
 use App\Services\StudentPaymentService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
@@ -1649,10 +1648,33 @@ class StudentFeeController extends Controller
 
     private function generateUniqueAccountId(): string
     {
-        do {
-            $id = date('Y') . '-' . str_pad(rand(1, 9999), 4, '0', STR_PAD_LEFT);
-        } while (User::where('account_id', $id)->exists());
+        return DB::transaction(function () {
+            $year = now()->year;
 
-        return $id;
+            // Pessimistic lock — prevents concurrent reads from getting the same value.
+            $last = User::where('account_id', 'like', "{$year}-%")
+                ->lockForUpdate()
+                ->orderByRaw('CAST(SUBSTRING(account_id, 6) AS UNSIGNED) DESC')
+                ->value('account_id');
+
+            $lastNumber = $last ? intval(substr($last, -4)) : 0;
+            $newNumber  = str_pad($lastNumber + 1, 4, '0', STR_PAD_LEFT);
+            $candidate  = "{$year}-{$newNumber}";
+
+            // Safety net: if by some edge case the number already exists, increment
+            // until we find a free slot (capped at 10 attempts).
+            $attempts = 0;
+            while (User::where('account_id', $candidate)->lockForUpdate()->exists() && $attempts < 10) {
+                $newNumber = str_pad(intval($newNumber) + 1, 4, '0', STR_PAD_LEFT);
+                $candidate = "{$year}-{$newNumber}";
+                $attempts++;
+            }
+
+            if ($attempts >= 10) {
+                throw new \Exception('Unable to generate a unique account ID after 10 attempts. Please try again.');
+            }
+
+            return $candidate;
+        });
     }
 }
