@@ -51,11 +51,11 @@ class RegistrationApprovalController extends Controller
             ->withQueryString();
 
         $counts = [
-            'pending'       => StudentRegistration::where('status', 'pending')->count(),
-            'needs_revision'=> StudentRegistration::where('status', 'needs_revision')->count(),
-            'approved'      => StudentRegistration::where('status', 'approved')->count(),
-            'rejected'      => StudentRegistration::where('status', 'rejected')->count(),
-            'all'           => StudentRegistration::count(),
+            'pending'        => StudentRegistration::where('status', 'pending')->count(),
+            'needs_revision' => StudentRegistration::where('status', 'needs_revision')->count(),
+            'approved'       => StudentRegistration::where('status', 'approved')->count(),
+            'rejected'       => StudentRegistration::where('status', 'rejected')->count(),
+            'all'            => StudentRegistration::count(),
         ];
 
         return Inertia::render('Accounting/RegistrationApprovals/Index', [
@@ -72,7 +72,7 @@ class RegistrationApprovalController extends Controller
     {
         $registration->load('reviewer:id,first_name,last_name');
 
-        $duplicates = $registration->detectDuplicates();
+        $duplicates   = $registration->detectDuplicates();
         $existingUser = $registration->findMatchingUser();
 
         return Inertia::render('Accounting/RegistrationApprovals/Show', [
@@ -86,16 +86,16 @@ class RegistrationApprovalController extends Controller
                 'submitted_at'   => $d->submitted_at?->format('M d, Y'),
             ]),
             'existingUser' => $existingUser ? [
-                'id'       => $existingUser->id,
-                'name'     => $existingUser->name,
-                'email'    => $existingUser->email,
-                'is_active'=> $existingUser->is_active,
+                'id'        => $existingUser->id,
+                'name'      => $existingUser->name,
+                'email'     => $existingUser->email,
+                'is_active' => $existingUser->is_active,
             ] : null,
             'documentUrls' => [
-                'valid_id'    => $registration->valid_id_path
+                'valid_id' => $registration->valid_id_path
                     ? route('accounting.registrations.document', [$registration, 'valid_id'])
                     : null,
-                'proof'       => $registration->proof_of_enrollment_path
+                'proof'    => $registration->proof_of_enrollment_path
                     ? route('accounting.registrations.document', [$registration, 'proof'])
                     : null,
             ],
@@ -107,6 +107,14 @@ class RegistrationApprovalController extends Controller
      *
      * Creates: User → Student → Account.
      * Sends approval email with login instructions.
+     *
+     * PASSWORD LOGIC:
+     * Reads password_hash from the student_registrations row (stored at submission
+     * time by RegisteredUserController::store()). If the column is null for any
+     * reason (legacy row pre-migration, or manually nulled), a random password is
+     * generated and the student must use "Forgot Password" to regain access.
+     * The password_hash column is nulled out after the User is created — it has
+     * no business living in student_registrations beyond that point.
      */
     public function approve(StudentRegistration $registration): RedirectResponse
     {
@@ -121,14 +129,13 @@ class RegistrationApprovalController extends Controller
             // ── 1. Generate unique account ID ─────────────────────────
             $accountId = $this->generateUniqueAccountId();
 
-            // ── 2. Retrieve the hashed password from cache ─────────────
-            $passwordHash = cache()->pull("registration_password:{$registration->id}");
+            // ── 2. Resolve password hash ──────────────────────────────
+            // Primary source: password_hash column (set at submission time).
+            // Fallback: random password — student must use Forgot Password.
+            $passwordHash = $registration->password_hash
+                ?? Hash::make(str()->random(32));
 
-            if (! $passwordHash) {
-                // Password cache expired (>30 days). Generate a temporary one.
-                // The student will need to use "Forgot Password" to set their own.
-                $passwordHash = Hash::make(str()->random(24));
-            }
+            $usedFallbackPassword = ! $registration->password_hash;
 
             // ── 3. Create User record ─────────────────────────────────
             $user = User::create([
@@ -172,11 +179,13 @@ class RegistrationApprovalController extends Controller
             ]);
 
             // ── 6. Update registration record ─────────────────────────
+            // Null out password_hash — the User record now owns the credential.
             $registration->update([
-                'status'       => RegistrationStatusEnum::APPROVED->value,
-                'reviewed_by'  => auth()->id(),
-                'reviewed_at'  => now(),
-                'user_id'      => $user->id,
+                'status'        => RegistrationStatusEnum::APPROVED->value,
+                'reviewed_by'   => auth()->id(),
+                'reviewed_at'   => now(),
+                'user_id'       => $user->id,
+                'password_hash' => null,
             ]);
 
             DB::commit();
@@ -189,6 +198,17 @@ class RegistrationApprovalController extends Controller
                 Log::warning('Failed to send approval notification', [
                     'registration_id' => $registration->id,
                     'error'           => $e->getMessage(),
+                ]);
+            }
+
+            // ── 8. Warn if fallback password was used ─────────────────
+            // This means the registration pre-dated the password_hash column
+            // (legacy row) or the column was unexpectedly null.
+            if ($usedFallbackPassword) {
+                Log::warning('Approval used fallback random password — student must reset via Forgot Password', [
+                    'registration_id' => $registration->id,
+                    'user_id'         => $user->id,
+                    'email'           => $user->email,
                 ]);
             }
 
@@ -236,7 +256,7 @@ class RegistrationApprovalController extends Controller
 
         return redirect()
             ->route('accounting.registrations.index')
-            ->with('flash.success', "Registration rejected. The applicant has been notified.");
+            ->with('flash.success', 'Registration rejected. The applicant has been notified.');
     }
 
     /**
@@ -346,7 +366,9 @@ class RegistrationApprovalController extends Controller
             'status_label'   => $r->status->label(),
             'status_color'   => $r->status->color(),
             'submitted_at'   => $r->submitted_at?->format('M d, Y g:i A'),
-            'reviewer_name'  => $r->reviewer ? $r->reviewer->first_name . ' ' . $r->reviewer->last_name : null,
+            'reviewer_name'  => $r->reviewer
+                ? $r->reviewer->first_name . ' ' . $r->reviewer->last_name
+                : null,
         ];
     }
 

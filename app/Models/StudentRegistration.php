@@ -37,6 +37,7 @@ class StudentRegistration extends Model
         'emergency_contact',
         'valid_id_path',
         'proof_of_enrollment_path',
+        'password_hash',   // bcrypt hash — stored at submission, nulled after User creation
         'status',
         'rejection_reason',
         'revision_notes',
@@ -44,6 +45,14 @@ class StudentRegistration extends Model
         'reviewed_at',
         'submitted_at',
         'user_id',
+    ];
+
+    /**
+     * password_hash must never be exposed in JSON responses or API output.
+     * It is a transient credential store, not a display field.
+     */
+    protected $hidden = [
+        'password_hash',
     ];
 
     protected $casts = [

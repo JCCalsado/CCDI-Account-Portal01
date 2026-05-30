@@ -7,12 +7,12 @@ use App\Http\Requests\Auth\StudentRegistrationRequest;
 use App\Models\StudentRegistration;
 use App\Models\User;
 use App\Notifications\NewRegistrationSubmitted;
+use App\Notifications\RegistrationReceived;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
-use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -53,19 +53,21 @@ class RegisteredUserController extends Controller
      * (pending record) and immediately redirects to the status tracker.
      * No auth session is started. No account is active.
      * The account only becomes active after Accounting approves.
+     *
+     * PASSWORD STORAGE:
+     * The hashed password is stored directly in student_registrations.password_hash.
+     * This replaces the previous cache()-based approach which had a 30-day expiry
+     * and was silently lost on cache flush. The hash is nulled out after User creation
+     * on approval. See: RegistrationApprovalController::approve().
      */
     public function store(StudentRegistrationRequest $request): RedirectResponse
     {
         DB::beginTransaction();
         try {
             $trackingToken = StudentRegistration::generateTrackingToken();
+            $passwordHash  = Hash::make($request->password);
 
-            // ── Store uploaded documents ───────────────────────────────
-            $validIdPath           = null;
-            $proofOfEnrollmentPath = null;
-
-            // We need the registration ID for the path, so we create first,
-            // then update paths if files exist.
+            // Create the registration row first so we have the ID for file paths.
             $registration = StudentRegistration::create([
                 'tracking_token'     => $trackingToken,
                 'last_name'          => $request->last_name,
@@ -92,21 +94,15 @@ class RegisteredUserController extends Controller
                 'guardian_name'      => $request->guardian_name,
                 'guardian_contact'   => $request->guardian_contact,
                 'emergency_contact'  => $request->emergency_contact,
+                'password_hash'      => $passwordHash,
                 'status'             => 'pending',
                 'submitted_at'       => now(),
-                // Password stored as hash for later User creation
-                '_password_hash'     => null, // handled below
             ]);
 
-            // Store password hash in a temporary column-free way:
-            // We keep it in a JSON meta field for now. Actually, the cleanest
-            // approach is to store the hashed password directly in the registration
-            // so it can be used when the User is created on approval.
-            // Add password_hash to $fillable and migration.
-            // For this implementation we use a separate update:
-            $passwordHash = Hash::make($request->password);
+            // ── Store uploaded documents ───────────────────────────────
+            $validIdPath           = null;
+            $proofOfEnrollmentPath = null;
 
-            // Store document files after we have the registration ID
             if ($request->hasFile('valid_id')) {
                 $validIdPath = $request->file('valid_id')->store(
                     "registrations/{$registration->id}",
@@ -121,27 +117,14 @@ class RegisteredUserController extends Controller
                 );
             }
 
-            // Update with file paths and password hash
-            $registration->update([
-                'valid_id_path'             => $validIdPath,
-                'proof_of_enrollment_path'  => $proofOfEnrollmentPath,
-            ]);
-
-            // Store password hash separately (we'll add this column to the table)
-            // For now store in a cache keyed by registration ID — expires in 30 days
-            cache()->put(
-                "registration_password:{$registration->id}",
-                $passwordHash,
-                now()->addDays(30)
-            );
+            if ($validIdPath || $proofOfEnrollmentPath) {
+                $registration->update([
+                    'valid_id_path'            => $validIdPath,
+                    'proof_of_enrollment_path' => $proofOfEnrollmentPath,
+                ]);
+            }
 
             DB::commit();
-
-            // ── Notify all Accounting users of new submission ──────────
-            $this->notifyAccountingStaff($registration);
-
-            return redirect()->route('registration.status', ['token' => $trackingToken])
-                ->with('flash.success', 'Registration submitted! Track your status using your tracking token.');
 
         } catch (\Exception $e) {
             DB::rollBack();
@@ -154,6 +137,38 @@ class RegisteredUserController extends Controller
             return back()->withErrors([
                 'email' => 'Registration failed due to a system error. Please try again.',
             ])->withInput();
+        }
+
+        // ── Post-commit notifications ──────────────────────────────────
+        // Both are fire-and-forget — failures are logged but do not affect
+        // the student's registration which is already committed to the DB.
+
+        // 1. Acknowledge receipt to the student.
+        $this->notifyStudent($registration);
+
+        // 2. Alert accounting staff of the new pending submission.
+        $this->notifyAccountingStaff($registration);
+
+        return redirect()
+            ->route('registration.status', ['token' => $trackingToken])
+            ->with('flash.success', 'Registration submitted! Check your email for a confirmation and track your status using your tracking token.');
+    }
+
+    /**
+     * Send a receipt acknowledgment to the student.
+     * Swallows failures — the registration is already saved.
+     */
+    private function notifyStudent(StudentRegistration $registration): void
+    {
+        try {
+            Notification::route('mail', $registration->email)
+                ->notify(new RegistrationReceived($registration));
+        } catch (\Exception $e) {
+            Log::warning('Failed to send registration receipt to student', [
+                'registration_id' => $registration->id,
+                'email'           => $registration->email,
+                'error'           => $e->getMessage(),
+            ]);
         }
     }
 
