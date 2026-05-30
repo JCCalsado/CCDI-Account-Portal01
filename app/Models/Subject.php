@@ -13,6 +13,7 @@ class Subject extends Model
         'units',
         'lec_units',
         'lab_units',
+        'is_nstp',
         'price_per_unit',
         'year_level',
         'semester',
@@ -25,18 +26,21 @@ class Subject extends Model
 
     protected $casts = [
         'units'          => 'integer',
-        'lec_units'      => 'float',    // decimal(4,1) — supports NSTP at 1.5
+        'lec_units'      => 'float',    // decimal(4,1) — supports fractional values (e.g. NSTP = 1.5)
         'lab_units'      => 'integer',
+        'is_nstp'        => 'boolean',
         'price_per_unit' => 'decimal:2',
         'lab_fee'        => 'decimal:2',
         'has_lab'        => 'boolean',
         'is_active'      => 'boolean',
     ];
 
+    // ─── Accessors ────────────────────────────────────────────────────────────
+
     /**
-     * Get total units (LEC + LAB combined).
+     * Total units (LEC + LAB combined).
      *
-     * Returns float because lec_units may be fractional (e.g. NSTP = 1.5).
+     * Returns float because lec_units is decimal(4,1) and may be fractional.
      * Callers that need an integer display value should cast at the call site.
      */
     public function getTotalUnitsAttribute(): float
@@ -45,15 +49,13 @@ class Subject extends Model
     }
 
     /**
-     * Get the computed total cost for this subject.
+     * Computed total cost for this subject at current config rates.
      *
-     * Tuition  = lec_units × config('fees.tuition_per_unit')
-     * Lab      = lab_units > 0 ? config('fees.lab_fee_per_subject') : 0  (flat per subject)
-     * Total    = Tuition + Lab
+     * Used for display and seeder preview only. Authoritative billing uses
+     * AssessmentService::computeSubjectFees(), which reads from fee_settings.
      *
-     * NOTE: For NSTP subjects, AssessmentService overrides lec_units with
-     * NSTP_MINIMUM_UNITS (1.5) at compute time. This accessor uses the stored
-     * DB value directly and is used for display/seeder purposes only.
+     * NSTP subjects: lec_units is read directly from the DB — no hardcoded
+     * override. The DB value is the source of truth per the agreed architecture.
      */
     public function getTotalCostAttribute(): float
     {
@@ -66,17 +68,21 @@ class Subject extends Model
         return round($tuition + $lab, 2);
     }
 
+    // ─── Relationships ────────────────────────────────────────────────────────
+
     public function enrollments(): HasMany
     {
         return $this->hasMany(StudentEnrollment::class);
     }
+
+    // ─── Scopes ───────────────────────────────────────────────────────────────
 
     public function scopeActive($query)
     {
         return $query->where('is_active', true);
     }
 
-    public function scopeForTerm($query, $yearLevel, $semester, $course)
+    public function scopeForTerm($query, string $yearLevel, string $semester, string $course)
     {
         return $query->where('year_level', $yearLevel)
                      ->where('semester', $semester)

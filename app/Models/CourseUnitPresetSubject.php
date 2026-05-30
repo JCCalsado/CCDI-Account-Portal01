@@ -18,20 +18,18 @@ class CourseUnitPresetSubject extends Model
         'lab_fee',
         'total_fee',
         'is_nstp',
-        'is_pathfit',
         'sort_order',
     ];
 
     protected $casts = [
         'course_unit_preset_id' => 'integer',
         'subject_id'            => 'integer',
-        'lec_units'             => 'integer',
+        'lec_units'             => 'float',   // decimal(4,1) — supports NSTP at 1.5
         'lab_units'             => 'integer',
         'tuition_fee'           => 'decimal:2',
         'lab_fee'               => 'decimal:2',
         'total_fee'             => 'decimal:2',
         'is_nstp'               => 'boolean',
-        'is_pathfit'            => 'boolean',
         'sort_order'            => 'integer',
     ];
 
