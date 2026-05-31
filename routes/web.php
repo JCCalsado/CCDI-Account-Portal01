@@ -164,21 +164,18 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
     Route::get('/financial-reports/student-history', [FinancialReportsController::class, 'studentTransactionHistory'])->name('accounting.financial-reports.student-history');
     Route::get('/financial-reports/student-receipt', [FinancialReportsController::class, 'downloadStudentReceipt'])->name('accounting.financial-reports.student-receipt');
 
-    // ── Fee Settings ──────────────────────────────────────────────────────────
-    // Preset CRUD routes have been removed — all preset management now lives
-    // under /accounting/curriculum-presets/* (CurriculumPresetController).
-    // FeeSettings is now rates-only: tuition per unit, lab fee, misc fees, terms.
+    // ── Fee Settings (rates, misc fees, payment terms — NO presets) ───────────
     Route::get('/fee-settings', [FeeSettingsController::class, 'index'])->name('accounting.fee-settings.index');
     Route::patch('/fee-settings/{feeSetting}', [FeeSettingsController::class, 'update'])->name('accounting.fee-settings.update');
     Route::post('/fee-settings/bulk', [FeeSettingsController::class, 'bulkUpdate'])->name('accounting.fee-settings.bulk');
     Route::post('/fee-settings', [FeeSettingsController::class, 'store'])->name('accounting.fee-settings.store');
     Route::delete('/fee-settings/{feeSetting}', [FeeSettingsController::class, 'destroy'])->name('accounting.fee-settings.destroy');
 
-    // ── Curriculum Preset Subject Management ──────────────────────────────────
-    // Must be registered BEFORE the /{preset} catch-all in the curriculum-presets
-    // group below — longer paths resolve first in Laravel's route registry.
-    Route::prefix('curriculum-presets/{preset}/subjects')
-        ->name('accounting.curriculum-presets.subjects.')
+    // ── Preset Subject Management (legacy context — used by FeeSettings.vue deep link only) ──
+    // These routes remain for any existing deep links into preset-subjects from fee settings.
+    // The authoritative subject management UI is now at curriculum-presets.subjects.*
+    Route::prefix('fee-settings/presets/{preset}/subjects')
+        ->name('accounting.fee-settings.preset-subjects.')
         ->group(function () {
             Route::get('/',                   [PresetSubjectController::class, 'index'])  ->name('index');
             Route::post('/',                  [PresetSubjectController::class, 'store'])  ->name('store');
@@ -186,18 +183,23 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
             Route::post('/sync',              [PresetSubjectController::class, 'sync'])   ->name('sync');
         });
 
-    // ── Curriculum Preset Registry ─────────────────────────────────────────────
+    // ── Curriculum Preset Registry ───────────────────────────────────────────
     Route::prefix('curriculum-presets')
         ->name('accounting.curriculum-presets.')
         ->group(function () {
             Route::get('/',            [CurriculumPresetController::class, 'index'])  ->name('index');
             Route::post('/',           [CurriculumPresetController::class, 'store'])  ->name('store');
-            Route::get('/{preset}',    [CurriculumPresetController::class, 'show'])   ->name('show');
             Route::patch('/{preset}',  [CurriculumPresetController::class, 'update']) ->name('update');
             Route::delete('/{preset}', [CurriculumPresetController::class, 'destroy'])->name('destroy');
+
+            // ── Subjects sub-resource (Decision A: dedicated page) ──────────
+            Route::get('/{preset}/subjects',                   [PresetSubjectController::class, 'curriculumIndex'])  ->name('subjects.index');
+            Route::post('/{preset}/subjects',                  [PresetSubjectController::class, 'store'])            ->name('subjects.store');
+            Route::delete('/{preset}/subjects/{presetSubject}',[PresetSubjectController::class, 'destroy'])          ->name('subjects.destroy');
+            Route::post('/{preset}/subjects/sync',             [PresetSubjectController::class, 'sync'])             ->name('subjects.sync');
         });
 
-    // ── Subject Registry ──────────────────────────────────────────────────────
+    // ── Subject Registry ─────────────────────────────────────────────────────
     Route::prefix('subjects')
         ->name('accounting.subjects.')
         ->group(function () {

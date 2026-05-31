@@ -10,19 +10,14 @@ use Inertia\Inertia;
 /**
  * FeeSettingsController
  *
- * Manages billing rates, miscellaneous fees, and payment term percentages.
+ * Manages ONLY billing rates, miscellaneous fees, and payment term percentages.
  *
- * ── REMOVED (2026-06-01) ──────────────────────────────────────────────────────
- * storePreset(), updatePreset(), destroyPreset() and their corresponding routes
- * (accounting.fee-settings.presets.*) have been removed.
+ * Course Unit Presets have been fully moved to CurriculumPresetController.
+ * All preset CRUD methods (storePreset, updatePreset, destroyPreset) and
+ * the `presets` / `existingCourses` props have been removed from this controller.
+ * The fee-settings.presets.* routes have been removed from web.php.
  *
- * All preset management now lives exclusively in:
- *   - CurriculumPresetController   → course_unit_presets CRUD
- *   - PresetSubjectController      → course_unit_preset_subjects CRUD
- *   - Routes: accounting.curriculum-presets.* and accounting.curriculum-presets.subjects.*
- *   - Page: Accounting/CurriculumPreset/Index.vue + Subjects.vue
- *
- * FeeSettings.vue no longer renders presets. It is rates-only.
+ * FeeSettings.vue no longer renders a preset section.
  */
 class FeeSettingsController extends Controller
 {
@@ -136,7 +131,7 @@ class FeeSettingsController extends Controller
     private function validateTermPercentages(string $updatedKey, float $newValue): void
     {
         $allTerms = FeeSetting::where('category', 'term')->get();
-        $total = 0;
+        $total    = 0;
         foreach ($allTerms as $term) {
             $total += ($term->key === $updatedKey) ? $newValue : (float) $term->amount;
         }

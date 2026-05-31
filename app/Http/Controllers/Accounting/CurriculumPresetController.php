@@ -16,14 +16,15 @@ use Inertia\Response;
  * Curriculum Preset page (Accounting/CurriculumPreset/Index.vue).
  *
  * Routes:
- *   GET    /accounting/curriculum-presets            → index()
- *   POST   /accounting/curriculum-presets            → store()  → redirects to subjects index
- *   GET    /accounting/curriculum-presets/{preset}   → show()   → redirects to subjects index
- *   PATCH  /accounting/curriculum-presets/{preset}   → update()
- *   DELETE /accounting/curriculum-presets/{preset}   → destroy()
+ *   GET    /accounting/curriculum-presets                      → index()
+ *   POST   /accounting/curriculum-presets                      → store()  → redirects to subjects page
+ *   GET    /accounting/curriculum-presets/{preset}/subjects    → PresetSubjectController::curriculumIndex()
+ *   PATCH  /accounting/curriculum-presets/{preset}             → update()
+ *   DELETE /accounting/curriculum-presets/{preset}             → destroy()
  *
- * Subject management lives at:
- *   /accounting/curriculum-presets/{preset}/subjects  (PresetSubjectController)
+ * NOTE: show() is removed. The old redirect to fee-settings.preset-subjects.index
+ * is replaced by the dedicated subjects sub-routes above. Index.vue now links
+ * directly to accounting.curriculum-presets.subjects.index.
  */
 class CurriculumPresetController extends Controller
 {
@@ -73,11 +74,11 @@ class CurriculumPresetController extends Controller
     }
 
     /**
-     * Create a new course unit preset, then immediately redirect to its
-     * subject management page (Decision B1).
+     * Create a new course unit preset, then redirect immediately to its
+     * subjects page (Decision B1) so the user can populate it right away.
      *
-     * Passing 'just_created' in the session allows PresetSubjectController::index()
-     * to surface a "You just created this preset — add your subjects" banner.
+     * A ?new=1 flag is passed to the subjects page so a "just created" banner
+     * can be shown.
      */
     public function store(Request $request)
     {
@@ -108,20 +109,11 @@ class CurriculumPresetController extends Controller
             'is_active'         => true,
         ]);
 
+        // Decision B1: redirect directly to the subjects management page.
+        // ?new=1 triggers the "Add your subjects" onboarding banner in Subjects.vue.
         return redirect()
-            ->route('accounting.curriculum-presets.subjects.index', $preset->id)
-            ->with('just_created', true);
-    }
-
-    /**
-     * Redirect to subject management for this preset.
-     *
-     * The Index.vue calls subjects.index directly now; this route exists as a
-     * clean fallback for direct URL access (/curriculum-presets/1).
-     */
-    public function show(CourseUnitPreset $preset)
-    {
-        return redirect()->route('accounting.curriculum-presets.subjects.index', $preset->id);
+            ->route('accounting.curriculum-presets.subjects.index', ['preset' => $preset->id, 'new' => 1])
+            ->with('success', "Preset created. Now add subjects to populate it.");
     }
 
     /**
@@ -140,7 +132,10 @@ class CurriculumPresetController extends Controller
     }
 
     /**
-     * Delete a preset. Blocked if it has linked subjects.
+     * Delete a preset.
+     *
+     * Blocked if the preset has linked subjects — prevents orphaning
+     * active curriculum configurations.
      */
     public function destroy(CourseUnitPreset $preset)
     {

@@ -58,26 +58,20 @@ function selectCourse(course: string | null) {
 const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year']
 const SEMESTERS   = ['1st Sem', '2nd Sem', 'Summer']
 
-const activeYearLevels = computed(() => {
-    const present = new Set(props.presets.map(p => p.year_level))
-    return YEAR_LEVELS.filter(yl => present.has(yl))
-})
-
-function presetAt(yearLevel: string, semester: string): Preset | null {
-    return props.presets.find(p => p.year_level === yearLevel && p.semester === semester) ?? null
+function presetAt(yearLevel: string, semester: string, course: string): Preset | null {
+    return props.presets.find(
+        p => p.year_level === yearLevel && p.semester === semester && p.course === course
+    ) ?? null
 }
 
 // ─── Create Preset Form ───────────────────────────────────────────────────────
 
-const showCreateForm   = ref(false)
-const createTargetSlot = ref<{ year_level: string; semester: string } | null>(null)
-const createFormRef    = ref<InstanceType<typeof Card> | null>(null)
-
-// Separate flag to track "enter new course" mode.
-// Bug fix: using v-if="createForm.course === '__new__'" causes the input to
-// disappear on the first keystroke because typing changes createForm.course
-// away from '__new__', collapsing the v-if. The flag breaks that coupling.
-const isNewCourse = ref(false)
+const showCreateForm    = ref(false)
+const createTargetSlot  = ref<{ year_level: string; semester: string } | null>(null)
+const formRef           = ref<HTMLElement | null>(null)
+// Separate ref for "new course" input to avoid the __new__ binding bug
+const newCourseInput    = ref('')
+const isNewCourse       = ref(false)
 
 const createForm = useForm({
     course:     props.selectedCourse ?? '',
@@ -91,57 +85,68 @@ function openCreateForm(yearLevel: string, semester: string) {
     createForm.semester    = semester
     createForm.course      = props.selectedCourse ?? ''
     isNewCourse.value      = false
+    newCourseInput.value   = ''
     showCreateForm.value   = true
     scrollToForm()
 }
 
-function openCreateFormFromHeader() {
+function openCreateFormBlank() {
     createTargetSlot.value = null
     createForm.year_level  = ''
     createForm.semester    = ''
     createForm.course      = props.selectedCourse ?? ''
     isNewCourse.value      = false
+    newCourseInput.value   = ''
     showCreateForm.value   = true
     scrollToForm()
 }
 
 function scrollToForm() {
     nextTick(() => {
-        // createFormRef is a Card component instance; access $el for the DOM node
-        const el = (createFormRef.value as any)?.$el as HTMLElement | undefined
-        el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        formRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
 }
 
-function closeCreateForm() {
-    showCreateForm.value   = false
-    createTargetSlot.value = null
-    isNewCourse.value      = false
-    createForm.reset()
-    createForm.clearErrors()
-}
-
-/**
- * Handle the course dropdown change.
- *
- * '__new__' is a sentinel value that triggers the text input.
- * We store it in `isNewCourse` and clear createForm.course so the
- * Input field starts empty and v-model works without the disappearing bug.
- */
-function onCourseSelectChange(e: Event) {
-    const val = (e.target as HTMLSelectElement).value
+function handleCourseSelectChange(event: Event) {
+    const val = (event.target as HTMLSelectElement).value
     if (val === '__new__') {
-        isNewCourse.value  = true
-        createForm.course  = ''
+        isNewCourse.value    = true
+        createForm.course    = ''
+        newCourseInput.value = ''
     } else {
         isNewCourse.value  = false
         createForm.course  = val
     }
 }
 
+function handleNewCourseInput() {
+    createForm.course = newCourseInput.value.trim()
+}
+
+function closeCreateForm() {
+    showCreateForm.value   = false
+    createTargetSlot.value = null
+    isNewCourse.value      = false
+    newCourseInput.value   = ''
+    createForm.reset()
+    createForm.clearErrors()
+}
+
+const createDisabled = computed(() => {
+    if (createForm.processing) return true
+    if (isNewCourse.value) return !newCourseInput.value.trim()
+    return !createForm.course || !createForm.year_level || !createForm.semester
+})
+
 function submitCreate() {
+    if (isNewCourse.value) {
+        createForm.course = newCourseInput.value.trim()
+    }
     createForm.post(route('accounting.curriculum-presets.store'), {
-        onSuccess: () => closeCreateForm(),
+        // B1: server redirects to subjects page — no onSuccess close needed
+        onError: () => {
+            // stay open so user can see the error
+        },
     })
 }
 
@@ -179,8 +184,6 @@ function executeDelete() {
 }
 
 // ─── Manage Subjects ──────────────────────────────────────────────────────────
-// Navigate directly to the subjects page — no longer routes through show()
-// to avoid the unnecessary server-side redirect hop.
 
 function manageSubjects(preset: Preset) {
     router.get(route('accounting.curriculum-presets.subjects.index', preset.id))
@@ -192,7 +195,7 @@ function manageSubjects(preset: Preset) {
         <div class="w-full p-6 space-y-6">
             <Breadcrumbs :items="breadcrumbs" />
 
-            <!-- Page header with Add Preset button -->
+            <!-- Page header -->
             <div class="flex items-start justify-between gap-4 flex-wrap">
                 <div class="flex items-center gap-3">
                     <LayoutTemplate class="h-6 w-6 text-blue-600" />
@@ -205,15 +208,12 @@ function manageSubjects(preset: Preset) {
                     </div>
                 </div>
 
-                <!-- Add Preset in header — always visible, always accessible -->
+                <!-- Decision D: Add Preset button in header, always enabled -->
                 <Button
                     v-if="!showCreateForm"
-                    @click="openCreateFormFromHeader"
+                    variant="outline"
+                    @click="openCreateFormBlank"
                 >
-                    <Plus class="h-4 w-4 mr-2" />
-                    Add Preset
-                </Button>
-                <Button v-else variant="outline" @click="scrollToForm">
                     <Plus class="h-4 w-4 mr-2" />
                     Add Preset
                 </Button>
@@ -262,7 +262,7 @@ function manageSubjects(preset: Preset) {
                         {{ selectedCourse ? `No presets found for "${selectedCourse}".` : 'Create a preset for each course, year level and semester.' }}
                     </p>
                 </div>
-                <Button variant="outline" @click="openCreateFormFromHeader">
+                <Button variant="outline" @click="openCreateFormBlank">
                     <Plus class="h-4 w-4 mr-2" />
                     Create First Preset
                 </Button>
@@ -310,12 +310,12 @@ function manageSubjects(preset: Preset) {
                                 :key="sem"
                                 class="border-l border-gray-100 px-3 py-3"
                             >
-                                <template v-if="presetAt(yl, sem) && presetAt(yl, sem)!.course === course">
+                                <template v-if="presetAt(yl, sem, course)">
                                     <!-- Populated cell -->
                                     <div
                                         :class="[
                                             'rounded-lg border p-3 space-y-2 transition-colors',
-                                            presetAt(yl, sem)!.is_active
+                                            presetAt(yl, sem, course)!.is_active
                                                 ? 'bg-blue-50/60 border-blue-200'
                                                 : 'bg-gray-50 border-gray-200 opacity-60',
                                         ]"
@@ -323,28 +323,28 @@ function manageSubjects(preset: Preset) {
                                         <!-- Badges row -->
                                         <div class="flex flex-wrap gap-1.5">
                                             <span class="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 text-xs font-semibold">
-                                                {{ presetAt(yl, sem)!.lec_units }} Lec
+                                                {{ presetAt(yl, sem, course)!.lec_units }} Lec
                                             </span>
                                             <span class="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-800 border border-orange-200 px-2 py-0.5 text-xs font-semibold">
-                                                {{ presetAt(yl, sem)!.lab_subject_count }} Lab
+                                                {{ presetAt(yl, sem, course)!.lab_subject_count }} Lab
                                             </span>
                                             <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-700 border border-gray-200 px-2 py-0.5 text-xs font-medium">
                                                 <BookOpen class="h-3 w-3" />
-                                                {{ presetAt(yl, sem)!.subject_count }} subj.
+                                                {{ presetAt(yl, sem, course)!.subject_count }} subj.
                                             </span>
                                         </div>
 
                                         <!-- Assessment guard badge -->
                                         <div
-                                            v-if="presetAt(yl, sem)!.assessment_count > 0"
+                                            v-if="presetAt(yl, sem, course)!.assessment_count > 0"
                                             class="inline-flex items-center gap-1 text-[10px] font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5"
                                         >
                                             <Users class="h-3 w-3" />
-                                            {{ presetAt(yl, sem)!.assessment_count }} assessment{{ presetAt(yl, sem)!.assessment_count !== 1 ? 's' : '' }}
+                                            {{ presetAt(yl, sem, course)!.assessment_count }} assessment{{ presetAt(yl, sem, course)!.assessment_count !== 1 ? 's' : '' }}
                                         </div>
 
                                         <!-- Inactive badge -->
-                                        <div v-if="!presetAt(yl, sem)!.is_active"
+                                        <div v-if="!presetAt(yl, sem, course)!.is_active"
                                              class="inline-flex items-center gap-1 text-[10px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">
                                             Inactive
                                         </div>
@@ -354,7 +354,7 @@ function manageSubjects(preset: Preset) {
                                             <button
                                                 type="button"
                                                 class="flex-1 inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 text-white text-xs font-medium px-2.5 py-1.5 hover:bg-blue-700 transition-colors"
-                                                @click="manageSubjects(presetAt(yl, sem)!)"
+                                                @click="manageSubjects(presetAt(yl, sem, course)!)"
                                             >
                                                 Manage Subjects
                                                 <ChevronRight class="h-3 w-3" />
@@ -363,11 +363,11 @@ function manageSubjects(preset: Preset) {
                                             <!-- Toggle active -->
                                             <button
                                                 type="button"
-                                                :title="presetAt(yl, sem)!.is_active ? 'Deactivate preset' : 'Activate preset'"
+                                                :title="presetAt(yl, sem, course)!.is_active ? 'Deactivate preset' : 'Activate preset'"
                                                 class="inline-flex items-center justify-center h-7 w-7 rounded-md border border-input bg-background text-muted-foreground hover:bg-muted transition-colors"
-                                                @click="toggleActive(presetAt(yl, sem)!)"
+                                                @click="toggleActive(presetAt(yl, sem, course)!)"
                                             >
-                                                <ToggleRight v-if="presetAt(yl, sem)!.is_active" class="h-4 w-4 text-green-600" />
+                                                <ToggleRight v-if="presetAt(yl, sem, course)!.is_active" class="h-4 w-4 text-green-600" />
                                                 <ToggleLeft v-else class="h-4 w-4 text-gray-400" />
                                             </button>
 
@@ -376,7 +376,7 @@ function manageSubjects(preset: Preset) {
                                                 type="button"
                                                 title="Delete preset"
                                                 class="inline-flex items-center justify-center h-7 w-7 rounded-md border border-red-200 bg-red-50 text-red-400 hover:text-red-600 hover:bg-red-100 transition-colors"
-                                                @click="confirmDelete(presetAt(yl, sem)!)"
+                                                @click="confirmDelete(presetAt(yl, sem, course)!)"
                                             >
                                                 <Trash2 class="h-3.5 w-3.5" />
                                             </button>
@@ -401,8 +401,8 @@ function manageSubjects(preset: Preset) {
                 </div>
             </template>
 
-            <!-- Inline create form — ref for scroll-into-view -->
-            <Card v-if="showCreateForm" ref="createFormRef" class="border-blue-200 bg-blue-50/40">
+            <!-- Inline create form (Decision E: scroll target) -->
+            <Card v-if="showCreateForm" ref="formRef" class="border-blue-200 bg-blue-50/40 scroll-mt-6">
                 <CardHeader class="pb-3">
                     <div class="flex items-center justify-between">
                         <CardTitle class="text-base flex items-center gap-2">
@@ -416,22 +416,23 @@ function manageSubjects(preset: Preset) {
                 </CardHeader>
                 <CardContent>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        <!-- Course selector + new-course input -->
+                        <!-- Course field — fixed __new__ binding -->
                         <div class="space-y-1.5">
                             <Label>Course</Label>
                             <select
                                 :value="isNewCourse ? '__new__' : createForm.course"
-                                @change="onCourseSelectChange"
+                                @change="handleCourseSelectChange"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
                             >
                                 <option value="">Select a course…</option>
                                 <option v-for="c in courses" :key="c" :value="c">{{ c }}</option>
                                 <option value="__new__">+ Enter new course name</option>
                             </select>
-                            <!-- Free-text input for new course — uses isNewCourse flag, not course value, so it persists while typing -->
+                            <!-- New course input: binds to its own ref, writes to form on every keystroke -->
                             <Input
                                 v-if="isNewCourse"
-                                v-model="createForm.course"
+                                v-model="newCourseInput"
+                                @input="handleNewCourseInput"
                                 placeholder="e.g. BS Computer Engineering"
                                 class="mt-1"
                                 autofocus
@@ -467,27 +468,26 @@ function manageSubjects(preset: Preset) {
                     <p v-if="createForm.errors.preset" class="mt-2 text-sm text-destructive">{{ createForm.errors.preset }}</p>
 
                     <p class="mt-3 text-xs text-muted-foreground">
-                        After creating, you'll land directly on the subject management page.
-                        Unit aggregates are computed automatically as you add subjects.
+                        After creating, you'll be taken directly to the subject management page to populate this preset.
                     </p>
 
                     <div class="flex justify-end gap-2 mt-4">
                         <Button variant="outline" size="sm" @click="closeCreateForm">Cancel</Button>
                         <Button
                             size="sm"
-                            :disabled="createForm.processing || !createForm.course.trim() || !createForm.year_level || !createForm.semester"
+                            :disabled="createDisabled"
                             @click="submitCreate"
                         >
                             <Loader2 v-if="createForm.processing" class="h-4 w-4 mr-1.5 animate-spin" />
                             <CheckCircle2 v-else class="h-4 w-4 mr-1.5" />
-                            Create Preset
+                            Create &amp; Add Subjects
                         </Button>
                     </div>
                 </CardContent>
             </Card>
         </div>
 
-        <!-- ─── Delete Confirmation Modal ───────────────────────────────────── -->
+        <!-- ─── Delete Confirmation Modal ─────────────────────────────────── -->
         <Teleport to="body">
             <div v-if="deleteTarget" class="fixed inset-0 z-50 flex items-center justify-center p-4">
                 <div class="absolute inset-0 bg-black/50" @click="cancelDelete" />

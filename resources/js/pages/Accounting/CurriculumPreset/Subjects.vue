@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { router } from '@inertiajs/vue3'
+import { router, usePage } from '@inertiajs/vue3'
 import AppLayout from '@/layouts/AppLayout.vue'
 import Breadcrumbs from '@/components/Breadcrumbs.vue'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDataFormatting } from '@/composables/useDataFormatting'
 import {
-    AlertTriangle, BookOpen, Check, Info,
-    Loader2, Plus, RefreshCw, Sparkles, Trash2,
+    AlertTriangle, BookOpen, Check, ChevronLeft,
+    Info, Loader2, Plus, RefreshCw, Sparkles, Trash2,
 } from 'lucide-vue-next'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ interface AvailableSubject {
 interface Rates {
     tuition_per_unit: number
     lab_fee_per_subject: number
-    entrep_fee: number
+    entrepreneurship_fee: number
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -64,7 +64,11 @@ const props = defineProps<{
     linkedSubjects: LinkedSubject[]
     availableSubjects: AvailableSubject[]
     rates: Rates
-    justCreated: boolean
+    backUrl: string
+    isNew: boolean
+    storeRoute: string
+    destroyRoute: string
+    syncRoute: string
 }>()
 
 const { formatCurrency } = useDataFormatting()
@@ -74,11 +78,13 @@ const { formatCurrency } = useDataFormatting()
 const breadcrumbs = [
     { title: 'Dashboard',          href: route('accounting.dashboard') },
     { title: 'Curriculum Presets', href: route('accounting.curriculum-presets.index') },
-    {
-        title: `${props.preset.course} — ${props.preset.year_level} — ${props.preset.semester}`,
-        href: '#',
-    },
+    { title: `${props.preset.course} — ${props.preset.year_level} — ${props.preset.semester}`, href: '#' },
 ]
+
+// ─── Flash ────────────────────────────────────────────────────────────────────
+
+const page = usePage()
+const flashSuccess = computed(() => (page.props.flash as any)?.success ?? '')
 
 // ─── Stale fee detection ──────────────────────────────────────────────────────
 
@@ -88,7 +94,8 @@ const hasStaleSubjects = computed(() =>
 
 // ─── Add subject form ─────────────────────────────────────────────────────────
 
-const showAddForm   = ref(false)
+// Auto-open when new preset and subjects exist to add
+const showAddForm   = ref(props.isNew && props.availableSubjects.length > 0)
 const selectedSubId = ref<number | null>(null)
 const addSaving     = ref(false)
 
@@ -108,7 +115,7 @@ function addSubject() {
     if (!selectedSubId.value || addSaving.value) return
     addSaving.value = true
     router.post(
-        route('accounting.curriculum-presets.subjects.store', props.preset.id),
+        props.storeRoute,
         { subject_id: selectedSubId.value },
         {
             onFinish: () => {
@@ -129,7 +136,7 @@ function removeSubject(ps: LinkedSubject) {
     if (!confirm(`Remove "${ps.code} — ${ps.name}" from this preset?`)) return
     removingId.value = ps.id
     router.delete(
-        route('accounting.curriculum-presets.subjects.destroy', [props.preset.id, ps.id]),
+        route(props.destroyRoute, [props.preset.id, ps.id]),
         {
             onFinish: () => { removingId.value = null },
         }
@@ -144,49 +151,63 @@ function syncFees() {
     if (syncing.value) return
     syncing.value = true
     router.post(
-        route('accounting.curriculum-presets.subjects.sync', props.preset.id),
+        props.syncRoute,
         {},
         { onFinish: () => { syncing.value = false } }
     )
 }
 
-// ─── Computed totals ──────────────────────────────────────────────────────────
+// ─── Computed totals (Decision F) ─────────────────────────────────────────────
+// "Subject Total" column removed.
+// tfoot: Tuition subtotal | Lab subtotal | + Entrep (flat) | = Grand Total
 
 const totalTuition = computed(() =>
     props.linkedSubjects.reduce((s, r) => s + r.tuition_fee, 0)
 )
-
 const totalLab = computed(() =>
     props.linkedSubjects.reduce((s, r) => s + r.lab_fee, 0)
 )
 
-const hasLabSubjects = computed(() => totalLab.value > 0)
+// Sourced from rates prop (fee_settings table via AssessmentService::loadRates())
+// Not hardcoded — will reflect if changed in Fee Settings
+const entrepFee = computed(() => props.rates.entrepreneurship_fee)
 
-const effectiveLabTotal = computed(() =>
-    hasLabSubjects.value ? totalLab.value + props.rates.entrep_fee : 0
-)
+const grandTotal = computed(() => totalTuition.value + totalLab.value + entrepFee.value)
 
 const billableSubjects = computed(() =>
     props.linkedSubjects.filter((s) => !s.is_nstp)
 )
+
+// Rates panel toggle
+const ratesExpanded = ref(false)
 </script>
 
 <template>
     <AppLayout>
         <div class="w-full p-6 space-y-6">
+
             <Breadcrumbs :items="breadcrumbs" />
 
-            <!-- Just-created banner -->
+            <!-- Flash -->
             <div
-                v-if="justCreated"
-                class="flex items-start gap-3 rounded-lg border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-900"
+                v-if="flashSuccess"
+                class="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
             >
-                <Sparkles class="h-5 w-5 shrink-0 text-blue-500 mt-0.5" />
+                <Check class="h-4 w-4 shrink-0 text-green-600" />
+                {{ flashSuccess }}
+            </div>
+
+            <!-- "Just Created" onboarding banner (B1) -->
+            <div
+                v-if="isNew"
+                class="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-4"
+            >
+                <Sparkles class="h-5 w-5 shrink-0 text-blue-600 mt-0.5" />
                 <div>
-                    <p class="font-semibold">Preset created — add your subjects to get started.</p>
-                    <p class="text-blue-700 text-xs mt-0.5">
-                        Use the <strong>Add Subject</strong> button below to populate this preset.
-                        Unit aggregates (LEC, LAB) are computed automatically as subjects are added.
+                    <p class="font-semibold text-blue-900">Preset created — now add your subjects</p>
+                    <p class="text-sm text-blue-700 mt-0.5">
+                        Use the <strong>Add Subject</strong> button to populate this preset.
+                        Unit aggregates (Lec, Lab) update automatically as subjects are added.
                     </p>
                 </div>
             </div>
@@ -196,19 +217,16 @@ const billableSubjects = computed(() =>
                 <div class="flex items-center gap-3">
                     <BookOpen class="h-6 w-6 text-blue-600" />
                     <div>
-                        <h1 class="text-2xl font-bold">Preset Subjects</h1>
+                        <h1 class="text-2xl font-bold tracking-tight">Preset Subjects</h1>
                         <p class="text-sm text-muted-foreground">
                             {{ preset.course }} &middot; {{ preset.year_level }} &middot; {{ preset.semester }}
                         </p>
                     </div>
                 </div>
                 <div class="flex gap-2 flex-wrap">
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        @click="router.visit(route('accounting.curriculum-presets.index'))"
-                    >
-                        ← Back to Curriculum Presets
+                    <Button variant="outline" size="sm" @click="router.visit(backUrl)">
+                        <ChevronLeft class="h-4 w-4 mr-1" />
+                        Back to Curriculum Presets
                     </Button>
                     <Button
                         variant="outline"
@@ -221,10 +239,35 @@ const billableSubjects = computed(() =>
                         <RefreshCw v-else class="h-4 w-4 mr-1.5" />
                         {{ syncing ? 'Syncing…' : 'Sync Fees to Current Rates' }}
                     </Button>
-                    <Button size="sm" @click="showAddForm = !showAddForm" :disabled="availableSubjects.length === 0">
-                        <Plus class="h-4 w-4 mr-1.5" />
-                        Add Subject
-                    </Button>
+
+                    <!-- Add Subject with inline explanation when disabled -->
+                    <div class="relative group/addbtn">
+                        <Button
+                            size="sm"
+                            :disabled="availableSubjects.length === 0"
+                            @click="showAddForm = !showAddForm"
+                        >
+                            <Plus class="h-4 w-4 mr-1.5" />
+                            Add Subject
+                        </Button>
+                        <!-- Hover tooltip only when disabled -->
+                        <div
+                            v-if="availableSubjects.length === 0"
+                            class="absolute right-0 top-full mt-2 w-80 z-20 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800 shadow-lg opacity-0 group-hover/addbtn:opacity-100 transition-opacity pointer-events-none"
+                        >
+                            <p class="font-semibold mb-1">No subjects available</p>
+                            <p>
+                                The <strong>Subjects</strong> registry has no active entries for
+                                <strong>{{ preset.course }}</strong> ·
+                                <strong>{{ preset.year_level }}</strong> ·
+                                <strong>{{ preset.semester }}</strong>.
+                            </p>
+                            <p class="mt-1.5">
+                                Go to <strong>Subjects</strong> in the sidebar and create subjects
+                                for this combination first, then return here.
+                            </p>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -239,73 +282,72 @@ const billableSubjects = computed(() =>
                     <p class="text-amber-800 text-xs mt-0.5">
                         Subjects highlighted in amber have stored fees that no longer match the current
                         fee_settings rates. Click <strong>Sync Fees to Current Rates</strong> to update them.
-                        This does not affect existing student assessments — those are immutable.
+                        This does not affect existing student assessments — those are immutable snapshots.
                     </p>
                 </div>
             </div>
 
             <!-- Add subject form -->
-            <Card v-if="showAddForm" class="border-blue-200 bg-blue-50/30">
+            <Card v-if="showAddForm && availableSubjects.length > 0" class="border-blue-200 bg-blue-50/30">
                 <CardHeader class="pb-3">
                     <CardTitle class="text-base text-blue-800 flex items-center gap-2">
                         <Plus class="h-4 w-4" /> Add Subject to Preset
                     </CardTitle>
                 </CardHeader>
                 <CardContent class="space-y-4">
-                    <div v-if="availableSubjects.length === 0" class="text-sm text-muted-foreground">
-                        All subjects for this course/year/semester are already linked.
-                    </div>
-                    <template v-else>
-                        <div class="space-y-1.5">
-                            <label class="text-sm font-medium">Select Subject</label>
-                            <select
-                                v-model="selectedSubId"
-                                class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            >
-                                <option :value="null" disabled>— choose a subject —</option>
-                                <option
-                                    v-for="s in availableSubjects"
-                                    :key="s.id"
-                                    :value="s.id"
-                                >
-                                    {{ s.code }} — {{ s.name }}
-                                    ({{ s.lec_units }} LEC{{ s.lab_units > 0 ? ` + ${s.lab_units} LAB` : '' }})
-                                    {{ s.is_nstp ? '· NSTP' : '' }}
-                                </option>
-                            </select>
-                        </div>
-
-                        <!-- Fee preview -->
-                        <div
-                            v-if="addPreviewFee && selectedSubId"
-                            class="rounded-md bg-white border border-blue-200 p-3 text-xs space-y-1"
+                    <div class="space-y-1.5">
+                        <label class="text-sm font-medium">Select Subject</label>
+                        <select
+                            v-model="selectedSubId"
+                            class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         >
-                            <p class="font-semibold text-blue-800 mb-1.5">Fee Preview (current rates)</p>
-                            <div class="flex justify-between text-gray-600">
-                                <span>
-                                    Tuition
-                                    ({{ selectedAvailableSubject?.lec_units }} units
-                                    × {{ formatCurrency(rates.tuition_per_unit) }})
-                                </span>
-                                <span class="font-mono">{{ formatCurrency(addPreviewFee.tuition_fee) }}</span>
-                            </div>
-                            <div v-if="addPreviewFee.lab_fee > 0" class="flex justify-between text-gray-600">
-                                <span>Lab Fee (per subject)</span>
-                                <span class="font-mono">{{ formatCurrency(addPreviewFee.lab_fee) }}</span>
-                            </div>
-                        </div>
+                            <option :value="null" disabled>— choose a subject —</option>
+                            <option
+                                v-for="s in availableSubjects"
+                                :key="s.id"
+                                :value="s.id"
+                            >
+                                {{ s.code }} — {{ s.name }}
+                                ({{ s.lec_units }} LEC{{ s.lab_units > 0 ? ` + ${s.lab_units} LAB` : '' }})
+                                {{ s.is_nstp ? '· NSTP' : '' }}
+                            </option>
+                        </select>
+                    </div>
 
-                        <div class="flex gap-2">
-                            <Button size="sm" :disabled="!selectedSubId || addSaving" @click="addSubject">
-                                <Loader2 v-if="addSaving" class="h-4 w-4 mr-1.5 animate-spin" />
-                                <Check v-else class="h-4 w-4 mr-1.5" />
-                                {{ addSaving ? 'Adding…' : 'Add to Preset' }}
-                            </Button>
-                            <Button size="sm" variant="outline" @click="showAddForm = false; selectedSubId = null">
-                                Cancel
-                            </Button>
+                    <!-- Fee preview -->
+                    <div
+                        v-if="addPreviewFee && selectedSubId"
+                        class="rounded-md bg-white border border-blue-200 p-3 text-xs space-y-1"
+                    >
+                        <p class="font-semibold text-blue-800 mb-1.5">Fee Preview (current rates)</p>
+                        <div class="flex justify-between text-gray-600">
+                            <span>
+                                Tuition
+                                ({{ selectedAvailableSubject?.lec_units }} units
+                                × {{ formatCurrency(rates.tuition_per_unit) }})
+                            </span>
+                            <span class="font-mono">{{ formatCurrency(addPreviewFee.tuition_fee) }}</span>
                         </div>
-                    </template>
+                        <div v-if="addPreviewFee.lab_fee > 0" class="flex justify-between text-gray-600">
+                            <span>Lab Fee (per subject)</span>
+                            <span class="font-mono">{{ formatCurrency(addPreviewFee.lab_fee) }}</span>
+                        </div>
+                        <div class="flex justify-between font-semibold text-blue-900 border-t border-blue-100 pt-1 mt-1">
+                            <span>Subject Total</span>
+                            <span class="font-mono">{{ formatCurrency(addPreviewFee.total_fee) }}</span>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <Button size="sm" :disabled="!selectedSubId || addSaving" @click="addSubject">
+                            <Loader2 v-if="addSaving" class="h-4 w-4 mr-1.5 animate-spin" />
+                            <Check v-else class="h-4 w-4 mr-1.5" />
+                            {{ addSaving ? 'Adding…' : 'Add to Preset' }}
+                        </Button>
+                        <Button size="sm" variant="outline" @click="showAddForm = false; selectedSubId = null">
+                            Cancel
+                        </Button>
+                    </div>
                 </CardContent>
             </Card>
 
@@ -325,7 +367,13 @@ const billableSubjects = computed(() =>
                     <div v-if="linkedSubjects.length === 0" class="text-center py-10 text-muted-foreground text-sm">
                         <BookOpen class="h-8 w-8 mx-auto mb-3 opacity-30" />
                         <p>No subjects linked yet.</p>
-                        <p class="text-xs mt-1">Click "Add Subject" to populate this preset.</p>
+                        <p v-if="availableSubjects.length > 0" class="text-xs mt-1">
+                            Click "Add Subject" to populate this preset.
+                        </p>
+                        <p v-else class="text-xs mt-1 text-amber-600">
+                            No subjects exist in the registry for this course/year/semester.
+                            Create them in <strong>Subjects</strong> first.
+                        </p>
                     </div>
 
                     <div v-else class="overflow-x-auto">
@@ -362,8 +410,6 @@ const billableSubjects = computed(() =>
                                     <td class="px-4 py-3 text-gray-800">{{ ps.name }}</td>
                                     <td class="px-3 py-3 text-center font-mono">{{ ps.lec_units }}</td>
                                     <td class="px-3 py-3 text-center font-mono">{{ ps.lab_units }}</td>
-
-                                    <!-- Tuition with stale indicator -->
                                     <td class="px-4 py-3 text-right font-mono">
                                         <div class="flex flex-col items-end gap-0.5">
                                             <span :class="ps.fees_are_stale ? 'text-amber-700' : 'text-gray-900'">
@@ -376,8 +422,6 @@ const billableSubjects = computed(() =>
                                             >→ {{ formatCurrency(ps.current_tuition) }}</span>
                                         </div>
                                     </td>
-
-                                    <!-- Lab Fee with stale indicator -->
                                     <td class="px-4 py-3 text-right font-mono">
                                         <div class="flex flex-col items-end gap-0.5">
                                             <span :class="ps.fees_are_stale ? 'text-amber-700' : 'text-gray-900'">
@@ -389,7 +433,6 @@ const billableSubjects = computed(() =>
                                             >→ {{ ps.current_lab_fee > 0 ? formatCurrency(ps.current_lab_fee) : '—' }}</span>
                                         </div>
                                     </td>
-
                                     <td class="px-3 py-3 text-center">
                                         <button
                                             :disabled="removingId === ps.id"
@@ -404,90 +447,76 @@ const billableSubjects = computed(() =>
                                 </tr>
                             </tbody>
 
-                            <!-- ── tfoot: Entrep Fee Breakdown ─────────────────────── -->
-                            <tfoot class="border-t-2 bg-gray-50">
-
-                                <!-- Row 1: Subject subtotals (always shown) -->
-                                <tr>
-                                    <td colspan="4" class="px-4 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide">
-                                        Subject Subtotals
-                                    </td>
-                                    <td class="px-4 py-2.5 text-right font-mono font-semibold text-gray-900">
+                            <!-- tfoot: Subtotal | + Entrep | = Total -->
+                            <tfoot v-if="linkedSubjects.length > 0" class="border-t-2 bg-gray-50 text-sm">
+                                <tr class="text-gray-700">
+                                    <td colspan="4" class="px-4 py-2.5 font-semibold">Subject Subtotal</td>
+                                    <td class="px-4 py-2.5 text-right font-mono font-semibold">
                                         {{ formatCurrency(totalTuition) }}
                                     </td>
-                                    <td class="px-4 py-2.5 text-right font-mono font-semibold text-gray-900">
-                                        {{ hasLabSubjects ? formatCurrency(totalLab) : '—' }}
+                                    <td class="px-4 py-2.5 text-right font-mono font-semibold">
+                                        {{ formatCurrency(totalLab) }}
                                     </td>
                                     <td></td>
                                 </tr>
-
-                                <!-- Row 2: Entrepreneurship fee (only when lab subjects exist) -->
-                                <tr v-if="hasLabSubjects" class="border-t border-gray-200">
-                                    <td colspan="4" class="px-4 py-2 text-xs text-gray-500 italic">
-                                        + Entrepreneurship Fee (flat, once per semester)
+                                <tr class="text-gray-500 border-t border-gray-100">
+                                    <td colspan="4" class="px-4 py-2 text-xs italic">
+                                        + Entrepreneurship / Lab Activation Fee
+                                        <span class="not-italic text-gray-400 ml-1">(flat, billed at assessment level)</span>
                                     </td>
-                                    <td class="px-4 py-2 text-right font-mono text-gray-400 text-xs">—</td>
-                                    <td class="px-4 py-2 text-right font-mono text-amber-700 font-semibold">
-                                        + {{ formatCurrency(rates.entrep_fee) }}
+                                    <td colspan="2" class="px-4 py-2 text-right font-mono text-xs text-gray-600">
+                                        + {{ formatCurrency(entrepFee) }}
                                     </td>
                                     <td></td>
                                 </tr>
-
-                                <!-- Row 3: Effective billing total (only when lab subjects exist) -->
-                                <tr v-if="hasLabSubjects" class="border-t-2 border-blue-200 bg-blue-50/50">
-                                    <td colspan="4" class="px-4 py-3 text-sm font-bold text-gray-800">
-                                        Effective Billing Total
+                                <tr class="border-t-2 border-blue-200 bg-blue-50/50">
+                                    <td colspan="4" class="px-4 py-3 font-bold text-blue-900 text-sm">
+                                        = Total (Tuition + Lab + Entrep)
                                     </td>
-                                    <td class="px-4 py-3 text-right font-mono font-bold text-blue-700 text-base">
-                                        {{ formatCurrency(totalTuition) }}
-                                    </td>
-                                    <td class="px-4 py-3 text-right font-mono font-bold text-blue-700 text-base">
-                                        = {{ formatCurrency(effectiveLabTotal) }}
+                                    <td colspan="2" class="px-4 py-3 text-right font-mono font-bold text-blue-700 text-base">
+                                        {{ formatCurrency(grandTotal) }}
                                     </td>
                                     <td></td>
                                 </tr>
-
-                                <!-- Simple totals row (only when NO lab subjects) -->
-                                <tr v-if="!hasLabSubjects">
-                                    <td colspan="4" class="px-4 py-3 text-sm font-semibold text-gray-700">Totals</td>
-                                    <td class="px-4 py-3 text-right font-mono font-semibold text-blue-700">
-                                        {{ formatCurrency(totalTuition) }}
-                                    </td>
-                                    <td class="px-4 py-3 text-right font-mono text-gray-400">—</td>
-                                    <td></td>
-                                </tr>
-
                             </tfoot>
                         </table>
                     </div>
                 </CardContent>
             </Card>
 
-            <!-- Slim rate reference strip -->
-            <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
-                <div class="flex items-center gap-1.5">
-                    <Info class="h-3.5 w-3.5 shrink-0 text-gray-400" />
-                    <span class="font-medium text-foreground">Current Billing Rates</span>
+            <!-- Slim collapsible billing rates — NSTP card removed per Decision F -->
+            <div class="rounded-lg border border-gray-200 overflow-hidden">
+                <button
+                    type="button"
+                    class="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                    @click="ratesExpanded = !ratesExpanded"
+                >
+                    <span class="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-1.5">
+                        <Info class="h-3.5 w-3.5" />
+                        Current Billing Rates
+                    </span>
+                    <span class="text-xs text-gray-400">{{ ratesExpanded ? 'Hide ▲' : 'Show ▼' }}</span>
+                </button>
+                <div v-if="ratesExpanded" class="px-4 py-3 bg-white border-t border-gray-100 space-y-2 text-xs text-muted-foreground">
+                    <div class="flex justify-between">
+                        <span>Per lecture unit:</span>
+                        <span class="font-mono font-medium text-foreground">{{ formatCurrency(rates.tuition_per_unit) }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span>Per lab subject:</span>
+                        <span class="font-mono font-medium text-foreground">{{ formatCurrency(rates.lab_fee_per_subject) }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span>Entrepreneurship / Lab Activation (flat):</span>
+                        <span class="font-mono font-medium text-foreground">{{ formatCurrency(rates.entrepreneurship_fee) }}</span>
+                    </div>
+                    <p class="pt-1 text-[11px] opacity-60 border-t border-gray-100 mt-2">
+                        All rates sourced from Fee Settings. "Sync Fees" updates stored subject fees when rates change.
+                        Miscellaneous fees are added at the assessment level and are not shown here.
+                    </p>
                 </div>
-                <span>
-                    Tuition:
-                    <strong class="font-mono text-foreground">{{ formatCurrency(rates.tuition_per_unit) }}</strong>
-                    / unit
-                </span>
-                <span>
-                    Lab:
-                    <strong class="font-mono text-foreground">{{ formatCurrency(rates.lab_fee_per_subject) }}</strong>
-                    / subject
-                </span>
-                <span>
-                    Entrep:
-                    <strong class="font-mono text-foreground">{{ formatCurrency(rates.entrep_fee) }}</strong>
-                    (flat, if lab subjects)
-                </span>
-                <span class="opacity-60">
-                    Use "Sync Fees to Current Rates" to update stored fees after a rate change.
-                </span>
             </div>
+
         </div>
     </AppLayout>
 </template>

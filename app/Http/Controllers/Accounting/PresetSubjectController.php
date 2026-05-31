@@ -15,26 +15,159 @@ use Inertia\Response;
 /**
  * PresetSubjectController
  *
- * Manages the course_unit_preset_subjects pivot table — which subjects
- * belong to a given CourseUnitPreset and their per-subject fee snapshot.
+ * Manages the course_unit_preset_subjects pivot table.
  *
- * Routes (as of 2026-06-01):
- *   GET    /accounting/curriculum-presets/{preset}/subjects           → index()
- *   POST   /accounting/curriculum-presets/{preset}/subjects           → store()
- *   DELETE /accounting/curriculum-presets/{preset}/subjects/{subject} → destroy()
- *   POST   /accounting/curriculum-presets/{preset}/subjects/sync      → sync()
+ * TWO ENTRY POINTS (same data, different navigation context):
  *
- * Renders: Accounting/CurriculumPreset/Subjects.vue
- * Back URL: accounting.curriculum-presets.index
+ *   1. curriculumIndex() — Renders Accounting/CurriculumPreset/Subjects.vue
+ *      Route: GET /accounting/curriculum-presets/{preset}/subjects
+ *      Breadcrumb: Dashboard → Curriculum Presets → [Preset Label]
+ *      Back button: ← Back to Curriculum Presets
+ *      Used by: CurriculumPreset/Index.vue → "Manage Subjects" button
  *
- * The original Accounting/PresetSubjects.vue is now orphaned (unreachable).
- * It is retained in the codebase but no routes point to it.
+ *   2. index() — Renders Accounting/PresetSubjects.vue (legacy)
+ *      Route: GET /accounting/fee-settings/presets/{preset}/subjects
+ *      Breadcrumb: Dashboard → Fee Settings → [Preset Label]
+ *      Back button: ← Back to Fee Settings
+ *      Used by: any legacy deep links that still point to fee-settings context.
+ *
+ * store(), destroy(), sync() are shared — routes in both namespaces point here.
  */
 class PresetSubjectController extends Controller
 {
-    // ─── Index ────────────────────────────────────────────────────────────────
+    // ─── Curriculum Context (new) ─────────────────────────────────────────────
 
+    /**
+     * Render the subject management page in the Curriculum Presets context.
+     * This is the authoritative entry point going forward.
+     */
+    public function curriculumIndex(Request $request, CourseUnitPreset $preset): Response
+    {
+        $data = $this->buildPageData($preset);
+
+        return Inertia::render('Accounting/CurriculumPreset/Subjects', array_merge($data, [
+            'backUrl'   => route('accounting.curriculum-presets.index', ['course' => $preset->course]),
+            'isNew'     => $request->boolean('new'),
+            'storeRoute'   => route('accounting.curriculum-presets.subjects.store', $preset->id),
+            'destroyRoute' => 'accounting.curriculum-presets.subjects.destroy',
+            'syncRoute'    => route('accounting.curriculum-presets.subjects.sync', $preset->id),
+        ]));
+    }
+
+    // ─── Legacy Fee-Settings Context ─────────────────────────────────────────
+
+    /**
+     * Render the subject management page in the Fee Settings context (legacy).
+     * Kept for backward compatibility with any existing direct links.
+     */
     public function index(CourseUnitPreset $preset): Response
+    {
+        $data = $this->buildPageData($preset);
+
+        return Inertia::render('Accounting/PresetSubjects', array_merge($data, [
+            'backUrl'      => route('accounting.fee-settings.index'),
+            'isNew'        => false,
+            'storeRoute'   => route('accounting.fee-settings.preset-subjects.store', $preset->id),
+            'destroyRoute' => 'accounting.fee-settings.preset-subjects.destroy',
+            'syncRoute'    => route('accounting.fee-settings.preset-subjects.sync', $preset->id),
+        ]));
+    }
+
+    // ─── Shared Write Actions ─────────────────────────────────────────────────
+
+    public function store(Request $request, CourseUnitPreset $preset)
+    {
+        $validated = $request->validate([
+            'subject_id' => ['required', 'integer', 'exists:subjects,id'],
+        ]);
+
+        $alreadyLinked = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)
+            ->where('subject_id', $validated['subject_id'])
+            ->exists();
+
+        if ($alreadyLinked) {
+            return back()->withErrors(['subject_id' => 'This subject is already linked to this preset.']);
+        }
+
+        $subject = Subject::findOrFail((int) $validated['subject_id']);
+        $isNstp  = (bool) $subject->is_nstp;
+        $rates   = AssessmentService::loadRates();
+        $fees    = AssessmentService::computeSubjectFees(
+            $isNstp,
+            (float) $subject->lec_units,
+            (int)   $subject->lab_units,
+            $rates
+        );
+
+        $maxSort = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)
+            ->max('sort_order') ?? 0;
+
+        CourseUnitPresetSubject::create([
+            'course_unit_preset_id' => $preset->id,
+            'subject_id'            => $subject->id,
+            'lec_units'             => $subject->lec_units,
+            'lab_units'             => (int) $subject->lab_units,
+            'tuition_fee'           => $fees['tuition_fee'],
+            'lab_fee'               => $fees['lab_fee'],
+            'total_fee'             => $fees['total_fee'],
+            'is_nstp'               => $isNstp,
+            'sort_order'            => $maxSort + 1,
+        ]);
+
+        $this->syncPresetAggregates($preset);
+
+        return back()->with('success', "Subject \"{$subject->code} — {$subject->name}\" added to preset.");
+    }
+
+    public function destroy(CourseUnitPreset $preset, CourseUnitPresetSubject $presetSubject)
+    {
+        if ($presetSubject->course_unit_preset_id !== $preset->id) {
+            abort(404, 'Subject not found on this preset.');
+        }
+
+        $code = $presetSubject->subject?->code ?? 'Subject';
+        $presetSubject->delete();
+
+        $this->syncPresetAggregates($preset);
+
+        return back()->with('success', "Subject \"{$code}\" removed from preset.");
+    }
+
+    public function sync(CourseUnitPreset $preset)
+    {
+        $rates = AssessmentService::loadRates();
+
+        DB::transaction(function () use ($preset, $rates) {
+            $rows = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)
+                ->with('subject')
+                ->get();
+
+            foreach ($rows as $ps) {
+                $fees = AssessmentService::computeSubjectFees(
+                    (bool) $ps->is_nstp,
+                    (float) $ps->lec_units,
+                    (int)   $ps->lab_units,
+                    $rates
+                );
+
+                $ps->update([
+                    'tuition_fee' => $fees['tuition_fee'],
+                    'lab_fee'     => $fees['lab_fee'],
+                    'total_fee'   => $fees['total_fee'],
+                ]);
+            }
+        });
+
+        return back()->with('success', 'Per-subject fees synced to current rates.');
+    }
+
+    // ─── Private Helpers ──────────────────────────────────────────────────────
+
+    /**
+     * Build the shared page data array used by both index() and curriculumIndex().
+     * All data is identical — only the Vue component and navigation props differ.
+     */
+    private function buildPageData(CourseUnitPreset $preset): array
     {
         $preset->load('presetSubjects.subject');
 
@@ -52,7 +185,7 @@ class PresetSubjectController extends Controller
         $availableSubjects = $allSubjects
             ->whereNotIn('id', $linkedSubjectIds)
             ->values()
-            ->map(fn (Subject $s) => [
+            ->map(fn(Subject $s) => [
                 'id'        => $s->id,
                 'code'      => $s->code,
                 'name'      => $s->name,
@@ -92,7 +225,7 @@ class PresetSubjectController extends Controller
             ];
         });
 
-        return Inertia::render('Accounting/CurriculumPreset/Subjects', [
+        return [
             'preset' => [
                 'id'                => $preset->id,
                 'course'            => $preset->course,
@@ -108,111 +241,17 @@ class PresetSubjectController extends Controller
             'rates'             => [
                 'tuition_per_unit'    => $rates['tuition_per_unit'],
                 'lab_fee_per_subject' => $rates['lab_fee_per_subject'],
-                'entrep_fee'          => $rates['entrepreneurship_fee'],
+                // Passed so the Subjects.vue tfoot can show the Entrep add-on row
+                // without hardcoding ₱600 — value comes from fee_settings table.
+                'entrepreneurship_fee' => $rates['entrepreneurship_fee'],
             ],
-            // Pull from session so the banner only shows once (on first load after creation)
-            'justCreated' => (bool) session()->pull('just_created', false),
-        ]);
+        ];
     }
 
-    // ─── Store ────────────────────────────────────────────────────────────────
-
-    public function store(Request $request, CourseUnitPreset $preset)
-    {
-        $validated = $request->validate([
-            'subject_id' => ['required', 'integer', 'exists:subjects,id'],
-        ]);
-
-        $alreadyLinked = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)
-            ->where('subject_id', $validated['subject_id'])
-            ->exists();
-
-        if ($alreadyLinked) {
-            return back()->withErrors(['subject_id' => 'This subject is already linked to this preset.']);
-        }
-
-        $subject = Subject::findOrFail((int) $validated['subject_id']);
-
-        $isNstp = (bool) $subject->is_nstp;
-
-        $rates = AssessmentService::loadRates();
-        $fees  = AssessmentService::computeSubjectFees(
-            $isNstp,
-            (float) $subject->lec_units,
-            (int)   $subject->lab_units,
-            $rates
-        );
-
-        $maxSort = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)
-            ->max('sort_order') ?? 0;
-
-        CourseUnitPresetSubject::create([
-            'course_unit_preset_id' => $preset->id,
-            'subject_id'            => $subject->id,
-            'lec_units'             => $subject->lec_units,
-            'lab_units'             => (int) $subject->lab_units,
-            'tuition_fee'           => $fees['tuition_fee'],
-            'lab_fee'               => $fees['lab_fee'],
-            'total_fee'             => $fees['total_fee'],
-            'is_nstp'               => $isNstp,
-            'sort_order'            => $maxSort + 1,
-        ]);
-
-        $this->syncPresetAggregates($preset);
-
-        return back()->with('success', "Subject \"{$subject->code} — {$subject->name}\" added to preset.");
-    }
-
-    // ─── Destroy ──────────────────────────────────────────────────────────────
-
-    public function destroy(CourseUnitPreset $preset, CourseUnitPresetSubject $presetSubject)
-    {
-        if ($presetSubject->course_unit_preset_id !== $preset->id) {
-            abort(404, 'Subject not found on this preset.');
-        }
-
-        $code = $presetSubject->subject?->code ?? 'Subject';
-        $presetSubject->delete();
-
-        $this->syncPresetAggregates($preset);
-
-        return back()->with('success', "Subject \"{$code}\" removed from preset.");
-    }
-
-    // ─── Sync ─────────────────────────────────────────────────────────────────
-
-    public function sync(CourseUnitPreset $preset)
-    {
-        $rates = AssessmentService::loadRates();
-
-        DB::transaction(function () use ($preset, $rates) {
-            $rows = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)
-                ->with('subject')
-                ->get();
-
-            foreach ($rows as $ps) {
-                $isNstp = (bool) $ps->is_nstp;
-
-                $fees = AssessmentService::computeSubjectFees(
-                    $isNstp,
-                    (float) $ps->lec_units,
-                    (int)   $ps->lab_units,
-                    $rates
-                );
-
-                $ps->update([
-                    'tuition_fee' => $fees['tuition_fee'],
-                    'lab_fee'     => $fees['lab_fee'],
-                    'total_fee'   => $fees['total_fee'],
-                ]);
-            }
-        });
-
-        return back()->with('success', 'Per-subject fees synced to current rates.');
-    }
-
-    // ─── Private helpers ──────────────────────────────────────────────────────
-
+    /**
+     * Recalculate and persist the aggregate unit counts on the preset.
+     * NSTP lec_units excluded — handled separately by AssessmentService.
+     */
     private function syncPresetAggregates(CourseUnitPreset $preset): void
     {
         $subjects = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)->get();
@@ -224,9 +263,7 @@ class PresetSubjectController extends Controller
             if ($ps->is_nstp) {
                 continue;
             }
-
             $lecUnits += (float) $ps->lec_units;
-
             if ((int) $ps->lab_units > 0) {
                 $labSubjectCount++;
             }

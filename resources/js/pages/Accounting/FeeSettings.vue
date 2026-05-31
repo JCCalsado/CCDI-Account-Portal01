@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import { router } from '@inertiajs/vue3';
 import AppLayout from '@/layouts/AppLayout.vue';
+import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { Trash2, Plus, Info } from 'lucide-vue-next';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -16,15 +17,22 @@ interface FeeSetting {
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
-// 'presets' and 'existingCourses' have been removed (2026-06-01).
-// Preset management is now entirely in Accounting/CurriculumPreset/*.vue.
 
+// NOTE: presets and existingCourses props have been removed.
+// Preset management lives exclusively at /accounting/curriculum-presets.
 const props = defineProps<{
   settings: Record<string, FeeSetting[]>;
   miscTotal: number;
 }>();
 
-// ─── Fee settings state ───────────────────────────────────────────────────────
+// ─── Breadcrumbs ──────────────────────────────────────────────────────────────
+
+const breadcrumbs = [
+  { title: 'Dashboard',     href: route('accounting.dashboard') },
+  { title: 'Fee Settings',  href: route('accounting.fee-settings.index') },
+];
+
+// ─── State ────────────────────────────────────────────────────────────────────
 
 const editing      = ref<number | null>(null);
 const editValues   = ref<Record<number, string>>({});
@@ -39,7 +47,7 @@ const newItemCategory = ref<'miscellaneous' | 'other'>('miscellaneous');
 const addSaving       = ref(false);
 const deletingId      = ref<number | null>(null);
 
-// ─── Computed: fee settings ───────────────────────────────────────────────────
+// ─── Computed ─────────────────────────────────────────────────────────────────
 
 const rateSettings    = computed(() => props.settings['rate']          ?? []);
 const miscSettings    = computed(() => props.settings['miscellaneous'] ?? []);
@@ -128,8 +136,6 @@ function deleteMiscItem(setting: FeeSetting) {
   });
 }
 
-// ─── Utility ──────────────────────────────────────────────────────────────────
-
 function fmt(val: string | number) {
   return '₱' + parseFloat(String(val)).toLocaleString('en-PH', {
     minimumFractionDigits: 2,
@@ -139,12 +145,18 @@ function fmt(val: string | number) {
 </script>
 
 <template>
-  <AppLayout title="Fee Settings">
-    <div class="max-w-5xl mx-auto px-4 py-8 space-y-8">
+  <AppLayout>
+    <div class="w-full p-6 space-y-6">
 
+      <Breadcrumbs :items="breadcrumbs" />
+
+      <!-- Page header -->
       <div>
-        <h1 class="text-2xl font-bold text-gray-900">Fee Settings</h1>
-        <p class="text-sm text-gray-500 mt-1">Changes apply to <strong>new assessments only</strong>. Existing assessments are not affected.</p>
+        <h1 class="text-2xl font-bold tracking-tight text-gray-900">Fee Settings</h1>
+        <p class="text-sm text-muted-foreground mt-1">
+          Changes apply to <strong>new assessments only</strong>.
+          Existing assessments are not affected.
+        </p>
       </div>
 
       <!-- Flash messages -->
