@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { router } from '@inertiajs/vue3';
 import AppLayout from '@/layouts/AppLayout.vue';
-import { Trash2, Plus, Info, X } from 'lucide-vue-next';
+import { Trash2, Plus, Info } from 'lucide-vue-next';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,26 +15,13 @@ interface FeeSetting {
   is_deletable?: boolean;
 }
 
-interface CourseUnitPreset {
-  id: number;
-  course: string;
-  year_level: string;
-  semester: string;
-  lec_units: number;
-  lab_units: number;
-  lab_subject_count: number;
-  total_units: number;
-  has_nstp: boolean;
-  is_active: boolean;
-}
-
 // ─── Props ────────────────────────────────────────────────────────────────────
+// 'presets' and 'existingCourses' have been removed (2026-06-01).
+// Preset management is now entirely in Accounting/CurriculumPreset/*.vue.
 
 const props = defineProps<{
   settings: Record<string, FeeSetting[]>;
   miscTotal: number;
-  presets: CourseUnitPreset[];
-  existingCourses: string[];
 }>();
 
 // ─── Fee settings state ───────────────────────────────────────────────────────
@@ -51,32 +38,6 @@ const newItemAmount   = ref('');
 const newItemCategory = ref<'miscellaneous' | 'other'>('miscellaneous');
 const addSaving       = ref(false);
 const deletingId      = ref<number | null>(null);
-
-// ─── Preset state ─────────────────────────────────────────────────────────────
-
-const editingPreset  = ref<number | null>(null);
-const presetEditVals = ref<Record<number, {
-  lec_units: string;
-  lab_units: string;
-  lab_subject_count: string;
-  has_nstp: boolean;
-}>>({});
-const presetSaving   = ref(false);
-const deletingPreset = ref<number | null>(null);
-const selectedCourse = ref<string>('all');
-
-// Add-preset form
-const showAddPreset   = ref(false);
-const addPresetSaving = ref(false);
-const newPreset = ref({
-  course:            '',
-  year_level:        '1st Year',
-  semester:          '1st Sem',
-  lec_units:         '0',
-  lab_units:         '0',
-  lab_subject_count: '0',
-  has_nstp:          false,
-});
 
 // ─── Computed: fee settings ───────────────────────────────────────────────────
 
@@ -104,33 +65,7 @@ const termTotal = computed(() =>
   }, 0)
 );
 
-// ─── Computed: presets ────────────────────────────────────────────────────────
-
-const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
-const SEMESTERS   = ['1st Sem', '2nd Sem', 'Summer'];
-
-const uniqueCourses = computed(() =>
-  [...new Set(props.presets.map(p => p.course))].sort()
-);
-
-const filteredPresets = computed(() =>
-  selectedCourse.value === 'all'
-    ? props.presets
-    : props.presets.filter(p => p.course === selectedCourse.value)
-);
-
-/** course → year_level → preset[] */
-const groupedPresets = computed(() => {
-  const groups: Record<string, Record<string, CourseUnitPreset[]>> = {};
-  for (const p of filteredPresets.value) {
-    if (!groups[p.course]) groups[p.course] = {};
-    if (!groups[p.course][p.year_level]) groups[p.course][p.year_level] = [];
-    groups[p.course][p.year_level].push(p);
-  }
-  return groups;
-});
-
-// ─── Fee settings methods ─────────────────────────────────────────────────────
+// ─── Methods ──────────────────────────────────────────────────────────────────
 
 function flash(msg: string) {
   flashSuccess.value = msg;
@@ -193,85 +128,6 @@ function deleteMiscItem(setting: FeeSetting) {
   });
 }
 
-// ─── Preset methods ───────────────────────────────────────────────────────────
-
-function startEditPreset(p: CourseUnitPreset) {
-  editingPreset.value = p.id;
-  presetEditVals.value[p.id] = {
-    lec_units:         String(p.lec_units),
-    lab_units:         String(p.lab_units),
-    lab_subject_count: String(p.lab_subject_count),
-    has_nstp:          p.has_nstp,
-  };
-}
-
-function cancelEditPreset(id: number) {
-  editingPreset.value = null;
-  delete presetEditVals.value[id];
-}
-
-function savePreset(p: CourseUnitPreset) {
-  presetSaving.value = true;
-  const vals = presetEditVals.value[p.id];
-  router.patch(route('accounting.fee-settings.presets.update', p.id), {
-    lec_units:         parseInt(vals.lec_units         || '0'),
-    lab_units:         parseInt(vals.lab_units         || '0'),
-    lab_subject_count: parseInt(vals.lab_subject_count || '0'),
-    has_nstp:          vals.has_nstp,
-  }, {
-    preserveScroll: true,
-    onSuccess: () => { editingPreset.value = null; delete presetEditVals.value[p.id]; flash(`${p.course} ${p.year_level} ${p.semester} updated.`); },
-    onError: flashErr,
-    onFinish: () => { presetSaving.value = false; },
-  });
-}
-
-function confirmDeletePreset(id: number) { deletingPreset.value = id; }
-function cancelDeletePreset() { deletingPreset.value = null; }
-function destroyPreset(p: CourseUnitPreset) {
-  router.delete(route('accounting.fee-settings.presets.destroy', p.id), {
-    preserveScroll: true,
-    onSuccess: () => { deletingPreset.value = null; flash(`Preset for ${p.course} ${p.year_level} ${p.semester} deactivated.`); },
-    onError: flashErr,
-  });
-}
-
-function openAddPreset() {
-  newPreset.value = {
-    course:            '',
-    year_level:        '1st Year',
-    semester:          '1st Sem',
-    lec_units:         '0',
-    lab_units:         '0',
-    lab_subject_count: '0',
-    has_nstp:          false,
-  };
-  showAddPreset.value = true;
-}
-
-function closeAddPreset() {
-  showAddPreset.value = false;
-}
-
-function addPreset() {
-  if (!newPreset.value.course.trim()) return;
-  addPresetSaving.value = true;
-  router.post(route('accounting.fee-settings.presets.store'), {
-    course:            newPreset.value.course.trim(),
-    year_level:        newPreset.value.year_level,
-    semester:          newPreset.value.semester,
-    lec_units:         parseInt(newPreset.value.lec_units         || '0'),
-    lab_units:         parseInt(newPreset.value.lab_units         || '0'),
-    lab_subject_count: parseInt(newPreset.value.lab_subject_count || '0'),
-    has_nstp:          newPreset.value.has_nstp,
-  }, {
-    preserveScroll: true,
-    onSuccess: () => { showAddPreset.value = false; flash('Preset created.'); },
-    onError: (errors) => { flashErr(errors as Record<string, string>); },
-    onFinish: () => { addPresetSaving.value = false; },
-  });
-}
-
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
 function fmt(val: string | number) {
@@ -279,13 +135,6 @@ function fmt(val: string | number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-}
-
-function livePresetTotal(id: number): number {
-  const v = presetEditVals.value[id];
-  if (!v) return 0;
-  const base = parseInt(v.lec_units || '0') + parseInt(v.lab_units || '0');
-  return base + (v.has_nstp ? 1.5 : 0);
 }
 </script>
 
@@ -339,254 +188,6 @@ function livePresetTotal(id: number): number {
         <div class="flex items-start gap-2 mt-2 text-xs text-gray-400">
           <Info class="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>Tuition per lecture unit. Lab fee charged once per subject with laboratory sessions.</span>
-        </div>
-      </section>
-
-      <!-- ── Course Unit Presets ────────────────────────────────────────────── -->
-      <section>
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Course Unit Presets</h2>
-            <p class="text-xs text-gray-400 mt-0.5">Units and NSTP configuration per year level and semester for student assessments.</p>
-          </div>
-          <div class="flex items-center gap-3">
-            <select v-model="selectedCourse"
-                    class="border border-gray-300 rounded-md px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-300">
-              <option value="all">All Courses</option>
-              <option v-for="c in uniqueCourses" :key="c" :value="c">{{ c }}</option>
-            </select>
-            <button @click="openAddPreset"
-                    class="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md font-medium">
-              <Plus class="h-3.5 w-3.5" /> Add Preset
-            </button>
-          </div>
-        </div>
-
-        <!-- Add Preset Form -->
-        <div v-if="showAddPreset"
-             class="mb-5 rounded-xl border border-dashed border-blue-300 bg-blue-50 p-5 space-y-4">
-          <div class="flex items-center justify-between">
-            <p class="text-sm font-semibold text-blue-900">New Course Unit Preset</p>
-            <button @click="closeAddPreset" class="text-gray-400 hover:text-gray-600">
-              <X class="h-4 w-4" />
-            </button>
-          </div>
-
-          <div class="space-y-1">
-            <label class="text-xs font-medium text-gray-700">Course</label>
-            <input
-              v-model="newPreset.course"
-              list="course-suggestions"
-              type="text"
-              placeholder="Type a course name or pick an existing one…"
-              class="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-            />
-            <datalist id="course-suggestions">
-              <option v-for="c in existingCourses" :key="c" :value="c" />
-            </datalist>
-          </div>
-
-          <div class="grid grid-cols-2 gap-4">
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-gray-700">Year Level</label>
-              <select v-model="newPreset.year_level"
-                      class="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
-                <option v-for="y in YEAR_LEVELS" :key="y" :value="y">{{ y }}</option>
-              </select>
-            </div>
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-gray-700">Semester</label>
-              <select v-model="newPreset.semester"
-                      class="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
-                <option v-for="s in SEMESTERS" :key="s" :value="s">{{ s }}</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-3 gap-4">
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-gray-700">Lec Units</label>
-              <input v-model="newPreset.lec_units" type="number" min="0" max="30"
-                     class="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-300" />
-            </div>
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-gray-700">Lab Units</label>
-              <input v-model="newPreset.lab_units" type="number" min="0" max="30"
-                     class="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-300" />
-            </div>
-            <div class="space-y-1">
-              <label class="text-xs font-medium text-gray-700">Lab Subjects</label>
-              <input v-model="newPreset.lab_subject_count" type="number" min="0" max="15"
-                     class="w-full border border-gray-300 rounded-md px-3 py-1.5 text-sm text-center font-mono focus:outline-none focus:ring-2 focus:ring-blue-300" />
-            </div>
-          </div>
-
-          <!-- NSTP checkbox in add form -->
-          <div class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <input
-              id="new-preset-nstp"
-              type="checkbox"
-              v-model="newPreset.has_nstp"
-              class="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
-            />
-            <div>
-              <label for="new-preset-nstp" class="text-sm font-semibold text-amber-900 cursor-pointer">
-                Includes NSTP (National Service Training Program)
-              </label>
-              <p class="text-xs text-amber-700 mt-0.5">
-                When checked, 1.5 NSTP lecture units (₱546 at ₱364/unit) are added to this term's billing.
-                For partial discounts (&lt;100%), NSTP is included in the discount along with all other lecture units. At exactly 100% discount, NSTP (₱546) is excluded and charged at full price — it is the only tuition amount a full-scholarship student still owes.
-              </p>
-            </div>
-          </div>
-
-          <div class="flex justify-end gap-2 pt-1">
-            <button @click="closeAddPreset"
-                    class="text-sm text-gray-500 hover:text-gray-700 px-3 py-1.5">Cancel</button>
-            <button @click="addPreset"
-                    :disabled="addPresetSaving || !newPreset.course.trim()"
-                    class="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-md disabled:opacity-40">
-              <Plus class="h-3.5 w-3.5" />
-              {{ addPresetSaving ? 'Saving…' : 'Create Preset' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Grouped preset tables -->
-        <div v-if="filteredPresets.length === 0" class="text-sm text-gray-400 italic py-4">
-          No active presets found.
-        </div>
-
-        <div v-for="(yearGroups, course) in groupedPresets" :key="course" class="mb-6">
-          <h3 class="text-sm font-bold text-gray-800 mb-2 px-1">{{ course }}</h3>
-
-          <div v-for="(semPresets, yearLevel) in yearGroups" :key="yearLevel" class="mb-3">
-            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1 px-1">{{ yearLevel }}</h4>
-            <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <table class="w-full text-sm">
-                <thead class="bg-gray-50 border-b border-gray-200 text-xs uppercase tracking-wide">
-                  <tr>
-                    <th class="text-left px-5 py-2 font-medium text-gray-500">Semester</th>
-                    <th class="text-center px-3 py-2 font-medium text-gray-500">Lec Units</th>
-                    <th class="text-center px-3 py-2 font-medium text-gray-500">Lab Units</th>
-                    <th class="text-center px-3 py-2 font-medium text-gray-500">Lab Subjects</th>
-                    <th class="text-center px-3 py-2 font-medium text-gray-500">Total</th>
-                    <th class="text-center px-3 py-2 font-medium text-amber-600" title="National Service Training Program — 1.5 fixed billing units. Discounted with all other lec units under partial discounts; excluded only at exactly 100% discount.">
-                      NSTP
-                    </th>
-                    <th class="w-28 px-3 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100">
-                  <tr v-for="p in semPresets" :key="p.id" class="hover:bg-gray-50">
-                    <td class="px-5 py-2.5 font-medium text-gray-700">{{ p.semester }}</td>
-
-                    <!-- Lec Units -->
-                    <td class="px-3 py-2.5 text-center">
-                      <span v-if="editingPreset !== p.id" class="font-mono text-gray-900">{{ p.lec_units }}</span>
-                      <input v-else type="number" min="0" max="30"
-                             v-model="presetEditVals[p.id].lec_units"
-                             class="w-14 border border-blue-400 rounded px-1 py-1 text-center text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300" />
-                    </td>
-
-                    <!-- Lab Units -->
-                    <td class="px-3 py-2.5 text-center">
-                      <span v-if="editingPreset !== p.id" class="font-mono text-gray-900">{{ p.lab_units }}</span>
-                      <input v-else type="number" min="0" max="30"
-                             v-model="presetEditVals[p.id].lab_units"
-                             class="w-14 border border-blue-400 rounded px-1 py-1 text-center text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300" />
-                    </td>
-
-                    <!-- Lab Subjects -->
-                    <td class="px-3 py-2.5 text-center">
-                      <span v-if="editingPreset !== p.id" class="font-mono text-gray-900">{{ p.lab_subject_count }}</span>
-                      <input v-else type="number" min="0" max="15"
-                             v-model="presetEditVals[p.id].lab_subject_count"
-                             class="w-14 border border-blue-400 rounded px-1 py-1 text-center text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300" />
-                    </td>
-
-                    <!-- Total (live-computed in edit mode) -->
-                    <td class="px-3 py-2.5 text-center">
-                      <span v-if="editingPreset !== p.id"
-                            class="font-mono font-semibold text-blue-700">{{ p.total_units }}</span>
-                      <span v-else class="font-mono font-semibold text-blue-700">
-                        {{ livePresetTotal(p.id) }}
-                      </span>
-                    </td>
-
-                    <!-- NSTP Checkbox -->
-                    <td class="px-3 py-2.5 text-center">
-                      <!-- Read mode: show badge -->
-                      <template v-if="editingPreset !== p.id">
-                        <span v-if="p.has_nstp"
-                              class="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-full"
-                              title="NSTP included — 1.5 units × ₱364 = ₱546. Discounted along with other lec units for partial discounts; excluded only at 100% discount.">
-                          ✓ NSTP
-                        </span>
-                        <span v-else class="text-gray-300 text-xs">—</span>
-                      </template>
-                      <!-- Edit mode: checkbox -->
-                      <div v-else class="flex justify-center">
-                        <input
-                          type="checkbox"
-                          v-model="presetEditVals[p.id].has_nstp"
-                          class="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
-                          title="Check if this term includes an NSTP subject"
-                        />
-                      </div>
-                    </td>
-
-                    <!-- Actions -->
-                    <td class="px-3 py-2.5 text-right">
-                      <!-- Delete confirm mode -->
-                      <div v-if="deletingPreset === p.id"
-                           class="flex items-center justify-end gap-2">
-                        <span class="text-xs text-red-700 font-medium">Deactivate?</span>
-                        <button @click="destroyPreset(p)"
-                                class="text-red-600 hover:text-red-800 text-xs font-semibold">Yes</button>
-                        <button @click="cancelDeletePreset()"
-                                class="text-gray-400 hover:text-gray-600 text-xs">No</button>
-                      </div>
-
-                      <!-- Normal / edit mode -->
-                      <div v-else-if="editingPreset !== p.id"
-                           class="flex items-center justify-end gap-3">
-                        <a
-                          :href="route('accounting.fee-settings.preset-subjects.index', p.id)"
-                          class="text-purple-600 hover:text-purple-800 text-xs font-medium"
-                          title="View and manage subjects linked to this preset"
-                        >Subjects</a>
-                        <button @click="startEditPreset(p)"
-                                class="text-blue-600 hover:text-blue-800 text-xs font-medium">Edit</button>
-                        <button @click="confirmDeletePreset(p.id)"
-                                class="text-red-400 hover:text-red-600 transition-colors"
-                                title="Deactivate preset">
-                          <Trash2 class="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-
-                      <!-- Save / cancel mode -->
-                      <div v-else class="flex gap-2 justify-end">
-                        <button @click="savePreset(p)" :disabled="presetSaving"
-                                class="text-green-600 hover:text-green-800 text-xs font-medium disabled:opacity-40">Save</button>
-                        <button @click="cancelEditPreset(p.id)"
-                                class="text-gray-400 hover:text-gray-600 text-xs">Cancel</button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-start gap-2 mt-1 text-xs text-gray-400">
-          <Info class="h-3.5 w-3.5 mt-0.5 shrink-0" />
-          <span>
-            NSTP = National Service Training Program. When checked, adds 1.5 fixed billing units (₱546) to the semester's tuition.
-            NSTP is <strong class="text-gray-600">excluded from 100% discounts</strong> — full-scholarship students still pay NSTP tuition.
-            For partial discounts (&lt;100%), NSTP is included in the discount.
-          </span>
         </div>
       </section>
 

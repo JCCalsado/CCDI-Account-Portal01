@@ -3,11 +3,27 @@
 namespace App\Http\Controllers\Accounting;
 
 use App\Http\Controllers\Controller;
-use App\Models\CourseUnitPreset;
 use App\Models\FeeSetting;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 
+/**
+ * FeeSettingsController
+ *
+ * Manages billing rates, miscellaneous fees, and payment term percentages.
+ *
+ * ── REMOVED (2026-06-01) ──────────────────────────────────────────────────────
+ * storePreset(), updatePreset(), destroyPreset() and their corresponding routes
+ * (accounting.fee-settings.presets.*) have been removed.
+ *
+ * All preset management now lives exclusively in:
+ *   - CurriculumPresetController   → course_unit_presets CRUD
+ *   - PresetSubjectController      → course_unit_preset_subjects CRUD
+ *   - Routes: accounting.curriculum-presets.* and accounting.curriculum-presets.subjects.*
+ *   - Page: Accounting/CurriculumPreset/Index.vue + Subjects.vue
+ *
+ * FeeSettings.vue no longer renders presets. It is rates-only.
+ */
 class FeeSettingsController extends Controller
 {
     public function index()
@@ -20,42 +36,9 @@ class FeeSettingsController extends Controller
         $miscTotal = FeeSetting::whereIn('category', ['miscellaneous', 'other'])
             ->where('is_active', true)->sum('amount');
 
-        // NOTE: has_nstp column was dropped (migration 2026_05_30_195021).
-        // total_units is now lec_units + lab_units only.
-        // The Subjects page (PresetSubjects.vue) derives NSTP presence
-        // per-subject from subject.is_nstp — no preset-level flag needed.
-        $presets = CourseUnitPreset::where('is_active', true)
-            ->withCount('presetSubjects')
-            ->orderBy('course')
-            ->orderByRaw("FIELD(year_level, '1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year')")
-            ->orderByRaw("FIELD(semester, '1st Sem', '2nd Sem', 'Summer')")
-            ->get()
-            ->map(fn($p) => [
-                'id'                   => $p->id,
-                'course'               => $p->course,
-                'year_level'           => $p->year_level,
-                'semester'             => $p->semester,
-                'lec_units'            => (int) $p->lec_units,
-                'lab_units'            => (int) $p->lab_units,
-                'lab_subject_count'    => (int) $p->lab_subject_count,
-                'is_active'            => (bool) $p->is_active,
-                'subject_count'        => (int) $p->preset_subjects_count,
-                // total_units: lec + lab. NSTP detection is per-subject only.
-                'total_units'          => (int) $p->lec_units + (int) $p->lab_units,
-            ])
-            ->toArray();
-
-        $existingCourses = CourseUnitPreset::distinct()
-            ->orderBy('course')
-            ->pluck('course')
-            ->values()
-            ->toArray();
-
         return Inertia::render('Accounting/FeeSettings', [
-            'settings'        => $settings,
-            'miscTotal'       => round($miscTotal, 2),
-            'presets'         => $presets,
-            'existingCourses' => $existingCourses,
+            'settings'  => $settings,
+            'miscTotal' => round($miscTotal, 2),
         ]);
     }
 
@@ -146,65 +129,6 @@ class FeeSettingsController extends Controller
             FeeSetting::where('id', $item['id'])->update(['amount' => $item['amount']]);
         }
         return back()->with('success', 'Fee settings saved successfully.');
-    }
-
-    // ─── Course Unit Preset CRUD (alias methods) ──────────────────────────────
-    //
-    // These three methods are kept as route aliases for backward compatibility
-    // with FeeSettings.vue, which calls accounting.fee-settings.presets.* routes.
-    //
-    // The authoritative implementation now lives in CurriculumPresetController.
-    // Both sets of routes point to the same logic so FeeSettings.vue needs no
-    // changes and the new CurriculumPreset page works independently.
-    //
-    // has_nstp: dropped from course_unit_presets table. Removed from all
-    // validation and write paths here. NSTP is now tracked per-subject via
-    // subjects.is_nstp and is derived automatically by syncPresetAggregates().
-
-    public function storePreset(Request $request)
-    {
-        $validated = $request->validate([
-            'course'            => ['required', 'string', 'max:150'],
-            'year_level'        => ['required', 'string', 'in:1st Year,2nd Year,3rd Year,4th Year,5th Year'],
-            'semester'          => ['required', 'string', 'in:1st Sem,2nd Sem,Summer'],
-            'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
-            'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
-            'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
-        ]);
-
-        $exists = CourseUnitPreset::where('course', $validated['course'])
-            ->where('year_level', $validated['year_level'])
-            ->where('semester', $validated['semester'])
-            ->exists();
-
-        if ($exists) {
-            return back()->withErrors([
-                'preset' => "A preset for {$validated['course']} — {$validated['year_level']} — {$validated['semester']} already exists.",
-            ]);
-        }
-
-        CourseUnitPreset::create(array_merge($validated, ['is_active' => true]));
-
-        return back()->with('success', "Preset for {$validated['course']} {$validated['year_level']} {$validated['semester']} created.");
-    }
-
-    public function updatePreset(Request $request, CourseUnitPreset $preset)
-    {
-        $validated = $request->validate([
-            'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
-            'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
-            'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
-        ]);
-
-        $preset->update($validated);
-        return back()->with('success', "{$preset->course} {$preset->year_level} {$preset->semester} updated.");
-    }
-
-    public function destroyPreset(CourseUnitPreset $preset)
-    {
-        $label = "{$preset->course} {$preset->year_level} {$preset->semester}";
-        $preset->update(['is_active' => false]);
-        return back()->with('success', "Preset for {$label} deactivated.");
     }
 
     // ─── Private Helpers ──────────────────────────────────────────────────────

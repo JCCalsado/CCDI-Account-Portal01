@@ -18,12 +18,17 @@ use Inertia\Response;
  * Manages the course_unit_preset_subjects pivot table — which subjects
  * belong to a given CourseUnitPreset and their per-subject fee snapshot.
  *
- * NSTP detection: uses subjects.is_nstp (DB flag). No string-sniffing.
- * PATHFIT: treated identically to regular billable subjects. No special branch.
- * is_pathfit column: retained in assessment_subjects for historical data only.
- *   We do NOT write it here (PresetSubjectController has no assessment_subjects rows).
- * has_nstp column: dropped from course_unit_presets. syncPresetAggregates()
- *   no longer writes it.
+ * Routes (as of 2026-06-01):
+ *   GET    /accounting/curriculum-presets/{preset}/subjects           → index()
+ *   POST   /accounting/curriculum-presets/{preset}/subjects           → store()
+ *   DELETE /accounting/curriculum-presets/{preset}/subjects/{subject} → destroy()
+ *   POST   /accounting/curriculum-presets/{preset}/subjects/sync      → sync()
+ *
+ * Renders: Accounting/CurriculumPreset/Subjects.vue
+ * Back URL: accounting.curriculum-presets.index
+ *
+ * The original Accounting/PresetSubjects.vue is now orphaned (unreachable).
+ * It is retained in the codebase but no routes point to it.
  */
 class PresetSubjectController extends Controller
 {
@@ -87,7 +92,7 @@ class PresetSubjectController extends Controller
             ];
         });
 
-        return Inertia::render('Accounting/PresetSubjects', [
+        return Inertia::render('Accounting/CurriculumPreset/Subjects', [
             'preset' => [
                 'id'                => $preset->id,
                 'course'            => $preset->course,
@@ -103,8 +108,10 @@ class PresetSubjectController extends Controller
             'rates'             => [
                 'tuition_per_unit'    => $rates['tuition_per_unit'],
                 'lab_fee_per_subject' => $rates['lab_fee_per_subject'],
+                'entrep_fee'          => $rates['entrepreneurship_fee'],
             ],
-            'backUrl' => route('accounting.fee-settings.index'),
+            // Pull from session so the banner only shows once (on first load after creation)
+            'justCreated' => (bool) session()->pull('just_created', false),
         ]);
     }
 
@@ -206,18 +213,6 @@ class PresetSubjectController extends Controller
 
     // ─── Private helpers ──────────────────────────────────────────────────────
 
-    /**
-     * Recalculate and persist the aggregate unit counts on the preset
-     * from its linked subjects.
-     *
-     * NSTP subjects: their lec_units are excluded from the billable aggregate
-     * because AssessmentService::compute() handles NSTP billing separately
-     * via the nstpLecUnits accumulator in getCurriculumUnits().
-     *
-     * PATHFIT: treated as regular billable subjects. No special skip.
-     *
-     * has_nstp column was dropped from course_unit_presets — not written here.
-     */
     private function syncPresetAggregates(CourseUnitPreset $preset): void
     {
         $subjects = CourseUnitPresetSubject::where('course_unit_preset_id', $preset->id)->get();
@@ -227,7 +222,6 @@ class PresetSubjectController extends Controller
 
         foreach ($subjects as $ps) {
             if ($ps->is_nstp) {
-                // NSTP lec_units excluded — handled separately by AssessmentService
                 continue;
             }
 

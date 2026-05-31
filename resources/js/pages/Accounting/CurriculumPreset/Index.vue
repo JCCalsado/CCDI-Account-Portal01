@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { router, useForm } from '@inertiajs/vue3'
 import AppLayout from '@/layouts/AppLayout.vue'
 import Breadcrumbs from '@/components/Breadcrumbs.vue'
@@ -58,7 +58,6 @@ function selectCourse(course: string | null) {
 const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year']
 const SEMESTERS   = ['1st Sem', '2nd Sem', 'Summer']
 
-// Unique year levels present in the current filtered preset list
 const activeYearLevels = computed(() => {
     const present = new Set(props.presets.map(p => p.year_level))
     return YEAR_LEVELS.filter(yl => present.has(yl))
@@ -70,8 +69,15 @@ function presetAt(yearLevel: string, semester: string): Preset | null {
 
 // ─── Create Preset Form ───────────────────────────────────────────────────────
 
-const showCreateForm = ref(false)
+const showCreateForm   = ref(false)
 const createTargetSlot = ref<{ year_level: string; semester: string } | null>(null)
+const createFormRef    = ref<InstanceType<typeof Card> | null>(null)
+
+// Separate flag to track "enter new course" mode.
+// Bug fix: using v-if="createForm.course === '__new__'" causes the input to
+// disappear on the first keystroke because typing changes createForm.course
+// away from '__new__', collapsing the v-if. The flag breaks that coupling.
+const isNewCourse = ref(false)
 
 const createForm = useForm({
     course:     props.selectedCourse ?? '',
@@ -84,14 +90,53 @@ function openCreateForm(yearLevel: string, semester: string) {
     createForm.year_level  = yearLevel
     createForm.semester    = semester
     createForm.course      = props.selectedCourse ?? ''
+    isNewCourse.value      = false
     showCreateForm.value   = true
+    scrollToForm()
+}
+
+function openCreateFormFromHeader() {
+    createTargetSlot.value = null
+    createForm.year_level  = ''
+    createForm.semester    = ''
+    createForm.course      = props.selectedCourse ?? ''
+    isNewCourse.value      = false
+    showCreateForm.value   = true
+    scrollToForm()
+}
+
+function scrollToForm() {
+    nextTick(() => {
+        // createFormRef is a Card component instance; access $el for the DOM node
+        const el = (createFormRef.value as any)?.$el as HTMLElement | undefined
+        el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
 }
 
 function closeCreateForm() {
     showCreateForm.value   = false
     createTargetSlot.value = null
+    isNewCourse.value      = false
     createForm.reset()
     createForm.clearErrors()
+}
+
+/**
+ * Handle the course dropdown change.
+ *
+ * '__new__' is a sentinel value that triggers the text input.
+ * We store it in `isNewCourse` and clear createForm.course so the
+ * Input field starts empty and v-model works without the disappearing bug.
+ */
+function onCourseSelectChange(e: Event) {
+    const val = (e.target as HTMLSelectElement).value
+    if (val === '__new__') {
+        isNewCourse.value  = true
+        createForm.course  = ''
+    } else {
+        isNewCourse.value  = false
+        createForm.course  = val
+    }
 }
 
 function submitCreate() {
@@ -134,9 +179,11 @@ function executeDelete() {
 }
 
 // ─── Manage Subjects ──────────────────────────────────────────────────────────
+// Navigate directly to the subjects page — no longer routes through show()
+// to avoid the unnecessary server-side redirect hop.
 
 function manageSubjects(preset: Preset) {
-    router.get(route('accounting.curriculum-presets.show', preset.id))
+    router.get(route('accounting.curriculum-presets.subjects.index', preset.id))
 }
 </script>
 
@@ -145,7 +192,7 @@ function manageSubjects(preset: Preset) {
         <div class="w-full p-6 space-y-6">
             <Breadcrumbs :items="breadcrumbs" />
 
-            <!-- Page header -->
+            <!-- Page header with Add Preset button -->
             <div class="flex items-start justify-between gap-4 flex-wrap">
                 <div class="flex items-center gap-3">
                     <LayoutTemplate class="h-6 w-6 text-blue-600" />
@@ -157,6 +204,19 @@ function manageSubjects(preset: Preset) {
                         </p>
                     </div>
                 </div>
+
+                <!-- Add Preset in header — always visible, always accessible -->
+                <Button
+                    v-if="!showCreateForm"
+                    @click="openCreateFormFromHeader"
+                >
+                    <Plus class="h-4 w-4 mr-2" />
+                    Add Preset
+                </Button>
+                <Button v-else variant="outline" @click="scrollToForm">
+                    <Plus class="h-4 w-4 mr-2" />
+                    Add Preset
+                </Button>
             </div>
 
             <!-- Course selector -->
@@ -202,7 +262,7 @@ function manageSubjects(preset: Preset) {
                         {{ selectedCourse ? `No presets found for "${selectedCourse}".` : 'Create a preset for each course, year level and semester.' }}
                     </p>
                 </div>
-                <Button variant="outline" @click="showCreateForm = true">
+                <Button variant="outline" @click="openCreateFormFromHeader">
                     <Plus class="h-4 w-4 mr-2" />
                     Create First Preset
                 </Button>
@@ -341,16 +401,8 @@ function manageSubjects(preset: Preset) {
                 </div>
             </template>
 
-            <!-- Add preset outside grid (when no course selected or for new course) -->
-            <div v-if="!showCreateForm" class="pt-2">
-                <Button variant="outline" @click="showCreateForm = true; createTargetSlot = null">
-                    <Plus class="h-4 w-4 mr-2" />
-                    Add Preset
-                </Button>
-            </div>
-
-            <!-- Inline create form -->
-            <Card v-if="showCreateForm" class="border-blue-200 bg-blue-50/40">
+            <!-- Inline create form — ref for scroll-into-view -->
+            <Card v-if="showCreateForm" ref="createFormRef" class="border-blue-200 bg-blue-50/40">
                 <CardHeader class="pb-3">
                     <div class="flex items-center justify-between">
                         <CardTitle class="text-base flex items-center gap-2">
@@ -364,21 +416,25 @@ function manageSubjects(preset: Preset) {
                 </CardHeader>
                 <CardContent>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <!-- Course selector + new-course input -->
                         <div class="space-y-1.5">
                             <Label>Course</Label>
                             <select
-                                v-model="createForm.course"
+                                :value="isNewCourse ? '__new__' : createForm.course"
+                                @change="onCourseSelectChange"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
                             >
                                 <option value="">Select a course…</option>
                                 <option v-for="c in courses" :key="c" :value="c">{{ c }}</option>
                                 <option value="__new__">+ Enter new course name</option>
                             </select>
+                            <!-- Free-text input for new course — uses isNewCourse flag, not course value, so it persists while typing -->
                             <Input
-                                v-if="createForm.course === '__new__'"
+                                v-if="isNewCourse"
                                 v-model="createForm.course"
                                 placeholder="e.g. BS Computer Engineering"
                                 class="mt-1"
+                                autofocus
                             />
                             <p v-if="createForm.errors.course" class="text-xs text-destructive">{{ createForm.errors.course }}</p>
                         </div>
@@ -411,15 +467,15 @@ function manageSubjects(preset: Preset) {
                     <p v-if="createForm.errors.preset" class="mt-2 text-sm text-destructive">{{ createForm.errors.preset }}</p>
 
                     <p class="mt-3 text-xs text-muted-foreground">
-                        Unit aggregates start at 0 and are computed automatically as you add subjects
-                        via <strong>Manage Subjects</strong>.
+                        After creating, you'll land directly on the subject management page.
+                        Unit aggregates are computed automatically as you add subjects.
                     </p>
 
                     <div class="flex justify-end gap-2 mt-4">
                         <Button variant="outline" size="sm" @click="closeCreateForm">Cancel</Button>
                         <Button
                             size="sm"
-                            :disabled="createForm.processing || !createForm.course || createForm.course === '__new__' || !createForm.year_level || !createForm.semester"
+                            :disabled="createForm.processing || !createForm.course.trim() || !createForm.year_level || !createForm.semester"
                             @click="submitCreate"
                         >
                             <Loader2 v-if="createForm.processing" class="h-4 w-4 mr-1.5 animate-spin" />
@@ -431,7 +487,7 @@ function manageSubjects(preset: Preset) {
             </Card>
         </div>
 
-        <!-- ─── Delete Confirmation Modal ─────────────────────────────────── -->
+        <!-- ─── Delete Confirmation Modal ───────────────────────────────────── -->
         <Teleport to="body">
             <div v-if="deleteTarget" class="fixed inset-0 z-50 flex items-center justify-center p-4">
                 <div class="absolute inset-0 bg-black/50" @click="cancelDelete" />

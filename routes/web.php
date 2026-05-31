@@ -164,23 +164,21 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
     Route::get('/financial-reports/student-history', [FinancialReportsController::class, 'studentTransactionHistory'])->name('accounting.financial-reports.student-history');
     Route::get('/financial-reports/student-receipt', [FinancialReportsController::class, 'downloadStudentReceipt'])->name('accounting.financial-reports.student-receipt');
 
-    // ── Fee Settings ─────────────────────────────────────────────────────────
+    // ── Fee Settings ──────────────────────────────────────────────────────────
+    // Preset CRUD routes have been removed — all preset management now lives
+    // under /accounting/curriculum-presets/* (CurriculumPresetController).
+    // FeeSettings is now rates-only: tuition per unit, lab fee, misc fees, terms.
     Route::get('/fee-settings', [FeeSettingsController::class, 'index'])->name('accounting.fee-settings.index');
     Route::patch('/fee-settings/{feeSetting}', [FeeSettingsController::class, 'update'])->name('accounting.fee-settings.update');
     Route::post('/fee-settings/bulk', [FeeSettingsController::class, 'bulkUpdate'])->name('accounting.fee-settings.bulk');
     Route::post('/fee-settings', [FeeSettingsController::class, 'store'])->name('accounting.fee-settings.store');
     Route::delete('/fee-settings/{feeSetting}', [FeeSettingsController::class, 'destroy'])->name('accounting.fee-settings.destroy');
 
-    // ── Fee Settings — Preset CRUD (alias routes for FeeSettings.vue) ────────
-    // These route names are kept intact so FeeSettings.vue requires no changes.
-    // The methods now live in FeeSettingsController with has_nstp references removed.
-    Route::post('/fee-settings/presets', [FeeSettingsController::class, 'storePreset'])->name('accounting.fee-settings.presets.store');
-    Route::patch('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'updatePreset'])->name('accounting.fee-settings.presets.update');
-    Route::delete('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'destroyPreset'])->name('accounting.fee-settings.presets.destroy');
-
-    // ── Preset Subject Management ────────────────────────────────────────────
-    Route::prefix('fee-settings/presets/{preset}/subjects')
-        ->name('accounting.fee-settings.preset-subjects.')
+    // ── Curriculum Preset Subject Management ──────────────────────────────────
+    // Must be registered BEFORE the /{preset} catch-all in the curriculum-presets
+    // group below — longer paths resolve first in Laravel's route registry.
+    Route::prefix('curriculum-presets/{preset}/subjects')
+        ->name('accounting.curriculum-presets.subjects.')
         ->group(function () {
             Route::get('/',                   [PresetSubjectController::class, 'index'])  ->name('index');
             Route::post('/',                  [PresetSubjectController::class, 'store'])  ->name('store');
@@ -188,10 +186,7 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
             Route::post('/sync',              [PresetSubjectController::class, 'sync'])   ->name('sync');
         });
 
-    // ── Curriculum Preset Registry ───────────────────────────────────────────
-    // New dedicated page for managing course_unit_presets.
-    // Routes are separate from fee-settings/* so the Curriculum Preset page
-    // can live at /accounting/curriculum-presets independently.
+    // ── Curriculum Preset Registry ─────────────────────────────────────────────
     Route::prefix('curriculum-presets')
         ->name('accounting.curriculum-presets.')
         ->group(function () {
@@ -202,7 +197,7 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
             Route::delete('/{preset}', [CurriculumPresetController::class, 'destroy'])->name('destroy');
         });
 
-    // ── Subject Registry ─────────────────────────────────────────────────────
+    // ── Subject Registry ──────────────────────────────────────────────────────
     Route::prefix('subjects')
         ->name('accounting.subjects.')
         ->group(function () {

@@ -15,29 +15,25 @@ use Inertia\Response;
  * Manages the course_unit_presets table through the dedicated
  * Curriculum Preset page (Accounting/CurriculumPreset/Index.vue).
  *
- * This is SEPARATE from CurriculumFeePresetController, which manages the
- * curriculum_fee_presets table (a different, older model). Do not confuse them.
- *
  * Routes:
  *   GET    /accounting/curriculum-presets            → index()
- *   POST   /accounting/curriculum-presets            → store()
- *   GET    /accounting/curriculum-presets/{preset}   → show()  (redirects to PresetSubjects)
+ *   POST   /accounting/curriculum-presets            → store()  → redirects to subjects index
+ *   GET    /accounting/curriculum-presets/{preset}   → show()   → redirects to subjects index
  *   PATCH  /accounting/curriculum-presets/{preset}   → update()
  *   DELETE /accounting/curriculum-presets/{preset}   → destroy()
+ *
+ * Subject management lives at:
+ *   /accounting/curriculum-presets/{preset}/subjects  (PresetSubjectController)
  */
 class CurriculumPresetController extends Controller
 {
     /**
      * Display the curriculum preset grid, grouped by course → year level → semester.
-     *
-     * Course filter is applied via query string ?course=...
-     * If no course is selected, all active presets are shown.
      */
     public function index(Request $request): Response
     {
         $selectedCourse = $request->input('course');
 
-        // All distinct courses that have at least one preset (active or inactive)
         $courses = CourseUnitPreset::distinct()
             ->orderBy('course')
             ->pluck('course')
@@ -65,9 +61,6 @@ class CurriculumPresetController extends Controller
                 'lab_subject_count' => (int) $p->lab_subject_count,
                 'is_active'         => (bool) $p->is_active,
                 'subject_count'     => (int) $p->preset_subjects_count,
-                // assessment_count: used for the UX guard warning badge in the UI.
-                // Counts assessments tied to this exact course/year/semester combo.
-                // This is a read-only count — it never gates the edit flow.
                 'assessment_count'  => $this->countLinkedAssessments($p),
             ])
             ->toArray();
@@ -80,14 +73,11 @@ class CurriculumPresetController extends Controller
     }
 
     /**
-     * Create a new course unit preset.
+     * Create a new course unit preset, then immediately redirect to its
+     * subject management page (Decision B1).
      *
-     * Only course + year_level + semester are accepted here.
-     * All unit aggregates (lec_units, lab_units, lab_subject_count) start at 0
-     * and are computed by PresetSubjectController::syncPresetAggregates() when
-     * subjects are added.
-     *
-     * Duplicate guard: one preset per (course, year_level, semester).
+     * Passing 'just_created' in the session allows PresetSubjectController::index()
+     * to surface a "You just created this preset — add your subjects" banner.
      */
     public function store(Request $request)
     {
@@ -108,7 +98,7 @@ class CurriculumPresetController extends Controller
             ]);
         }
 
-        CourseUnitPreset::create([
+        $preset = CourseUnitPreset::create([
             'course'            => $validated['course'],
             'year_level'        => $validated['year_level'],
             'semester'          => $validated['semester'],
@@ -119,30 +109,23 @@ class CurriculumPresetController extends Controller
         ]);
 
         return redirect()
-            ->route('accounting.curriculum-presets.index', ['course' => $validated['course']])
-            ->with('success', "Preset for {$validated['course']} {$validated['year_level']} {$validated['semester']} created. Add subjects to populate it.");
+            ->route('accounting.curriculum-presets.subjects.index', $preset->id)
+            ->with('just_created', true);
     }
 
     /**
-     * Redirect to the PresetSubjects management page for this preset.
+     * Redirect to subject management for this preset.
      *
-     * We reuse the existing PresetSubjects.vue + PresetSubjectController rather
-     * than building a duplicate subject management UI. The show route exists
-     * for consistent URL structure and breadcrumb navigation.
+     * The Index.vue calls subjects.index directly now; this route exists as a
+     * clean fallback for direct URL access (/curriculum-presets/1).
      */
     public function show(CourseUnitPreset $preset)
     {
-        return redirect()->route('accounting.fee-settings.preset-subjects.index', [
-            'preset' => $preset->id,
-        ]);
+        return redirect()->route('accounting.curriculum-presets.subjects.index', $preset->id);
     }
 
     /**
      * Toggle a preset's is_active status.
-     *
-     * This is the only editable field from the CurriculumPreset UI.
-     * Unit aggregates are managed by syncPresetAggregates() in
-     * PresetSubjectController — they are never user-editable.
      */
     public function update(Request $request, CourseUnitPreset $preset)
     {
@@ -157,13 +140,7 @@ class CurriculumPresetController extends Controller
     }
 
     /**
-     * Delete a preset.
-     *
-     * UX guard: deletion is blocked if the preset has linked subjects.
-     * Students who received assessments based on this preset are not affected —
-     * assessment_subjects is a snapshot table and holds its own copies of
-     * subject data. However, blocking on linked subjects prevents orphaning
-     * active curriculum configurations.
+     * Delete a preset. Blocked if it has linked subjects.
      */
     public function destroy(CourseUnitPreset $preset)
     {
@@ -183,12 +160,6 @@ class CurriculumPresetController extends Controller
 
     // ─── Private Helpers ──────────────────────────────────────────────────────
 
-    /**
-     * Count StudentAssessment records that match this preset's course/year/semester.
-     *
-     * Used to show the UX guard badge ("X assessments use this preset") in the
-     * Index view — informational only, not a gate on editing.
-     */
     private function countLinkedAssessments(CourseUnitPreset $preset): int
     {
         return StudentAssessment::where('semester', $preset->semester)
