@@ -74,12 +74,15 @@ class SubjectController extends Controller
         $semesters  = Subject::distinct()->pluck('semester')->sort()->values();
 
         return Inertia::render('Subjects/Index', [
-            'subjects'   => $subjects,
-            'filters'    => $request->only(['course', 'year_level', 'semester', 'search']),
-            'courses'    => $courses,
-            'yearLevels' => $yearLevels,
-            'semesters'  => $semesters,
+            'subjects'    => $subjects,
+            'filters'     => $request->only(['course', 'year_level', 'semester', 'search']),
+            'courses'     => $courses,
+            'yearLevels'  => $yearLevels,
+            'semesters'   => $semesters,
             'canEditNstp' => $this->canEditNstp(),
+            // canCreate: both accounting and admin can create subjects.
+            // canEditNstp is a separate, narrower gate (admin-only) for the NSTP flag.
+            'canCreate'   => $this->canCreate(),
         ]);
     }
 
@@ -248,5 +251,15 @@ class SubjectController extends Controller
     private function canEditNstp(): bool
     {
         return auth()->user()?->role === UserRoleEnum::ADMIN;
+    }
+
+    /**
+     * Both accounting and admin roles may create new subjects.
+     * canEditNstp() is a stricter gate — admin only — for the NSTP classification flag.
+     */
+    private function canCreate(): bool
+    {
+        $role = auth()->user()?->role;
+        return in_array($role, [UserRoleEnum::ADMIN, UserRoleEnum::ACCOUNTING], true);
     }
 }

@@ -159,7 +159,7 @@ function syncFees() {
 
 // ─── Computed totals (Decision F) ─────────────────────────────────────────────
 // "Subject Total" column removed.
-// tfoot: Tuition subtotal | Lab subtotal | + Entrep (flat) | = Grand Total
+// tfoot: Tuition subtotal | Lab subtotal → + Entrep in Lab col → = column totals (no merged sum)
 
 const totalTuition = computed(() =>
     props.linkedSubjects.reduce((s, r) => s + r.tuition_fee, 0)
@@ -172,7 +172,10 @@ const totalLab = computed(() =>
 // Not hardcoded — will reflect if changed in Fee Settings
 const entrepFee = computed(() => props.rates.entrepreneurship_fee)
 
-const grandTotal = computed(() => totalTuition.value + totalLab.value + entrepFee.value)
+// Lab + Entrep combined for the final "Lab Fee" column total.
+// Entrep is shown in the Lab Fee column because CCDI categorises it as
+// "Entrepreneurship / Lab Activation Fee" — part of the lab group.
+const totalLabWithEntrep = computed(() => totalLab.value + entrepFee.value)
 
 const billableSubjects = computed(() =>
     props.linkedSubjects.filter((s) => !s.is_nstp)
@@ -447,34 +450,47 @@ const ratesExpanded = ref(false)
                                 </tr>
                             </tbody>
 
-                            <!-- tfoot: Subtotal | + Entrep | = Total -->
+                            <!--
+                                tfoot layout:
+                                  Row 1: Subject Subtotal — per-subject Tuition | per-subject Lab Fee
+                                  Row 2: + Entrepreneurship/Lab Activation (flat) in Lab Fee column
+                                  Row 3: = Totals — Tuition (unchanged) | Lab + Entrep combined
+                                No single merged grand total — Tuition and Lab Fee remain separate columns.
+                            -->
                             <tfoot v-if="linkedSubjects.length > 0" class="border-t-2 bg-gray-50 text-sm">
+                                <!-- Row 1: per-subject subtotals -->
                                 <tr class="text-gray-700">
-                                    <td colspan="4" class="px-4 py-2.5 font-semibold">Subject Subtotal</td>
-                                    <td class="px-4 py-2.5 text-right font-mono font-semibold">
+                                    <td colspan="4" class="px-4 py-2.5 font-medium text-gray-600">Subject Subtotal</td>
+                                    <td class="px-4 py-2.5 text-right font-mono font-semibold text-gray-800">
                                         {{ formatCurrency(totalTuition) }}
                                     </td>
-                                    <td class="px-4 py-2.5 text-right font-mono font-semibold">
+                                    <td class="px-4 py-2.5 text-right font-mono font-semibold text-gray-800">
                                         {{ formatCurrency(totalLab) }}
                                     </td>
                                     <td></td>
                                 </tr>
+                                <!-- Row 2: + Entrep in Lab Fee column -->
                                 <tr class="text-gray-500 border-t border-gray-100">
-                                    <td colspan="4" class="px-4 py-2 text-xs italic">
+                                    <td colspan="4" class="px-4 py-1.5 text-xs italic text-gray-400">
                                         + Entrepreneurship / Lab Activation Fee
-                                        <span class="not-italic text-gray-400 ml-1">(flat, billed at assessment level)</span>
+                                        <span class="text-gray-300 ml-1">(flat, billed at assessment level)</span>
                                     </td>
-                                    <td colspan="2" class="px-4 py-2 text-right font-mono text-xs text-gray-600">
+                                    <td class="px-4 py-1.5 text-right font-mono text-xs text-gray-400">—</td>
+                                    <td class="px-4 py-1.5 text-right font-mono text-xs text-gray-500">
                                         + {{ formatCurrency(entrepFee) }}
                                     </td>
                                     <td></td>
                                 </tr>
-                                <tr class="border-t-2 border-blue-200 bg-blue-50/50">
-                                    <td colspan="4" class="px-4 py-3 font-bold text-blue-900 text-sm">
-                                        = Total (Tuition + Lab + Entrep)
+                                <!-- Row 3: column totals — Tuition | Lab+Entrep (NO merged grand total) -->
+                                <tr class="border-t-2 border-gray-300 bg-gray-100">
+                                    <td colspan="4" class="px-4 py-3 font-bold text-gray-800 text-sm">
+                                        = Totals
                                     </td>
-                                    <td colspan="2" class="px-4 py-3 text-right font-mono font-bold text-blue-700 text-base">
-                                        {{ formatCurrency(grandTotal) }}
+                                    <td class="px-4 py-3 text-right font-mono font-bold text-gray-900">
+                                        {{ formatCurrency(totalTuition) }}
+                                    </td>
+                                    <td class="px-4 py-3 text-right font-mono font-bold text-gray-900">
+                                        {{ formatCurrency(totalLabWithEntrep) }}
                                     </td>
                                     <td></td>
                                 </tr>

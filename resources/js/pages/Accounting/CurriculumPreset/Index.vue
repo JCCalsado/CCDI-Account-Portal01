@@ -402,7 +402,11 @@ function manageSubjects(preset: Preset) {
             </template>
 
             <!-- Inline create form (Decision E: scroll target) -->
-            <Card v-if="showCreateForm" ref="formRef" class="border-blue-200 bg-blue-50/40 scroll-mt-6">
+            <!-- NOTE: ref must be on a native DOM element, NOT on a Vue component.   -->
+            <!-- Refs on components return the component instance; scrollIntoView()    -->
+            <!-- only exists on HTMLElement. Card doesn't forward its root element.    -->
+            <div v-if="showCreateForm" ref="formRef" class="scroll-mt-6">
+            <Card class="border-blue-200 bg-blue-50/40">
                 <CardHeader class="pb-3">
                     <div class="flex items-center justify-between">
                         <CardTitle class="text-base flex items-center gap-2">
@@ -485,6 +489,7 @@ function manageSubjects(preset: Preset) {
                     </div>
                 </CardContent>
             </Card>
+            </div><!-- /scroll-target -->
         </div>
 
         <!-- ─── Delete Confirmation Modal ─────────────────────────────────── -->
