@@ -780,9 +780,7 @@ onUnmounted(() => {
                                                 class="hover:bg-gray-50"
                                             >
                                                 <td class="px-4 py-3 text-gray-700">{{ item.name }}</td>
-                                                <td class="px-4 py-3 text-center text-gray-500">
-                                                    {{ (item.units !== null && item.units !== undefined) ? item.units : '—' }}
-                                                </td>
+                                                <td class="px-4 py-3 text-center text-gray-400">—</td>
                                                 <td class="px-4 py-3 text-right font-medium text-gray-900">
                                                     {{ formatCurrency(item.amount) }}
                                                 </td>
@@ -803,15 +801,6 @@ onUnmounted(() => {
                                     </table>
                                 </div>
 
-                                <!-- Shortcut to subjects tab -->
-                                <div v-if="hasEnrolledSubjects" class="mt-3 text-right">
-                                    <button
-                                        @click="activeTab = 'subjects'"
-                                        class="text-xs font-medium text-indigo-600 hover:text-indigo-800 hover:underline"
-                                    >
-                                        View enrolled subjects →
-                                    </button>
-                                </div>
                             </template>
                         </div>
 

@@ -115,6 +115,11 @@ class RegistrationApprovalController extends Controller
      * generated and the student must use "Forgot Password" to regain access.
      * The password_hash column is nulled out after the User is created — it has
      * no business living in student_registrations beyond that point.
+     *
+     * DATA COMPLETENESS:
+     * ALL fields collected at registration are mapped to the User record here.
+     * Previously: gender, civil_status, suffix, address_zip, guardian_name,
+     * guardian_contact, emergency_contact were silently dropped. Fixed.
      */
     public function approve(StudentRegistration $registration): RedirectResponse
     {
@@ -137,31 +142,55 @@ class RegistrationApprovalController extends Controller
 
             $usedFallbackPassword = ! $registration->password_hash;
 
-            // ── 3. Create User record ─────────────────────────────────
+            // ── 3. Create User record — ALL registration fields mapped ─
             $user = User::create([
-                'last_name'                 => $registration->last_name,
-                'first_name'                => $registration->first_name,
-                'middle_initial'            => $registration->middle_name
-                                                ? mb_substr($registration->middle_name, 0, 1)
-                                                : null,
-                'email'                     => $registration->email,
-                'password'                  => $passwordHash,
-                'birthday'                  => $registration->birthdate,
-                'phone'                     => $registration->contact_number,
+                // Identity
+                'last_name'         => $registration->last_name,
+                'first_name'        => $registration->first_name,
+                'middle_name'       => $registration->middle_name,
+                // middle_initial is now a computed accessor from middle_name;
+                // we write the raw column here only for legacy compatibility
+                // with code that still reads the column directly.
+                'middle_initial'    => $registration->middle_name
+                                        ? mb_strtoupper(mb_substr($registration->middle_name, 0, 1))
+                                        : null,
+                'suffix'            => $registration->suffix,
+                'gender'            => $registration->gender,
+                'civil_status'      => $registration->civil_status,
+
+                // Auth
+                'email'             => $registration->email,
+                'password'          => $passwordHash,
+                'email_verified_at' => now(), // Accounting has verified identity
+
+                // Contact
+                'phone'             => $registration->contact_number,
+                'birthday'          => $registration->birthdate,
+
+                // Address — all decomposed fields
                 'address_house_lot_unit'    => $registration->address_house,
                 'address_street_name'       => $registration->address_street,
                 'address_barangay'          => $registration->address_barangay,
                 'address_municipality_city' => $registration->address_city,
                 'address_province'          => $registration->address_province,
-                'course'                    => $registration->course,
-                'year_level'                => $registration->year_level,
-                'account_id'                => $accountId,
-                'is_irregular'              => in_array($registration->student_type, ['irregular'], true),
-                'status'                    => User::STATUS_ACTIVE,
-                'role'                      => UserRoleEnum::STUDENT->value,
-                'is_active'                 => true,
-                'email_verified_at'         => now(), // Accounting has verified identity
-                'created_by'                => auth()->id(),
+                'address_zip'               => $registration->address_zip,
+
+                // Guardian / Emergency
+                'guardian_name'     => $registration->guardian_name,
+                'guardian_contact'  => $registration->guardian_contact,
+                'emergency_contact' => $registration->emergency_contact,
+
+                // Academic
+                'course'            => $registration->course,
+                'year_level'        => $registration->year_level,
+                'account_id'        => $accountId,
+                'is_irregular'      => in_array($registration->student_type, ['irregular'], true),
+
+                // System
+                'status'            => User::STATUS_ACTIVE,
+                'role'              => UserRoleEnum::STUDENT->value,
+                'is_active'         => true,
+                'created_by'        => auth()->id(),
             ]);
 
             // ── 4. Create Student record ──────────────────────────────
@@ -202,8 +231,6 @@ class RegistrationApprovalController extends Controller
             }
 
             // ── 8. Warn if fallback password was used ─────────────────
-            // This means the registration pre-dated the password_hash column
-            // (legacy row) or the column was unexpectedly null.
             if ($usedFallbackPassword) {
                 Log::warning('Approval used fallback random password — student must reset via Forgot Password', [
                     'registration_id' => $registration->id,

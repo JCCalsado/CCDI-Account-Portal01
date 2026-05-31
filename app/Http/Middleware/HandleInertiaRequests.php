@@ -92,31 +92,54 @@ class HandleInertiaRequests extends Middleware
             : null;
 
         return [
+            // ── Identity ──────────────────────────────────────────
             'id'              => $user->id,
-            'name'            => $user->name,
+            'name'            => $user->name,          // computed accessor "LAST, First MI."
             'first_name'      => $user->first_name,
             'last_name'       => $user->last_name,
-            'middle_initial'  => $user->middle_initial,
+            'middle_name'     => $user->middle_name,   // full middle name
+            'middle_initial'  => $user->middle_initial, // computed from middle_name or stored fallback
+            'suffix'          => $user->suffix,
+            'gender'          => $user->gender,
+            'civil_status'    => $user->civil_status,
+
+            // ── Auth ──────────────────────────────────────────────
             'email'           => $user->email,
             'role'            => $role,
+            'email_verified_at' => $user->email_verified_at,
+            'is_active'       => $user->is_active,
+
+            // ── Avatar ────────────────────────────────────────────
             'avatar'          => $avatar,
             'profile_picture' => $user->profile_picture,
+
+            // ── Student academic ──────────────────────────────────
             'account_id'      => $user->account_id,
             'course'          => $user->course,
             'year_level'      => $user->year_level,
             'is_irregular'    => $user->is_irregular,
+            'status'          => $user->status,
+
+            // ── Contact ───────────────────────────────────────────
             'birthday'        => $user->birthday?->format('Y-m-d'),
             'phone'           => $user->phone,
+
+            // ── Address ───────────────────────────────────────────
             'address_house_lot_unit'    => $user->address_house_lot_unit,
             'address_street_name'       => $user->address_street_name,
             'address_barangay'          => $user->address_barangay,
             'address_municipality_city' => $user->address_municipality_city,
             'address_province'          => $user->address_province,
+            'address_zip'               => $user->address_zip,
+
+            // ── Guardian / Emergency ──────────────────────────────
+            'guardian_name'     => $user->guardian_name,
+            'guardian_contact'  => $user->guardian_contact,
+            'emergency_contact' => $user->emergency_contact,
+
+            // ── Staff-only ────────────────────────────────────────
             'faculty'         => $user->faculty,
-            'status'          => $user->status,
             'department'      => $user->department,
-            'is_active'       => $user->is_active,
-            'email_verified_at' => $user->email_verified_at,
         ];
     }
 

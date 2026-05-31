@@ -21,7 +21,11 @@ class User extends Authenticatable
     protected $fillable = [
         'last_name',
         'first_name',
-        'middle_initial',
+        'middle_initial',   // Legacy — kept for backward compat with admin/accounting forms
+        'middle_name',      // Full middle name — source of truth when set
+        'suffix',
+        'gender',
+        'civil_status',
         'email',
         'password',
         'birthday',
@@ -30,6 +34,7 @@ class User extends Authenticatable
         'address_barangay',
         'address_municipality_city',
         'address_province',
+        'address_zip',
         'phone',
         'account_id',
         'profile_picture',
@@ -45,6 +50,9 @@ class User extends Authenticatable
         'created_by',
         'updated_by',
         'last_login_at',
+        'guardian_name',
+        'guardian_contact',
+        'emergency_contact',
     ];
 
     protected static function boot(): void
@@ -128,6 +136,25 @@ class User extends Authenticatable
     }
 
     // ========== ACCESSORS ==========
+
+    /**
+     * Computed middle initial.
+     *
+     * Priority: derive from middle_name (full) → fall back to stored middle_initial.
+     * This means records created before this migration continue to work, while
+     * records created/updated after get the correct initial from the full name.
+     */
+    public function getMiddleInitialAttribute(): ?string
+    {
+        // Check the raw DB value for middle_name to avoid infinite recursion
+        $middleName = $this->attributes['middle_name'] ?? null;
+        if ($middleName) {
+            return mb_strtoupper(mb_substr($middleName, 0, 1));
+        }
+
+        // Fall back to the stored column for legacy records
+        return $this->attributes['middle_initial'] ?? null;
+    }
 
     public function getNameAttribute(): string
     {
@@ -239,6 +266,7 @@ class User extends Authenticatable
             'address_barangay'          => 'nullable|string|max:255',
             'address_municipality_city' => 'nullable|string|max:255',
             'address_province'          => 'nullable|string|max:255',
+            'address_zip'               => 'nullable|string|max:10',
             'phone'                     => 'nullable|string|max:20',
             'course'                    => 'nullable|string|max:100',
             'year_level'                => 'nullable|string|max:50',

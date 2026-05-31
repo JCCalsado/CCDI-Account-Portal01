@@ -27,7 +27,12 @@ class ProfileUpdateRequest extends FormRequest
             'name'           => ['nullable', 'string', 'max:255'],
             'last_name'      => ['required', 'string', 'max:100'],
             'first_name'     => ['required', 'string', 'max:100'],
-            'middle_initial' => ['nullable', 'string', 'max:1'],
+            // middle_name replaces middle_initial as the primary editable field.
+            // middle_initial is computed from it via accessor.
+            'middle_name'    => ['nullable', 'string', 'max:100'],
+            'suffix'         => ['nullable', 'string', 'max:20'],
+            'gender'         => ['nullable', 'string', Rule::in(['Male', 'Female', 'Other', 'Prefer not to say'])],
+            'civil_status'   => ['nullable', 'string', Rule::in(['Single', 'Married', 'Widowed', 'Separated'])],
             'email'          => [
                 'required',
                 'string',
@@ -43,9 +48,14 @@ class ProfileUpdateRequest extends FormRequest
             'address_barangay'          => ['nullable', 'string', 'max:255'],
             'address_municipality_city' => ['nullable', 'string', 'max:255'],
             'address_province'          => ['nullable', 'string', 'max:255'],
+            'address_zip'               => ['nullable', 'string', 'max:10'],
+            // Guardian / Emergency — students can update these themselves
+            'guardian_name'     => ['nullable', 'string', 'max:255'],
+            'guardian_contact'  => ['nullable', 'string', 'max:20'],
+            'emergency_contact' => ['nullable', 'string', 'max:255'],
         ];
 
-        // Student-specific rules — now correctly comparing against the Enum value
+        // Student-specific rules
         if ($role === 'student') {
             $rules['account_id'] = [
                 'nullable',
@@ -95,11 +105,18 @@ class ProfileUpdateRequest extends FormRequest
     public function attributes(): array
     {
         return [
-            'last_name'      => 'last name',
-            'first_name'     => 'first name',
-            'middle_initial' => 'middle initial',
-            'account_id'     => 'account ID',
-            'year_level'     => 'year level',
+            'last_name'         => 'last name',
+            'first_name'        => 'first name',
+            'middle_name'       => 'middle name',
+            'suffix'            => 'suffix',
+            'gender'            => 'gender',
+            'civil_status'      => 'civil status',
+            'account_id'        => 'account ID',
+            'year_level'        => 'year level',
+            'address_zip'       => 'ZIP code',
+            'guardian_name'     => 'guardian name',
+            'guardian_contact'  => 'guardian contact',
+            'emergency_contact' => 'emergency contact',
         ];
     }
 

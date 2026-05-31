@@ -6,7 +6,6 @@ use App\Enums\UserRoleEnum;
 use App\Models\Account;
 use App\Models\Student;
 use App\Models\User;
-use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -16,22 +15,17 @@ use Inertia\Inertia;
 /**
  * StudentRegistrationController
  *
- * Handles student account creation and registration within the Student Fees module.
- * Extracted from StudentFeeController to reduce its size and improve maintainability.
+ * Handles student account creation within the Student Fees module (admin-side quick-create).
+ * This is the MINIMAL admin form path — not the full public registration flow.
  *
- * Responsibilities:
- * - createStudent: render the Create Student form
- * - storeStudent: validate and create new student account with User + Student + Account records
- *
- * Dependencies:
- * - None beyond standard Laravel
+ * For full student self-registration see:
+ *   - RegisteredUserController (submission)
+ *   - RegistrationApprovalController (approval → User creation)
  */
 class StudentRegistrationController extends Controller
 {
     /**
      * Show the Create Student form.
-     *
-     * Returns a form Vue page with course list and year level options.
      */
     public function createStudent()
     {
@@ -42,82 +36,79 @@ class StudentRegistrationController extends Controller
     }
 
     /**
-     * Store a newly created student.
+     * Store a newly created student (admin minimal-form path).
      *
      * Creates three related records in a transaction:
-     * 1. User record (auth identity + personal info)
-     * 2. Student record (enrollment tracking)
-     * 3. Account record (financial tracking)
+     *   1. User record (auth identity + personal info)
+     *   2. Student record (enrollment tracking)
+     *   3. Account record (financial tracking)
      *
-     * On success redirects to student fees show page.
-     * On error returns with validation messages.
+     * Account ID format: YYYY-NNNN (same as RegistrationApprovalController).
+     * Default password: "password" — student must change after first login.
      *
-     * BUG FIX #1 (CRITICAL):
-     * Previously Account was only created defensively by AccountService::recalculate()
-     * on first assessment. Now created immediately here so student has account_number
-     * ready for use, not delayed until first fee assignment.
+     * BUG FIXES applied here:
+     *   - address column removed — was dropped in 2026_05_11 migration; now uses decomposed fields
+     *   - STU-XXXXX format replaced with YYYY-NNNN for consistency
+     *   - rand() race condition removed — uses generateUniqueAccountId() with lockForUpdate
      */
     public function storeStudent(Request $request)
     {
         $validated = $request->validate([
-            'last_name'      => 'required|string|max:255',
-            'first_name'     => 'required|string|max:255',
-            'middle_initial' => 'nullable|string|max:10',
-            'email'          => 'required|email|unique:users,email',
-            'birthday'       => 'required|date',
-            'phone'          => 'required|string|max:20',
-            'address'        => 'required|string|max:255',
-            'year_level'     => 'required|string',
-            'course'         => 'required|string',
-            'account_id'     => 'nullable|string|unique:users,account_id',
-            'is_irregular'   => 'nullable|boolean',
+            'last_name'                 => 'required|string|max:255',
+            'first_name'                => 'required|string|max:255',
+            'middle_initial'            => 'nullable|string|max:10',
+            'email'                     => 'required|email|unique:users,email',
+            'birthday'                  => 'required|date',
+            'phone'                     => 'required|string|max:20',
+            // Decomposed address — mirrors the users table schema after 2026_05_11 migration
+            'address_house_lot_unit'    => 'nullable|string|max:255',
+            'address_street_name'       => 'nullable|string|max:255',
+            'address_barangay'          => 'nullable|string|max:255',
+            'address_municipality_city' => 'nullable|string|max:255',
+            'address_province'          => 'nullable|string|max:255',
+            'year_level'                => 'required|string',
+            'course'                    => 'required|string',
+            'is_irregular'              => 'nullable|boolean',
         ]);
 
         DB::beginTransaction();
         try {
-            $currentYear = date('Y');
-            $randomNum   = str_pad(rand(1, 9999), 4, '0', STR_PAD_LEFT);
-            $studentId   = "{$currentYear}-{$randomNum}";
-
-            // BUG FIX #5: Use DB::transaction with lockForUpdate() instead of unbounded loop.
-            // Previous approach: loop until collision detection — vulnerable to repeated
-            // collisions under high concurrency (100k+ attempts possible).
-            // New approach: single row lock prevents race condition entirely.
-            while (Student::where('student_id', $studentId)->exists()) {
-                $randomNum = str_pad(rand(1, 9999), 4, '0', STR_PAD_LEFT);
-                $studentId = "{$currentYear}-{$randomNum}";
-            }
-
             $accountId = $this->generateUniqueAccountId();
+            $year      = now()->year;
+
+            // Student ID mirrors the account ID for this path
+            $studentId = $accountId;
 
             $user = User::create([
-                'last_name'         => $validated['last_name'],
-                'first_name'        => $validated['first_name'],
-                'middle_initial'    => $validated['middle_initial'] ?? null,
-                'email'             => $validated['email'],
-                'birthday'          => $validated['birthday'],
-                'phone'             => $validated['phone'],
-                'address'           => $validated['address'],
-                'year_level'        => $validated['year_level'],
-                'course'            => $validated['course'],
-                'account_id'        => $accountId,
-                'role'              => UserRoleEnum::STUDENT->value,
-                'is_irregular'      => $validated['is_irregular'] ?? false,
-                'is_active'         => true,
-                'status'            => User::STATUS_ACTIVE,
-                'email_verified_at' => now(),
-                'password'          => Hash::make('password'),
+                'last_name'                 => $validated['last_name'],
+                'first_name'                => $validated['first_name'],
+                'middle_initial'            => $validated['middle_initial'] ?? null,
+                'email'                     => $validated['email'],
+                'birthday'                  => $validated['birthday'],
+                'phone'                     => $validated['phone'],
+                'address_house_lot_unit'    => $validated['address_house_lot_unit'] ?? null,
+                'address_street_name'       => $validated['address_street_name'] ?? null,
+                'address_barangay'          => $validated['address_barangay'] ?? null,
+                'address_municipality_city' => $validated['address_municipality_city'] ?? null,
+                'address_province'          => $validated['address_province'] ?? 'Sorsogon',
+                'year_level'                => $validated['year_level'],
+                'course'                    => $validated['course'],
+                'account_id'                => $accountId,
+                'role'                      => UserRoleEnum::STUDENT->value,
+                'is_irregular'              => $validated['is_irregular'] ?? false,
+                'is_active'                 => true,
+                'status'                    => User::STATUS_ACTIVE,
+                'email_verified_at'         => now(),
+                'password'                  => Hash::make('password'),
+                'created_by'                => auth()->id(),
             ]);
 
             Student::create([
                 'user_id'           => $user->id,
                 'student_id'        => $studentId,
-                'enrollment_status' => 'pending',
+                'enrollment_status' => 'active',
             ]);
 
-            // BUG FIX #1: Create Account record immediately
-            // Previously, Account was only created defensively by AccountService::recalculate()
-            // on first assessment. Now create it here so student has account_number immediately.
             Account::create([
                 'user_id'        => $user->id,
                 'account_number' => Account::generateAccountNumber(),
@@ -143,37 +134,51 @@ class StudentRegistrationController extends Controller
     }
 
     /**
-     * Helper: Get all available courses.
+     * Generate a unique YYYY-NNNN account ID.
      *
-     * Reads from a hardcoded list. This should be moved to a config or database
-     * table (Courses model) in a future refactor.
-     */
-    private function allCourses(): array
-    {
-        return [
-            'BS Information Technology',
-            'BS Computer Science',
-            'BS Electronics and Communications Engineering',
-            'BS Electrical Engineering',
-            'BS Mechanical Engineering',
-            'BS Civil Engineering',
-            'BS Business Administration',
-            'BS Accounting Information Systems',
-        ];
-    }
-
-    /**
-     * Helper: Generate a unique account ID (STU-xxxxx format).
+     * Uses lockForUpdate() to prevent race conditions under concurrent requests.
+     * Matches the format used by RegistrationApprovalController::generateUniqueAccountId().
      *
-     * Keeps generating random 5-digit numbers until an unused one is found.
-     * Account IDs are visible to students and used for authentication recovery.
+     * NOTE: This duplicates the logic in RegistrationApprovalController.
+     * Ideal future state: extract to an AccountIdService or trait.
      */
     private function generateUniqueAccountId(): string
     {
-        do {
-            $accountId = 'STU-' . str_pad(rand(10000, 99999), 5, '0', STR_PAD_LEFT);
-        } while (User::where('account_id', $accountId)->exists());
+        $year = now()->year;
+
+        $last = User::where('account_id', 'like', "{$year}-%")
+            ->lockForUpdate()
+            ->orderByRaw('CAST(SUBSTRING(account_id, 6) AS UNSIGNED) DESC')
+            ->first();
+
+        $lastNumber = $last ? intval(substr($last->account_id, -4)) : 0;
+        $newNumber  = str_pad($lastNumber + 1, 4, '0', STR_PAD_LEFT);
+        $accountId  = "{$year}-{$newNumber}";
+
+        $attempts = 0;
+        while (User::where('account_id', $accountId)->exists() && $attempts < 20) {
+            $lastNumber++;
+            $newNumber = str_pad($lastNumber + 1, 4, '0', STR_PAD_LEFT);
+            $accountId = "{$year}-{$newNumber}";
+            $attempts++;
+        }
+
+        if ($attempts >= 20) {
+            throw new \RuntimeException('Unable to generate a unique account ID after 20 attempts.');
+        }
 
         return $accountId;
+    }
+
+    private function allCourses(): array
+    {
+        return [
+            'Associate in Computer Technology - Networking',
+            'BS Computer Science',
+            'BS Information Technology',
+            'BS Information Systems',
+            'BS Engineering Technology - Electronics',
+            'BS Engineering Technology - Electrical',
+        ];
     }
 }
