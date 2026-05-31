@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Accounting\CurriculumPresetController;
 use App\Http\Controllers\Accounting\FinancialReportsController;
 use App\Http\Controllers\Accounting\FeeSettingsController;
 use App\Http\Controllers\Accounting\PresetSubjectController;
@@ -163,11 +164,16 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
     Route::get('/financial-reports/student-history', [FinancialReportsController::class, 'studentTransactionHistory'])->name('accounting.financial-reports.student-history');
     Route::get('/financial-reports/student-receipt', [FinancialReportsController::class, 'downloadStudentReceipt'])->name('accounting.financial-reports.student-receipt');
 
+    // ── Fee Settings ─────────────────────────────────────────────────────────
     Route::get('/fee-settings', [FeeSettingsController::class, 'index'])->name('accounting.fee-settings.index');
     Route::patch('/fee-settings/{feeSetting}', [FeeSettingsController::class, 'update'])->name('accounting.fee-settings.update');
     Route::post('/fee-settings/bulk', [FeeSettingsController::class, 'bulkUpdate'])->name('accounting.fee-settings.bulk');
     Route::post('/fee-settings', [FeeSettingsController::class, 'store'])->name('accounting.fee-settings.store');
     Route::delete('/fee-settings/{feeSetting}', [FeeSettingsController::class, 'destroy'])->name('accounting.fee-settings.destroy');
+
+    // ── Fee Settings — Preset CRUD (alias routes for FeeSettings.vue) ────────
+    // These route names are kept intact so FeeSettings.vue requires no changes.
+    // The methods now live in FeeSettingsController with has_nstp references removed.
     Route::post('/fee-settings/presets', [FeeSettingsController::class, 'storePreset'])->name('accounting.fee-settings.presets.store');
     Route::patch('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'updatePreset'])->name('accounting.fee-settings.presets.update');
     Route::delete('/fee-settings/presets/{preset}', [FeeSettingsController::class, 'destroyPreset'])->name('accounting.fee-settings.presets.destroy');
@@ -180,6 +186,20 @@ Route::middleware(['auth', 'verified', 'role:accounting,admin'])->prefix('accoun
             Route::post('/',                  [PresetSubjectController::class, 'store'])  ->name('store');
             Route::delete('/{presetSubject}', [PresetSubjectController::class, 'destroy'])->name('destroy');
             Route::post('/sync',              [PresetSubjectController::class, 'sync'])   ->name('sync');
+        });
+
+    // ── Curriculum Preset Registry ───────────────────────────────────────────
+    // New dedicated page for managing course_unit_presets.
+    // Routes are separate from fee-settings/* so the Curriculum Preset page
+    // can live at /accounting/curriculum-presets independently.
+    Route::prefix('curriculum-presets')
+        ->name('accounting.curriculum-presets.')
+        ->group(function () {
+            Route::get('/',            [CurriculumPresetController::class, 'index'])  ->name('index');
+            Route::post('/',           [CurriculumPresetController::class, 'store'])  ->name('store');
+            Route::get('/{preset}',    [CurriculumPresetController::class, 'show'])   ->name('show');
+            Route::patch('/{preset}',  [CurriculumPresetController::class, 'update']) ->name('update');
+            Route::delete('/{preset}', [CurriculumPresetController::class, 'destroy'])->name('destroy');
         });
 
     // ── Subject Registry ─────────────────────────────────────────────────────

@@ -20,16 +20,30 @@ class FeeSettingsController extends Controller
         $miscTotal = FeeSetting::whereIn('category', ['miscellaneous', 'other'])
             ->where('is_active', true)->sum('amount');
 
+        // NOTE: has_nstp column was dropped (migration 2026_05_30_195021).
+        // total_units is now lec_units + lab_units only.
+        // The Subjects page (PresetSubjects.vue) derives NSTP presence
+        // per-subject from subject.is_nstp — no preset-level flag needed.
         $presets = CourseUnitPreset::where('is_active', true)
+            ->withCount('presetSubjects')
             ->orderBy('course')
             ->orderByRaw("FIELD(year_level, '1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year')")
             ->orderByRaw("FIELD(semester, '1st Sem', '2nd Sem', 'Summer')")
             ->get()
-            ->map(fn($p) => array_merge($p->toArray(), [
-                // Include NSTP's fixed 1.5 billing units in the displayed total
-                // when has_nstp is true. This matches how billing is calculated.
-                'total_units' => $p->lec_units + $p->lab_units + ($p->has_nstp ? 1.5 : 0),
-            ]))->toArray();
+            ->map(fn($p) => [
+                'id'                   => $p->id,
+                'course'               => $p->course,
+                'year_level'           => $p->year_level,
+                'semester'             => $p->semester,
+                'lec_units'            => (int) $p->lec_units,
+                'lab_units'            => (int) $p->lab_units,
+                'lab_subject_count'    => (int) $p->lab_subject_count,
+                'is_active'            => (bool) $p->is_active,
+                'subject_count'        => (int) $p->preset_subjects_count,
+                // total_units: lec + lab. NSTP detection is per-subject only.
+                'total_units'          => (int) $p->lec_units + (int) $p->lab_units,
+            ])
+            ->toArray();
 
         $existingCourses = CourseUnitPreset::distinct()
             ->orderBy('course')
@@ -134,7 +148,18 @@ class FeeSettingsController extends Controller
         return back()->with('success', 'Fee settings saved successfully.');
     }
 
-    // ─── Course Unit Presets ───────────────────────────────────────────────────
+    // ─── Course Unit Preset CRUD (alias methods) ──────────────────────────────
+    //
+    // These three methods are kept as route aliases for backward compatibility
+    // with FeeSettings.vue, which calls accounting.fee-settings.presets.* routes.
+    //
+    // The authoritative implementation now lives in CurriculumPresetController.
+    // Both sets of routes point to the same logic so FeeSettings.vue needs no
+    // changes and the new CurriculumPreset page works independently.
+    //
+    // has_nstp: dropped from course_unit_presets table. Removed from all
+    // validation and write paths here. NSTP is now tracked per-subject via
+    // subjects.is_nstp and is derived automatically by syncPresetAggregates().
 
     public function storePreset(Request $request)
     {
@@ -145,7 +170,6 @@ class FeeSettingsController extends Controller
             'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
             'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
             'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
-            'has_nstp'          => ['boolean'],
         ]);
 
         $exists = CourseUnitPreset::where('course', $validated['course'])
@@ -159,10 +183,7 @@ class FeeSettingsController extends Controller
             ]);
         }
 
-        CourseUnitPreset::create(array_merge($validated, [
-            'has_nstp'  => (bool) ($validated['has_nstp'] ?? false),
-            'is_active' => true,
-        ]));
+        CourseUnitPreset::create(array_merge($validated, ['is_active' => true]));
 
         return back()->with('success', "Preset for {$validated['course']} {$validated['year_level']} {$validated['semester']} created.");
     }
@@ -173,7 +194,6 @@ class FeeSettingsController extends Controller
             'lec_units'         => ['required', 'integer', 'min:0', 'max:30'],
             'lab_units'         => ['required', 'integer', 'min:0', 'max:30'],
             'lab_subject_count' => ['required', 'integer', 'min:0', 'max:15'],
-            'has_nstp'          => ['required', 'boolean'],
         ]);
 
         $preset->update($validated);
@@ -186,6 +206,8 @@ class FeeSettingsController extends Controller
         $preset->update(['is_active' => false]);
         return back()->with('success', "Preset for {$label} deactivated.");
     }
+
+    // ─── Private Helpers ──────────────────────────────────────────────────────
 
     private function validateTermPercentages(string $updatedKey, float $newValue): void
     {
