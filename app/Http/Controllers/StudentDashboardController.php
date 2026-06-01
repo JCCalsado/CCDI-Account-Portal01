@@ -17,18 +17,12 @@ class StudentDashboardController extends Controller
         $user = $request->user();
 
         // ── Account ───────────────────────────────────────────────────────────
-        // Registration creates the Account row. This guard exists only for
-        // accounts created by admin outside of the registration flow.
-        // We intentionally do NOT load the transactions relation here —
-        // Vue only needs the balance scalar.
         $account = $user->account()->firstOrCreate(
             ['user_id' => $user->id],
             ['balance' => 0]
         );
 
         // ── Latest assessment + payment terms ─────────────────────────────────
-        // Source of truth for balances. Eager-load paymentTerms in ONE query,
-        // then sort the already-loaded collection in PHP — no second DB call.
         $latestAssessment = StudentAssessment::where('user_id', $user->id)
             ->with(['paymentTerms' => fn ($q) => $q->orderBy('term_order')])
             ->latest('created_at')
@@ -38,17 +32,25 @@ class StudentDashboardController extends Controller
         $remainingBalance = 0;
 
         if ($latestAssessment) {
-            $paymentTerms     = $latestAssessment->paymentTerms; // already loaded — no extra query
+            $paymentTerms     = $latestAssessment->paymentTerms;
             $remainingBalance = $paymentTerms->sum('balance');
         }
 
         // ── Financial aggregates ─────────────────────────────────────────────
-        // kind='charge' transactions are no longer created. Derive totals from
-        // StudentAssessment and StudentPaymentTerm — the real source of truth.
-        $totalPayments = $user->transactions()
-            ->where('kind', 'payment')
-            ->where('status', 'paid')
-            ->sum('amount');
+        // Scope total_paid to the CURRENT assessment only.
+        // We join through student_payment_terms to pin paid transactions
+        // to the active assessment — not all-time history.
+        $totalPayments = 0;
+
+        if ($latestAssessment) {
+            // Sum all paid transactions for this assessment.
+            // Scope to transactions created on or after the assessment was created.
+            $totalPayments = $user->transactions()
+                ->where('kind', 'payment')
+                ->where('status', 'paid')
+                ->where('created_at', '>=', $latestAssessment->created_at)
+                ->sum('amount');
+        }
 
         // Fallback: if no payment terms loaded, sum all active term balances directly.
         if ($paymentTerms->isEmpty()) {
@@ -58,7 +60,7 @@ class StudentDashboardController extends Controller
             )->sum('balance');
         }
 
-        // Pending charges = unpaid payment terms (replaces pending charge transactions).
+        // Pending charges = unpaid payment terms.
         $pendingChargesCount = $latestAssessment
             ? $latestAssessment->paymentTerms->filter(
                 fn ($t) => in_array($t->status, \App\Enums\PaymentStatus::unpaidValues())
@@ -66,9 +68,6 @@ class StudentDashboardController extends Controller
             : 0;
 
         // ── Notifications ─────────────────────────────────────────────────────
-        // distinct() prevents duplicate rows that can appear when a student matches
-        // multiple OR branches in scopeForUser (e.g. direct user_id + JSON user_ids,
-        // or when term_ids contains multiple IDs that each satisfy the subquery).
         $notifications = Notification::active()
             ->forUser($user->id)
             ->withinDateRange()
@@ -78,29 +77,24 @@ class StudentDashboardController extends Controller
             ->take(10)
             ->get()
             ->map(fn ($n) => [
-                'id'              => $n->id,
-                'title'           => $n->title,
-                'message'         => $n->message,
-                'type'            => $n->type,
-                'start_date'      => $n->start_date,
-                'end_date'        => $n->end_date,
-                'due_date'        => $n->due_date,
-                'payment_term_id' => $n->payment_term_id,
-                'target_role'     => $n->target_role,
-                'is_active'       => $n->is_active,
-                'is_complete'     => $n->is_complete,
-                'dismissed_at'    => $n->dismissed_at,
-                'created_at'      => $n->created_at,
+                'id'               => $n->id,
+                'title'            => $n->title,
+                'message'          => $n->message,
+                'type'             => $n->type,
+                'start_date'       => $n->start_date,
+                'end_date'         => $n->end_date,
+                'due_date'         => $n->due_date,
+                'payment_term_id'  => $n->payment_term_id,
+                // ↓ Exposes the canonical term name set by Accounting
+                'target_term_name' => $n->target_term_name,
+                'target_role'      => $n->target_role,
+                'is_active'        => $n->is_active,
+                'is_complete'      => $n->is_complete,
+                'dismissed_at'     => $n->dismissed_at,
+                'created_at'       => $n->created_at,
             ]);
 
         // ── Recent transactions ───────────────────────────────────────────────
-        // Only show payment transactions — kind='charge' (ASMT- assessment debit
-        // entries) are internal ledger rows, not cashier receipts. They must not
-        // appear in the student-facing "Recent Transactions" widget.
-        //
-        // or_number  — cashier-assigned OR number for cash/manual payments.
-        // payment_channel — how the payment was made (cash, gcash, bank_transfer, etc.)
-        // Both are used by Vue to decide what label and value to show as the reference.
         $recentTransactions = $user->transactions()
             ->where('kind', 'payment')
             ->orderByDesc('created_at')
@@ -118,12 +112,14 @@ class StudentDashboardController extends Controller
             ]);
 
         // ── Payment reminders ─────────────────────────────────────────────────
+        // Kept for data availability (AccountOverview, etc.) but no longer
+        // rendered on the student dashboard.
         $paymentReminders = PaymentReminder::where('user_id', $user->id)
             ->where('status', '!=', PaymentReminder::STATUS_DISMISSED)
             ->orderByDesc('created_at')
             ->limit(10)
             ->get()
-            ->unique(fn ($r) => $r->metadata['transaction_id'] ?? $r->id) // collapse duplicates by transaction
+            ->unique(fn ($r) => $r->metadata['transaction_id'] ?? $r->id)
             ->values()
             ->map(fn ($r) => [
                 'id'                  => $r->id,
@@ -145,7 +141,6 @@ class StudentDashboardController extends Controller
             : 0;
 
         return Inertia::render('Student/Dashboard', [
-            // Only scalar — no transaction relation serialised over the wire
             'account' => [
                 'balance' => (float) $account->balance,
             ],

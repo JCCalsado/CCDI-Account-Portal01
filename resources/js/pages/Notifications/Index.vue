@@ -31,6 +31,7 @@ type Notification = {
     end_date: string | null;
     due_date: string | null;
     payment_term_id: number | null;
+    target_term_name: string | null;
     target_role: string;
     is_active: boolean;
     is_complete: boolean;
@@ -95,23 +96,15 @@ const visibleActive = computed(() =>
 );
 
 // ─── Type config ──────────────────────────────────────────────────────────
-//
-// Covers all 9 types the backend can produce. Previously only 4 were handled;
-// payment_approved/rejected/deadline/warning/reminder/announcement all fell
-// through to generic blue — losing urgency, colour coding, and due-date banners.
 
 type TypeConfig = {
     label: string;
     icon: any;
-    // card
     borderClass: string;
     bgClass: string;
-    // icon
     iconBgClass: string;
     iconClass: string;
-    // badge
     badgeClass: string;
-    // urgency rank (lower = shown first)
     priority: number;
 };
 
@@ -212,7 +205,6 @@ function cfg(type: NotificationType): TypeConfig {
     return typeConfig[type ?? 'general'] ?? typeConfig.general;
 }
 
-// Types that carry a due date — gates the urgency banner and Pay Now button
 const DUE_DATE_TYPES: NotificationType[] = ['payment_due', 'payment_due_notice', 'deadline'];
 
 function hasDueDate(type: NotificationType): boolean {
@@ -237,13 +229,11 @@ const infoCount = computed(() =>
     ).length,
 );
 
-// Sort active notifications: urgent first, then by due_date proximity, then created_at
 const sortedActive = computed(() =>
     [...visibleActive.value].sort((a, b) => {
         const pa = cfg(a.type).priority;
         const pb = cfg(b.type).priority;
         if (pa !== pb) return pa - pb;
-        // Within same priority: nearest due date first
         if (a.due_date && b.due_date) {
             return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
         }
@@ -291,7 +281,6 @@ const dueDaysUrgencyClass = (dueDateStr: string | null): string => {
     return 'bg-green-100 text-green-700 ring-1 ring-green-200';
 };
 
-// Counts
 const totalCount = computed(() => props.active.length + props.history.length);
 const hasUnread  = computed(() => visibleActive.value.length > 0);
 </script>
@@ -300,11 +289,12 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
     <AppLayout>
         <Head title="Notifications" />
 
-        <div class="mx-auto max-w-3xl p-6">
+        <!-- Full-width container matching Student/Dashboard.vue layout -->
+        <div class="w-full space-y-5 p-6">
             <Breadcrumbs :items="breadcrumbs" />
 
             <!-- ── Page Header ───────────────────────────────────────────── -->
-            <div class="mb-6 flex items-center justify-between">
+            <div class="flex items-center justify-between">
                 <div class="flex items-center gap-3">
                     <div class="rounded-2xl bg-blue-100 p-3 shadow-sm">
                         <Bell :size="22" class="text-blue-600" />
@@ -341,7 +331,7 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
             <!-- ── Summary Bar ───────────────────────────────────────────── -->
             <div
                 v-if="visibleActive.length > 0"
-                class="mb-6 grid grid-cols-3 gap-3"
+                class="grid grid-cols-3 gap-3"
             >
                 <div
                     :class="[
@@ -390,310 +380,287 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
                 </div>
             </div>
 
-            <!-- ── ACTIVE NOTIFICATIONS ──────────────────────────────────── -->
-            <section class="mb-8">
-                <TransitionGroup name="notification" tag="div" class="space-y-3">
-                    <div
-                        v-for="n in sortedActive"
-                        :key="n.id"
-                        :class="[
-                            'rounded-2xl border-2 shadow-sm transition-all overflow-hidden',
-                            cfg(n.type).borderClass,
-                            cfg(n.type).bgClass,
-                        ]"
-                    >
-                        <!-- Card body -->
-                        <div class="p-5">
-                            <!-- Icon + type badge + dismiss button -->
-                            <div class="mb-3 flex items-start gap-3">
-                                <!-- Icon avatar -->
-                                <div
-                                    :class="[
-                                        'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl',
-                                        cfg(n.type).iconBgClass,
-                                    ]"
-                                >
-                                    <component
-                                        :is="cfg(n.type).icon"
-                                        :size="18"
-                                        :class="cfg(n.type).iconClass"
-                                    />
-                                </div>
+            <!-- ── Content: 2-column on large screens ────────────────────── -->
+            <!-- Active notifications expand into the full width.               -->
+            <!-- On lg+, active fills the left 2/3 and history takes the right. -->
+            <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
 
-                                <div class="min-w-0 flex-1">
-                                    <!-- Type label -->
-                                    <span
+                <!-- ── ACTIVE NOTIFICATIONS (left 2/3) ──────────────────── -->
+                <section class="lg:col-span-2">
+                    <TransitionGroup name="notification" tag="div" class="space-y-3">
+                        <div
+                            v-for="n in sortedActive"
+                            :key="n.id"
+                            :class="[
+                                'rounded-2xl border-2 shadow-sm transition-all overflow-hidden',
+                                cfg(n.type).borderClass,
+                                cfg(n.type).bgClass,
+                            ]"
+                        >
+                            <!-- Card body -->
+                            <div class="p-5">
+                                <!-- Icon + type badge + dismiss button -->
+                                <div class="mb-3 flex items-start gap-3">
+                                    <!-- Icon avatar -->
+                                    <div
                                         :class="[
-                                            'mb-1 inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold',
-                                            cfg(n.type).badgeClass,
+                                            'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl',
+                                            cfg(n.type).iconBgClass,
                                         ]"
                                     >
-                                        {{ cfg(n.type).label }}
-                                    </span>
-                                    <!-- Title -->
-                                    <h3 class="text-base font-bold leading-snug text-gray-900">
-                                        {{ n.title }}
-                                    </h3>
+                                        <component
+                                            :is="cfg(n.type).icon"
+                                            :size="18"
+                                            :class="cfg(n.type).iconClass"
+                                        />
+                                    </div>
+
+                                    <div class="min-w-0 flex-1">
+                                        <div class="mb-1 flex flex-wrap items-center gap-2">
+                                            <!-- Type label badge -->
+                                            <span
+                                                :class="[
+                                                    'inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold',
+                                                    cfg(n.type).badgeClass,
+                                                ]"
+                                            >
+                                                {{ cfg(n.type).label }}
+                                            </span>
+                                            <!-- Term name pill — for payment_approved / payment_rejected -->
+                                            <span
+                                                v-if="n.target_term_name && (n.type === 'payment_approved' || n.type === 'payment_rejected' || n.type === 'payment_due' || n.type === 'payment_due_notice')"
+                                                class="inline-flex items-center gap-1 rounded-full bg-white/70 px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-300"
+                                            >
+                                                {{ n.target_term_name }}
+                                            </span>
+                                        </div>
+                                        <!-- Title -->
+                                        <h3 class="text-base font-bold leading-snug text-gray-900">
+                                            {{ n.title }}
+                                        </h3>
+                                    </div>
+
+                                    <!-- Dismiss button -->
+                                    <button
+                                        @click="dismiss(n.id)"
+                                        :disabled="dismissForm.processing"
+                                        class="ml-1 flex-shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-black/10 hover:text-gray-700 disabled:opacity-40"
+                                        title="Dismiss"
+                                    >
+                                        <XCircle :size="16" />
+                                    </button>
                                 </div>
 
-                                <!-- Dismiss button -->
-                                <button
-                                    @click="dismiss(n.id)"
-                                    :disabled="dismissForm.processing"
-                                    class="ml-1 flex-shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-black/10 hover:text-gray-700 disabled:opacity-40"
-                                    title="Dismiss"
-                                >
-                                    <XCircle :size="16" />
-                                </button>
-                            </div>
-
-                            <!-- Message body -->
-                            <p
-                                v-if="n.message"
-                                class="mb-4 pl-12 text-sm leading-relaxed whitespace-pre-line text-gray-700"
-                            >
-                                {{ n.message }}
-                            </p>
-
-                            <!-- Due date urgency pill — payment_due / deadline / payment_due_notice -->
-                            <div v-if="n.due_date && hasDueDate(n.type)" class="mb-4 pl-12">
-                                <span
-                                    :class="[
-                                        'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold',
-                                        dueDaysUrgencyClass(n.due_date),
-                                    ]"
-                                >
-                                    <CalendarClock :size="12" />
-                                    {{ dueDaysLabel(n.due_date) }}
-                                    <span class="font-normal opacity-80">· {{ formatDate(n.due_date) }}</span>
-                                </span>
-                            </div>
-
-                            <!-- Payment approved / rejected confirmation line -->
-                            <div
-                                v-if="n.type === 'payment_approved'"
-                                class="mb-4 pl-12"
-                            >
-                                <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200">
-                                    <CheckCircle2 :size="12" />
-                                    Payment Verified &amp; Applied
-                                </span>
-                            </div>
-
-                            <div
-                                v-if="n.type === 'payment_rejected'"
-                                class="mb-4 pl-12"
-                            >
-                                <span class="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-800 ring-1 ring-red-200">
-                                    <XCircle :size="12" />
-                                    Payment Rejected — Action Required
-                                </span>
-                            </div>
-                        </div>
-
-                        <!-- Footer strip -->
-                        <div
-                            class="flex flex-wrap items-center justify-between gap-2 border-t border-black/10 bg-black/[0.025] px-5 py-3"
-                        >
-                            <!-- Date range -->
-                            <div class="flex flex-wrap gap-3 text-xs text-gray-500">
-                                <span
-                                    v-if="n.start_date"
-                                    class="flex items-center gap-1"
-                                >
-                                    <Calendar :size="11" />
-                                    {{ formatDate(n.start_date) }}
-                                    <span v-if="n.end_date"> – {{ formatDate(n.end_date) }}</span>
-                                </span>
-                                <span
-                                    v-else
-                                    class="flex items-center gap-1 text-gray-400"
-                                >
-                                    <Clock :size="11" />
-                                    {{ formatRelative(n.created_at) }}
-                                </span>
-                            </div>
-
-                            <!-- Actions -->
-                            <div class="flex items-center gap-2">
-                                <!-- Pay Now — only for due-date types with a linked term -->
-                                <a
-                                    v-if="hasDueDate(n.type) && n.payment_term_id"
-                                    :href="route('student.account')"
-                                    class="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
-                                >
-                                    Pay Now →
-                                </a>
-
-                                <!-- View account for approved payments -->
-                                <a
-                                    v-if="n.type === 'payment_approved'"
-                                    :href="route('student.account')"
-                                    class="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
-                                >
-                                    View Account →
-                                </a>
-
-                                <!-- Resubmit for rejected payments -->
-                                <a
-                                    v-if="n.type === 'payment_rejected'"
-                                    :href="route('payment.create')"
-                                    class="rounded-lg bg-red-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-red-700"
-                                >
-                                    Resubmit Payment →
-                                </a>
-
-                                <!-- Dismiss -->
-                                <button
-                                    @click="dismiss(n.id)"
-                                    :disabled="dismissForm.processing"
-                                    class="rounded-lg border border-black/15 bg-white/70 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-white disabled:opacity-40"
-                                >
-                                    Dismiss
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </TransitionGroup>
-
-                <!-- ── Empty states ────────────────────────────────────────── -->
-                <!-- All caught up (no history either) -->
-                <div
-                    v-if="visibleActive.length === 0 && history.length === 0"
-                    class="rounded-2xl border-2 border-dashed border-gray-200 py-20 text-center"
-                >
-                    <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-100">
-                        <BellOff :size="28" class="text-gray-400" />
-                    </div>
-                    <p class="text-lg font-semibold text-gray-600">You're all caught up</p>
-                    <p class="mt-1 text-sm text-gray-400">No active notifications at this time.</p>
-                </div>
-
-                <!-- Active dismissed, history exists -->
-                <div
-                    v-else-if="visibleActive.length === 0"
-                    class="rounded-2xl border-2 border-dashed border-gray-200 py-10 text-center"
-                >
-                    <Bell :size="28" class="mx-auto mb-2 text-gray-300" />
-                    <p class="text-sm font-medium text-gray-400">No active notifications</p>
-                    <p class="mt-1 text-xs text-gray-400">Check your notification history below.</p>
-                </div>
-            </section>
-
-            <!-- ── HISTORY ──────────────────────────────────────────────── -->
-            <section v-if="history.length">
-                <div class="mb-4 flex items-center gap-3">
-                    <div class="h-px flex-1 bg-gradient-to-r from-transparent to-gray-200" />
-                    <h2 class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                        <Clock :size="12" />
-                        Past Notifications ({{ history.length }})
-                    </h2>
-                    <div class="h-px flex-1 bg-gradient-to-l from-transparent to-gray-200" />
-                </div>
-
-                <div class="space-y-2">
-                    <div
-                        v-for="n in history"
-                        :key="n.id"
-                        class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-all hover:shadow-md"
-                    >
-                        <!-- Always-visible summary row -->
-                        <button
-                            type="button"
-                            class="flex w-full select-none items-start gap-3 p-4 text-left transition-colors hover:bg-gray-50"
-                            @click="toggleHistory(n.id)"
-                        >
-                            <!-- Type icon (greyed out for history) -->
-                            <div class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-gray-100">
-                                <component
-                                    :is="cfg(n.type).icon"
-                                    :size="15"
-                                    class="text-gray-400"
-                                />
-                            </div>
-
-                            <div class="min-w-0 flex-1">
-                                <div class="mb-0.5 flex flex-wrap items-center gap-2">
-                                    <!-- Type badge — muted for history -->
-                                    <span class="inline-block rounded-md bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-500">
-                                        {{ cfg(n.type).label }}
-                                    </span>
-                                    <!-- Disposition pill -->
-                                    <span
-                                        v-if="n.dismissed_at"
-                                        class="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-400"
-                                    >
-                                        Dismissed
-                                    </span>
-                                    <span
-                                        v-else-if="n.is_complete"
-                                        class="rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-600"
-                                    >
-                                        Completed
-                                    </span>
-                                    <span
-                                        v-else
-                                        class="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-400"
-                                    >
-                                        Expired
-                                    </span>
-                                </div>
-                                <p class="truncate text-sm font-medium text-gray-600">{{ n.title }}</p>
-                            </div>
-
-                            <div class="flex flex-shrink-0 items-center gap-2">
-                                <span class="text-xs text-gray-400">
-                                    {{ formatRelative(n.dismissed_at ?? n.created_at) }}
-                                </span>
-                                <component
-                                    :is="isHistoryExpanded(n.id) ? ChevronUp : ChevronDown"
-                                    :size="14"
-                                    class="text-gray-400"
-                                />
-                            </div>
-                        </button>
-
-                        <!-- Expandable detail panel -->
-                        <Transition name="expand">
-                            <div
-                                v-if="isHistoryExpanded(n.id)"
-                                class="border-t border-gray-100 bg-gray-50/70 px-4 pb-4 pt-3"
-                            >
+                                <!-- Message body -->
                                 <p
                                     v-if="n.message"
-                                    class="text-xs leading-relaxed whitespace-pre-line text-gray-500"
+                                    class="mb-4 pl-12 text-sm leading-relaxed whitespace-pre-line text-gray-700"
                                 >
                                     {{ n.message }}
                                 </p>
-                                <p v-else class="text-xs italic text-gray-400">No message body.</p>
 
-                                <div class="mt-3 flex flex-wrap gap-4 text-xs text-gray-400">
-                                    <span v-if="n.due_date" class="flex items-center gap-1">
-                                        <CalendarClock :size="11" />
-                                        Due: {{ formatDate(n.due_date) }}
+                                <!-- Due date urgency pill -->
+                                <div v-if="n.due_date && hasDueDate(n.type)" class="mb-4 pl-12">
+                                    <span
+                                        :class="[
+                                            'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold',
+                                            dueDaysUrgencyClass(n.due_date),
+                                        ]"
+                                    >
+                                        <CalendarClock :size="12" />
+                                        {{ dueDaysLabel(n.due_date) }}
+                                        <span class="font-normal opacity-80">· {{ formatDate(n.due_date) }}</span>
                                     </span>
+                                </div>
+
+                                <!-- Payment approved confirmation line -->
+                                <div v-if="n.type === 'payment_approved'" class="mb-4 pl-12">
+                                    <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200">
+                                        <CheckCircle2 :size="12" />
+                                        Payment Verified &amp; Applied
+                                    </span>
+                                </div>
+
+                                <div v-if="n.type === 'payment_rejected'" class="mb-4 pl-12">
+                                    <span class="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-800 ring-1 ring-red-200">
+                                        <XCircle :size="12" />
+                                        Payment Rejected — Action Required
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- Footer strip -->
+                            <div class="flex flex-wrap items-center justify-between gap-2 border-t border-black/10 bg-black/[0.025] px-5 py-3">
+                                <div class="flex flex-wrap gap-3 text-xs text-gray-500">
                                     <span v-if="n.start_date" class="flex items-center gap-1">
                                         <Calendar :size="11" />
                                         {{ formatDate(n.start_date) }}
                                         <span v-if="n.end_date"> – {{ formatDate(n.end_date) }}</span>
                                     </span>
-                                    <span v-if="n.dismissed_at" class="flex items-center gap-1">
+                                    <span v-else class="flex items-center gap-1 text-gray-400">
                                         <Clock :size="11" />
-                                        Dismissed {{ formatRelative(n.dismissed_at) }}
+                                        {{ formatRelative(n.created_at) }}
                                     </span>
                                 </div>
-                            </div>
-                        </Transition>
-                    </div>
-                </div>
-            </section>
 
+                                <div class="flex items-center gap-2">
+                                    <a
+                                        v-if="hasDueDate(n.type) && n.payment_term_id"
+                                        :href="route('student.account')"
+                                        class="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
+                                    >
+                                        Pay Now →
+                                    </a>
+                                    <a
+                                        v-if="n.type === 'payment_approved'"
+                                        :href="route('student.account')"
+                                        class="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
+                                    >
+                                        View Account →
+                                    </a>
+                                    <a
+                                        v-if="n.type === 'payment_rejected'"
+                                        :href="route('payment.create')"
+                                        class="rounded-lg bg-red-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-red-700"
+                                    >
+                                        Resubmit Payment →
+                                    </a>
+                                    <button
+                                        @click="dismiss(n.id)"
+                                        :disabled="dismissForm.processing"
+                                        class="rounded-lg border border-black/15 bg-white/70 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-white disabled:opacity-40"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </TransitionGroup>
+
+                    <!-- Empty states -->
+                    <div
+                        v-if="visibleActive.length === 0 && history.length === 0"
+                        class="rounded-2xl border-2 border-dashed border-gray-200 py-20 text-center"
+                    >
+                        <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-100">
+                            <BellOff :size="28" class="text-gray-400" />
+                        </div>
+                        <p class="text-lg font-semibold text-gray-600">You're all caught up</p>
+                        <p class="mt-1 text-sm text-gray-400">No active notifications at this time.</p>
+                    </div>
+
+                    <div
+                        v-else-if="visibleActive.length === 0"
+                        class="rounded-2xl border-2 border-dashed border-gray-200 py-10 text-center"
+                    >
+                        <Bell :size="28" class="mx-auto mb-2 text-gray-300" />
+                        <p class="text-sm font-medium text-gray-400">No active notifications</p>
+                        <p class="mt-1 text-xs text-gray-400">Check your notification history below.</p>
+                    </div>
+                </section>
+
+                <!-- ── HISTORY (right 1/3) ───────────────────────────────── -->
+                <section v-if="history.length" class="lg:col-span-1">
+                    <div class="mb-4 flex items-center gap-3">
+                        <div class="h-px flex-1 bg-gradient-to-r from-transparent to-gray-200" />
+                        <h2 class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                            <Clock :size="12" />
+                            History ({{ history.length }})
+                        </h2>
+                        <div class="h-px flex-1 bg-gradient-to-l from-transparent to-gray-200" />
+                    </div>
+
+                    <div class="space-y-2">
+                        <div
+                            v-for="n in history"
+                            :key="n.id"
+                            class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-all hover:shadow-md"
+                        >
+                            <!-- Always-visible summary row -->
+                            <button
+                                type="button"
+                                class="flex w-full select-none items-start gap-3 p-4 text-left transition-colors hover:bg-gray-50"
+                                @click="toggleHistory(n.id)"
+                            >
+                                <div class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-gray-100">
+                                    <component :is="cfg(n.type).icon" :size="15" class="text-gray-400" />
+                                </div>
+
+                                <div class="min-w-0 flex-1">
+                                    <div class="mb-0.5 flex flex-wrap items-center gap-2">
+                                        <span class="inline-block rounded-md bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-500">
+                                            {{ cfg(n.type).label }}
+                                        </span>
+                                        <!-- Term name in history row -->
+                                        <span
+                                            v-if="n.target_term_name"
+                                            class="inline-block rounded-md bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-500"
+                                        >
+                                            {{ n.target_term_name }}
+                                        </span>
+                                        <span v-if="n.dismissed_at" class="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">
+                                            Dismissed
+                                        </span>
+                                        <span v-else-if="n.is_complete" class="rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-600">
+                                            Completed
+                                        </span>
+                                        <span v-else class="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">
+                                            Expired
+                                        </span>
+                                    </div>
+                                    <p class="truncate text-sm font-medium text-gray-600">{{ n.title }}</p>
+                                </div>
+
+                                <div class="flex flex-shrink-0 items-center gap-2">
+                                    <span class="text-xs text-gray-400">
+                                        {{ formatRelative(n.dismissed_at ?? n.created_at) }}
+                                    </span>
+                                    <component
+                                        :is="isHistoryExpanded(n.id) ? ChevronUp : ChevronDown"
+                                        :size="14"
+                                        class="text-gray-400"
+                                    />
+                                </div>
+                            </button>
+
+                            <!-- Expandable detail panel -->
+                            <Transition name="expand">
+                                <div
+                                    v-if="isHistoryExpanded(n.id)"
+                                    class="border-t border-gray-100 bg-gray-50/70 px-4 pb-4 pt-3"
+                                >
+                                    <p v-if="n.message" class="text-xs leading-relaxed whitespace-pre-line text-gray-500">
+                                        {{ n.message }}
+                                    </p>
+                                    <p v-else class="text-xs italic text-gray-400">No message body.</p>
+
+                                    <div class="mt-3 flex flex-wrap gap-4 text-xs text-gray-400">
+                                        <span v-if="n.due_date" class="flex items-center gap-1">
+                                            <CalendarClock :size="11" />
+                                            Due: {{ formatDate(n.due_date) }}
+                                        </span>
+                                        <span v-if="n.start_date" class="flex items-center gap-1">
+                                            <Calendar :size="11" />
+                                            {{ formatDate(n.start_date) }}
+                                            <span v-if="n.end_date"> – {{ formatDate(n.end_date) }}</span>
+                                        </span>
+                                        <span v-if="n.dismissed_at" class="flex items-center gap-1">
+                                            <Clock :size="11" />
+                                            Dismissed {{ formatRelative(n.dismissed_at) }}
+                                        </span>
+                                    </div>
+                                </div>
+                            </Transition>
+                        </div>
+                    </div>
+                </section>
+
+            </div>
         </div>
     </AppLayout>
 </template>
 
 <style scoped>
-/* ── Notification card enter/leave ──────────────────────────────────── */
 .notification-enter-active,
 .notification-leave-active {
     transition: all 0.25s ease;
@@ -711,7 +678,6 @@ const hasUnread  = computed(() => visibleActive.value.length > 0);
     width: 100%;
 }
 
-/* ── History detail panel expand ────────────────────────────────────── */
 .expand-enter-active,
 .expand-leave-active {
     transition: all 0.2s ease;

@@ -17,6 +17,7 @@ type Notification = {
     end_date: string | null;
     due_date: string | null;
     payment_term_id: number | null;
+    target_term_name: string | null;
     target_role: string;
     is_active: boolean;
     is_complete: boolean;
@@ -145,22 +146,15 @@ const unpaidTerms = computed(() =>
 );
 
 const getDueDateColor = (dueDate: string | null | undefined): 'red' | 'amber' | 'green' | 'neutral' => {
-    if (!dueDate) return 'neutral'; // No due date = no deadline = no urgency
+    if (!dueDate) return 'neutral';
     const diffDays = Math.ceil((new Date(dueDate).getTime() - Date.now()) / 86_400_000);
-    if (diffDays <= 0)  return 'red';    // Past due
-    if (diffDays <= 7)  return 'red';    // Due within 1 week
-    if (diffDays <= 14) return 'amber';  // Due within 2 weeks
+    if (diffDays <= 0)  return 'red';
+    if (diffDays <= 7)  return 'red';
+    if (diffDays <= 14) return 'amber';
     return 'green';
 };
 
-// ── Next Payment Due — sourced from Accounting notifications ─────────────────
-//
-// Priority: use the earliest active payment_due notification that maps to an
-// unpaid term. Accounting sets the canonical due_date and term reference via
-// these notifications — the paymentTerm.due_date may be null or stale.
-//
-// Fallback: if no qualifying notification exists, fall back to the first
-// unpaid term (original behaviour) so the widget is never blank.
+// ── Next Payment Due ─────────────────────────────────────────────────────────
 
 const paymentTermsMap = computed(() => {
     const map = new Map<number, PaymentTerm>();
@@ -171,8 +165,6 @@ const paymentTermsMap = computed(() => {
 });
 
 const nextPaymentDueFromNotification = computed(() => {
-    // activeNotifications is declared below — we need a local computation here
-    // so we replicate the filter inline to avoid forward-reference issues.
     const now = Date.now();
 
     const candidates = props.notifications
@@ -183,12 +175,10 @@ const nextPaymentDueFromNotification = computed(() => {
             if (!n.payment_term_id) return false;
             if (n.start_date && new Date(n.start_date).getTime() > now) return false;
             if (n.end_date && new Date(n.end_date).getTime() < now) return false;
-            // Only show if the linked term still has a balance
             const term = paymentTermsMap.value.get(n.payment_term_id!);
             return term && term.balance > 0;
         })
         .sort((a, b) => {
-            // Nearest due date first
             if (a.due_date && b.due_date) {
                 return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
             }
@@ -205,16 +195,14 @@ const nextPaymentDueFromNotification = computed(() => {
     const daysUntilDue = dueDateMs ? Math.ceil((dueDateMs - now) / 86_400_000) : null;
 
     return {
-        // Core display data
         id:               term.id,
-        term_name:        notif.title,          // Accounting's title is more descriptive
+        term_name:        notif.title,
         balance:          term.balance,
         due_date:         notif.due_date,
         dueColor:         getDueDateColor(notif.due_date),
         daysUntilDue,
         formattedDueDate: formatDate(notif.due_date),
         isDueOrOverdue:   daysUntilDue !== null && daysUntilDue <= 7,
-        // Notification message for extra context
         notifMessage:     notif.message,
         source:           'notification' as const,
     };
@@ -239,7 +227,6 @@ const nextPaymentDueFromTerms = computed(() => {
     };
 });
 
-// Notification source takes precedence; fall back to terms if none match.
 const nextPaymentDue = computed(
     () => nextPaymentDueFromNotification.value ?? nextPaymentDueFromTerms.value,
 );
@@ -265,17 +252,12 @@ const hiddenNotifications = ref<Set<number>>(new Set());
 
 const activeNotifications = computed(() => {
     const now  = Date.now();
-    const seen = new Set<number>(); // deduplicate by id — guards against backend duplicates
+    const seen = new Set<number>();
 
     return props.notifications
         .filter((n) => {
-            // Deduplicate: skip if we've already included this notification id.
-            // This can happen when a notification matches multiple OR branches in
-            // scopeForUser (e.g. direct user_id + JSON user_ids overlap, or
-            // term_ids containing multiple terms each satisfying the subquery).
             if (seen.has(n.id)) return false;
             seen.add(n.id);
-
             if (n.dismissed_at) return false;
             if (n.is_complete) return false;
             if (hiddenNotifications.value.has(n.id)) return false;
@@ -300,10 +282,6 @@ const visibleNotifications  = computed(() =>
 const hasMoreNotifications = computed(() => activeNotifications.value.length > 3);
 
 // ── Notification type config ──────────────────────────────────────────────────
-// Covers all types the backend can produce. The old template only checked
-// `=== 'payment_due'` for the left-border colour, so payment_approved got a
-// blue border instead of green and payment_rejected got blue instead of red.
-// This map drives both the border colour and the due-date / Pay Now logic.
 
 const notifTypeConfig: Record<string, {
     borderClass:  string;
@@ -400,50 +378,16 @@ const dismissNotification = (id: number) => {
     });
 };
 
-// ── Payment Reminder actions ──────────────────────────────────────────────────
-
-const hiddenReminders = ref<Set<number>>(new Set());
-
-const visibleReminders = computed(() =>
-    (props.paymentReminders ?? []).filter((r) => !hiddenReminders.value.has(r.id)),
-);
-
-const markReminderRead = (id: number) => {
-    const form = useForm({});
-    form.post(route('reminders.read', id), { preserveScroll: true, preserveState: true });
-};
-
-const dismissReminder = (id: number) => {
-    hiddenReminders.value.add(id);
-    const form = useForm({});
-    form.post(route('reminders.dismiss', id), { preserveScroll: true, preserveState: true });
-};
-
 // ── Reference display helpers ─────────────────────────────────────────────────
-//
-// For cash payments, the meaningful identifier is the OR number (official receipt).
-// For online payments (gcash, paymongo, bank_transfer, etc.), it's the transaction
-// reference / PayMongo session ID stored in `reference`.
-// We surface a human label ("OR No." / "Ref No.") alongside the value so the
-// student knows exactly what they're looking at.
 
 const CASH_CHANNELS = new Set(['cash', 'cash_payment', 'over_the_counter']);
 
 function getTransactionDisplayRef(txn: RecentTransaction): { label: string; value: string } {
     const channel = (txn.payment_channel ?? '').toLowerCase();
-
     if (CASH_CHANNELS.has(channel)) {
-        return {
-            label: 'OR No.',
-            value: txn.or_number ?? txn.reference ?? 'N/A',
-        };
+        return { label: 'OR No.', value: txn.or_number ?? txn.reference ?? 'N/A' };
     }
-
-    // Online / e-wallet / bank transfer — reference holds the external ID
-    return {
-        label: 'Ref No.',
-        value: txn.reference ?? 'N/A',
-    };
+    return { label: 'Ref No.', value: txn.reference ?? 'N/A' };
 }
 </script>
 
@@ -505,7 +449,8 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                     <div class="min-w-0">
                         <p class="truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">Total Paid</p>
                         <p class="text-xl font-bold text-emerald-600">{{ formatCurrency(normalizedStats.total_paid) }}</p>
-                        <p class="text-xs text-muted-foreground">All verified payments</p>
+                        <!-- Label clarified: now scoped to current semester -->
+                        <p class="text-xs text-muted-foreground">Current semester</p>
                     </div>
                 </div>
                 <div class="ccdi-stat-card">
@@ -540,66 +485,6 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
             <div class="grid grid-cols-1 gap-5 lg:grid-cols-3">
                 <!-- Left column (2/3) -->
                 <div class="space-y-5 lg:col-span-2">
-
-                    <!-- Payment Reminders -->
-                    <div v-if="visibleReminders.length > 0" class="ccdi-card p-5">
-                        <div class="mb-4 flex items-center gap-2">
-                            <h2 class="text-base font-semibold text-foreground">Payment Reminders</h2>
-                            <span
-                                v-if="props.unreadReminderCount && props.unreadReminderCount > 0"
-                                class="ccdi-badge-red"
-                            >
-                                {{ props.unreadReminderCount }} new
-                            </span>
-                        </div>
-                        <div class="space-y-2.5">
-                            <div
-                                v-for="reminder in visibleReminders"
-                                :key="reminder.id"
-                                class="flex items-start justify-between gap-3 rounded-xl border p-3.5"
-                                :class="
-                                    reminder.type === 'overdue' || reminder.type === 'approaching_due'
-                                        ? 'border-red-200 bg-red-50'
-                                        : reminder.type === 'partial_payment'
-                                          ? 'border-amber-200 bg-amber-50'
-                                          : 'border-blue-200 bg-blue-50'
-                                "
-                            >
-                                <div class="flex-1 min-w-0">
-                                    <p
-                                        class="text-sm font-medium"
-                                        :class="
-                                            reminder.type === 'overdue' || reminder.type === 'approaching_due'
-                                                ? 'text-red-900'
-                                                : reminder.type === 'partial_payment'
-                                                  ? 'text-amber-900'
-                                                  : 'text-blue-900'
-                                        "
-                                    >
-                                        {{ reminder.message }}
-                                    </p>
-                                    <p class="mt-0.5 text-xs text-muted-foreground">{{ formatDate(reminder.sent_at) }}</p>
-                                </div>
-                                <div class="flex flex-shrink-0 items-center gap-1.5">
-                                    <span v-if="reminder.status !== 'read'" class="ccdi-badge-red">Unread</span>
-                                    <button
-                                        v-if="reminder.status !== 'read'"
-                                        @click="markReminderRead(reminder.id)"
-                                        class="ccdi-badge-blue cursor-pointer hover:opacity-80"
-                                    >
-                                        ✓ Mark Read
-                                    </button>
-                                    <span v-else class="ccdi-badge-gray">Read</span>
-                                    <button
-                                        @click="dismissReminder(reminder.id)"
-                                        class="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                                    >
-                                        ✕
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
                     <!-- Recent Transactions -->
                     <div class="ccdi-card">
@@ -680,15 +565,10 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                         </div>
                     </div>
 
-                    <!-- Next Payment Due ─────────────────────────────────────
-                         Fix #3: Sourced from Accounting notifications when available.
-                         Falls back to payment terms if no qualifying notification found.
-                         A "From Accounting" badge distinguishes notification-sourced data.
-                    ─────────────────────────────────────────────────────────── -->
+                    <!-- Next Payment Due -->
                     <div v-if="nextPaymentDue" class="ccdi-card overflow-hidden">
                         <div class="px-5 py-3 border-b border-border flex items-center justify-between gap-2">
                             <h2 class="text-base font-semibold text-foreground">Next Payment Due</h2>
-                            <!-- Badge shows students this came from an Accounting notification -->
                             <span
                                 v-if="nextPaymentDue.source === 'notification'"
                                 class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700"
@@ -753,26 +633,13 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                                     : 'bg-emerald-200'
                                         "
                                     >
-                                        <AlertCircle
-                                            v-if="nextPaymentDue.dueColor === 'red'"
-                                            :size="18"
-                                            class="text-red-700"
-                                        />
-                                        <Clock
-                                            v-else-if="nextPaymentDue.dueColor === 'amber'"
-                                            :size="18"
-                                            class="text-amber-700"
-                                        />
-                                        <Calendar
-                                            v-else-if="nextPaymentDue.dueColor === 'neutral'"
-                                            :size="18"
-                                            class="text-gray-500"
-                                        />
+                                        <AlertCircle v-if="nextPaymentDue.dueColor === 'red'" :size="18" class="text-red-700" />
+                                        <Clock v-else-if="nextPaymentDue.dueColor === 'amber'" :size="18" class="text-amber-700" />
+                                        <Calendar v-else-if="nextPaymentDue.dueColor === 'neutral'" :size="18" class="text-gray-500" />
                                         <CheckCircle v-else :size="18" class="text-emerald-700" />
                                     </div>
                                 </div>
 
-                                <!-- Notification message from Accounting (extra context) -->
                                 <p
                                     v-if="nextPaymentDue.notifMessage"
                                     class="mt-2 text-xs leading-relaxed"
@@ -900,6 +767,17 @@ function getTransactionDisplayRef(txn: RecentTransaction): { label: string; valu
                                         ✕
                                     </button>
                                 </div>
+
+                                <!-- Term name pill — for payment_approved / payment_rejected -->
+                                <div
+                                    v-if="notification.target_term_name && (notification.type === 'payment_approved' || notification.type === 'payment_rejected')"
+                                    class="mb-2"
+                                >
+                                    <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
+                                        {{ notification.target_term_name }}
+                                    </span>
+                                </div>
+
                                 <div v-if="getNotifConfig(notification.type).hasDueDate && notification.due_date" class="mb-2">
                                     <span
                                         class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
