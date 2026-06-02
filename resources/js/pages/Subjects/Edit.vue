@@ -3,7 +3,25 @@ import Breadcrumbs from '@/components/Breadcrumbs.vue'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { Link, useForm } from '@inertiajs/vue3'
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Canonical constants ──────────────────────────────────────────────────────
+// Mirror SubjectController::YEAR_LEVELS and SEMESTERS exactly.
+// NOT sourced from props — institution-defined constants, never DB-derived.
+// 'Summer' is absent from SEMESTERS — it is a preset type, not a subject tag.
+
+const YEAR_LEVELS = [
+    '1st Year',
+    '2nd Year',
+    '3rd Year',
+    '4th Year',
+    '5th Year',
+] as const
+
+const SEMESTERS = [
+    '1st Sem',
+    '2nd Sem',
+] as const
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Subject {
     id: number
@@ -19,12 +37,12 @@ interface Subject {
 }
 
 // ─── Props ───────────────────────────────────────────────────────────────────
+// yearLevels and semesters are intentionally removed — they are constants above.
+// courses stays as a prop because the course list comes from course_unit_presets.
 
 const props = defineProps<{
     subject: Subject
     courses: string[]
-    yearLevels: string[]
-    semesters: string[]
     canEditNstp: boolean
 }>()
 
@@ -36,7 +54,7 @@ const breadcrumbs = [
     { title: 'Edit Subject' },
 ]
 
-// ─── Form ────────────────────────────────────────────────────────────────────
+// ─── Form ─────────────────────────────────────────────────────────────────────
 
 const form = useForm({
     code:       props.subject.code,
@@ -68,17 +86,27 @@ function submit() {
                     <!-- Code + Name -->
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium mb-1">Subject Code <span class="text-red-500">*</span></label>
-                            <input v-model="form.code" type="text"
+                            <label class="block text-sm font-medium mb-1">
+                                Subject Code <span class="text-red-500">*</span>
+                            </label>
+                            <input
+                                v-model="form.code"
+                                type="text"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                                required />
+                                required
+                            />
                             <p v-if="form.errors.code" class="mt-1 text-xs text-red-500">{{ form.errors.code }}</p>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium mb-1">Subject Name <span class="text-red-500">*</span></label>
-                            <input v-model="form.name" type="text"
+                            <label class="block text-sm font-medium mb-1">
+                                Subject Name <span class="text-red-500">*</span>
+                            </label>
+                            <input
+                                v-model="form.name"
+                                type="text"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                                required />
+                                required
+                            />
                             <p v-if="form.errors.name" class="mt-1 text-xs text-red-500">{{ form.errors.name }}</p>
                         </div>
                     </div>
@@ -86,41 +114,64 @@ function submit() {
                     <!-- LEC + LAB units -->
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium mb-1">LEC Units <span class="text-red-500">*</span></label>
-                            <input v-model.number="form.lec_units" type="number" min="0" max="10" step="0.5"
+                            <label class="block text-sm font-medium mb-1">
+                                LEC Units <span class="text-red-500">*</span>
+                            </label>
+                            <input
+                                v-model.number="form.lec_units"
+                                type="number" min="0" max="10" step="0.5"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                                required />
+                                required
+                            />
                             <p class="mt-1 text-xs text-muted-foreground">Use 1.5 for NSTP subjects</p>
                             <p v-if="form.errors.lec_units" class="mt-1 text-xs text-red-500">{{ form.errors.lec_units }}</p>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium mb-1">LAB Units <span class="text-red-500">*</span></label>
-                            <input v-model.number="form.lab_units" type="number" min="0" max="5"
+                            <label class="block text-sm font-medium mb-1">
+                                LAB Units <span class="text-red-500">*</span>
+                            </label>
+                            <input
+                                v-model.number="form.lab_units"
+                                type="number" min="0" max="5"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                                required />
+                                required
+                            />
                             <p v-if="form.errors.lab_units" class="mt-1 text-xs text-red-500">{{ form.errors.lab_units }}</p>
                         </div>
                     </div>
 
                     <!-- Year Level + Semester -->
+                    <!--
+                        Options are HARDCODED — not from props or server data.
+                        year_level and semester are canonical institution constants.
+                        'Summer' is intentionally absent from semester options.
+                    -->
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium mb-1">Year Level <span class="text-red-500">*</span></label>
-                            <select v-model="form.year_level"
+                            <label class="block text-sm font-medium mb-1">
+                                Year Level <span class="text-red-500">*</span>
+                            </label>
+                            <select
+                                v-model="form.year_level"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                                required>
+                                required
+                            >
                                 <option value="">Select year level</option>
-                                <option v-for="y in yearLevels" :key="y" :value="y">{{ y }}</option>
+                                <option v-for="y in YEAR_LEVELS" :key="y" :value="y">{{ y }}</option>
                             </select>
                             <p v-if="form.errors.year_level" class="mt-1 text-xs text-red-500">{{ form.errors.year_level }}</p>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium mb-1">Semester <span class="text-red-500">*</span></label>
-                            <select v-model="form.semester"
+                            <label class="block text-sm font-medium mb-1">
+                                Semester <span class="text-red-500">*</span>
+                            </label>
+                            <select
+                                v-model="form.semester"
                                 class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                                required>
+                                required
+                            >
                                 <option value="">Select semester</option>
-                                <option v-for="s in semesters" :key="s" :value="s">{{ s }}</option>
+                                <option v-for="s in SEMESTERS" :key="s" :value="s">{{ s }}</option>
                             </select>
                             <p v-if="form.errors.semester" class="mt-1 text-xs text-red-500">{{ form.errors.semester }}</p>
                         </div>
@@ -128,19 +179,25 @@ function submit() {
 
                     <!-- Course -->
                     <div>
-                        <label class="block text-sm font-medium mb-1">Course <span class="text-red-500">*</span></label>
-                        <select v-model="form.course"
+                        <label class="block text-sm font-medium mb-1">
+                            Course <span class="text-red-500">*</span>
+                        </label>
+                        <select
+                            v-model="form.course"
                             class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-                            required>
+                            required
+                        >
                             <option value="">Select course</option>
                             <option v-for="c in courses" :key="c" :value="c">{{ c }}</option>
                         </select>
                         <p v-if="form.errors.course" class="mt-1 text-xs text-red-500">{{ form.errors.course }}</p>
                     </div>
 
-                    <!-- is_nstp — admin only -->
-                    <div v-if="canEditNstp"
-                        class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                    <!-- NSTP flag — admin only -->
+                    <div
+                        v-if="canEditNstp"
+                        class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3"
+                    >
                         <input
                             id="is_nstp"
                             v-model="form.is_nstp"
@@ -158,23 +215,33 @@ function submit() {
                         </div>
                     </div>
 
-                    <!-- is_active -->
+                    <!-- Active toggle -->
                     <div class="flex items-center gap-2">
-                        <input id="is_active" v-model="form.is_active" type="checkbox"
-                            class="h-4 w-4 rounded border-input" />
+                        <input
+                            id="is_active"
+                            v-model="form.is_active"
+                            type="checkbox"
+                            class="h-4 w-4 rounded border-input"
+                        />
                         <label for="is_active" class="text-sm font-medium">Active</label>
-                        <span class="text-xs text-muted-foreground">(inactive subjects are hidden from new assessments)</span>
+                        <span class="text-xs text-muted-foreground">
+                            (inactive subjects are hidden from new assessments)
+                        </span>
                     </div>
 
                     <!-- Actions -->
                     <div class="flex items-center justify-between border-t pt-4">
-                        <Link :href="route('accounting.subjects.index')"
-                            class="rounded-md border border-input px-4 py-2 text-sm hover:bg-muted">
+                        <Link
+                            :href="route('accounting.subjects.index')"
+                            class="rounded-md border border-input px-4 py-2 text-sm hover:bg-muted"
+                        >
                             Cancel
                         </Link>
-                        <button type="submit"
+                        <button
+                            type="submit"
                             class="rounded-md bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                            :disabled="form.processing">
+                            :disabled="form.processing"
+                        >
                             {{ form.processing ? 'Saving…' : 'Save Changes' }}
                         </button>
                     </div>

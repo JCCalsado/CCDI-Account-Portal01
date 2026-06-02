@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Accounting;
 
 use App\Enums\UserRoleEnum;
 use App\Http\Controllers\Controller;
+use App\Models\CourseUnitPreset;
 use App\Models\Subject;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -14,14 +16,59 @@ use Inertia\Response;
  *
  * Full CRUD for curriculum subjects, accessible to accounting and admin roles.
  *
- * is_nstp field: visible and editable only by admin role.
- *   Accounting staff can edit lec_units / lab_units but cannot change the
- *   NSTP flag — that has billing implications that only admin should control.
+ * ── Canonical value sets ──────────────────────────────────────────────────────
+ *
+ *   YEAR_LEVELS and SEMESTERS are finite institution-defined constants.
+ *   They must NEVER be derived from the subjects table (circular dependency)
+ *   or from any other DB query. Any change to valid year levels or semesters
+ *   is a curriculum policy decision that requires updating these constants AND
+ *   running a data migration for existing rows.
+ *
+ * ── Course source of truth ────────────────────────────────────────────────────
+ *
+ *   Courses are sourced from course_unit_presets — the authoritative registry
+ *   of programs offered by the institution. A subject must belong to a course
+ *   that already has a preset. This enforces referential integrity at the
+ *   application layer (no FK exists on the DB level).
+ *
+ * ── Summer semesters ─────────────────────────────────────────────────────────
+ *
+ *   Subjects are classified as '1st Sem' or '2nd Sem' only. Summer is a
+ *   PRESET type (course_unit_presets.semester = 'Summer'), not a subject
+ *   classification. Summer presets draw from existing 1st/2nd Sem subjects
+ *   of the same year level. No subject should ever have semester = 'Summer'.
+ *
+ * ── is_nstp flag ─────────────────────────────────────────────────────────────
+ *
+ *   Visible and editable only by admin role. Accounting staff can edit
+ *   lec_units / lab_units but cannot change the NSTP flag — that has billing
+ *   implications that only admin should control.
  *
  * Routes registered under /accounting/subjects (see routes/web.php).
  */
 class SubjectController extends Controller
 {
+    // ─── Canonical Constants ──────────────────────────────────────────────────
+    //
+    // These are the ONLY valid values for year_level and semester on a subject row.
+    // They are validated on every store() and update() call.
+    //
+    // Note: 'Summer' is intentionally absent from SEMESTERS. Summer is a preset
+    // type, not a subject classification. See class docblock above.
+
+    private const YEAR_LEVELS = [
+        '1st Year',
+        '2nd Year',
+        '3rd Year',
+        '4th Year',
+        '5th Year',
+    ];
+
+    private const SEMESTERS = [
+        '1st Sem',
+        '2nd Sem',
+    ];
+
     // ─── Index ────────────────────────────────────────────────────────────────
 
     public function index(Request $request): Response
@@ -69,36 +116,46 @@ class SubjectController extends Controller
 
         $subjects->appends($request->only(['course', 'year_level', 'semester', 'search']));
 
-        $courses    = Subject::distinct()->pluck('course')->sort()->values();
-        $yearLevels = Subject::distinct()->pluck('year_level')->sort()->values();
-        $semesters  = Subject::distinct()->pluck('semester')->sort()->values();
+        // Courses sourced from course_unit_presets — the authoritative program registry.
+        // This is NOT derived from the subjects table, avoiding circular dependency.
+        $courses = CourseUnitPreset::distinct()
+            ->orderBy('course')
+            ->pluck('course')
+            ->values();
 
         return Inertia::render('Subjects/Index', [
             'subjects'    => $subjects,
             'filters'     => $request->only(['course', 'year_level', 'semester', 'search']),
             'courses'     => $courses,
-            'yearLevels'  => $yearLevels,
-            'semesters'   => $semesters,
+            // yearLevels and semesters are canonical constants — Vue defines them
+            // locally via YEAR_LEVELS / SEMESTERS. They are NOT passed as Inertia
+            // props to avoid the illusion that they are dynamic/configurable data.
             'canEditNstp' => $this->canEditNstp(),
-            // canCreate: both accounting and admin can create subjects.
-            // canEditNstp is a separate, narrower gate (admin-only) for the NSTP flag.
             'canCreate'   => $this->canCreate(),
         ]);
     }
 
     // ─── Create ───────────────────────────────────────────────────────────────
 
-    public function create(): Response
+    public function create(Request $request): Response
     {
-        $courses    = Subject::distinct()->pluck('course')->sort()->values();
-        $yearLevels = Subject::distinct()->pluck('year_level')->sort()->values();
-        $semesters  = Subject::distinct()->pluck('semester')->sort()->values();
+        $courses = CourseUnitPreset::distinct()
+            ->orderBy('course')
+            ->pluck('course')
+            ->values();
 
         return Inertia::render('Subjects/Create', [
-            'courses'     => $courses,
-            'yearLevels'  => $yearLevels,
-            'semesters'   => $semesters,
-            'canEditNstp' => $this->canEditNstp(),
+            'courses'       => $courses,
+            'canEditNstp'   => $this->canEditNstp(),
+            // defaultValues: pre-fill the form when arriving from the Preset Subjects
+            // empty-state link (e.g., /subjects/create?course=BS+IT&year_level=4th+Year&semester=1st+Sem).
+            // Vue reads these to initialise the form so the user only needs to
+            // fill in code, name, and units.
+            'defaultValues' => [
+                'course'     => $request->query('course', ''),
+                'year_level' => $request->query('year_level', ''),
+                'semester'   => $request->query('semester', ''),
+            ],
         ]);
     }
 
@@ -106,14 +163,18 @@ class SubjectController extends Controller
 
     public function store(Request $request)
     {
+        // Resolve valid courses at request time — not at class-load time — so
+        // newly created presets are immediately available as valid courses.
+        $validCourses = CourseUnitPreset::distinct()->pluck('course')->toArray();
+
         $rules = [
             'code'       => ['required', 'string', 'max:50', 'unique:subjects,code'],
             'name'       => ['required', 'string', 'max:255'],
             'lec_units'  => ['required', 'numeric', 'min:0', 'max:10'],
             'lab_units'  => ['required', 'integer', 'min:0', 'max:5'],
-            'year_level' => ['required', 'string', 'max:50'],
-            'semester'   => ['required', 'string', 'max:50'],
-            'course'     => ['required', 'string', 'max:100'],
+            'year_level' => ['required', 'string', Rule::in(self::YEAR_LEVELS)],
+            'semester'   => ['required', 'string', Rule::in(self::SEMESTERS)],
+            'course'     => ['required', 'string', Rule::in($validCourses)],
         ];
 
         if ($this->canEditNstp()) {
@@ -144,6 +205,11 @@ class SubjectController extends Controller
 
     public function edit(Subject $subject): Response
     {
+        $courses = CourseUnitPreset::distinct()
+            ->orderBy('course')
+            ->pluck('course')
+            ->values();
+
         return Inertia::render('Subjects/Edit', [
             'subject' => [
                 'id'         => $subject->id,
@@ -157,9 +223,7 @@ class SubjectController extends Controller
                 'is_nstp'    => (bool) $subject->is_nstp,
                 'is_active'  => $subject->is_active,
             ],
-            'courses'     => Subject::distinct()->pluck('course')->sort()->values(),
-            'yearLevels'  => Subject::distinct()->pluck('year_level')->sort()->values(),
-            'semesters'   => Subject::distinct()->pluck('semester')->sort()->values(),
+            'courses'     => $courses,
             'canEditNstp' => $this->canEditNstp(),
         ]);
     }
@@ -168,14 +232,16 @@ class SubjectController extends Controller
 
     public function update(Request $request, Subject $subject)
     {
+        $validCourses = CourseUnitPreset::distinct()->pluck('course')->toArray();
+
         $rules = [
             'code'       => ['required', 'string', 'max:50', 'unique:subjects,code,' . $subject->id],
             'name'       => ['required', 'string', 'max:255'],
             'lec_units'  => ['required', 'numeric', 'min:0', 'max:10'],
             'lab_units'  => ['required', 'integer', 'min:0', 'max:5'],
-            'year_level' => ['required', 'string', 'max:50'],
-            'semester'   => ['required', 'string', 'max:50'],
-            'course'     => ['required', 'string', 'max:100'],
+            'year_level' => ['required', 'string', Rule::in(self::YEAR_LEVELS)],
+            'semester'   => ['required', 'string', Rule::in(self::SEMESTERS)],
+            'course'     => ['required', 'string', Rule::in($validCourses)],
             'is_active'  => ['sometimes', 'boolean'],
         ];
 
@@ -226,8 +292,11 @@ class SubjectController extends Controller
 
     public function destroy(Subject $subject)
     {
-        // Only admin can delete subjects — accounting can only edit units
-        if (! $this->canEditNstp()) {
+        // Deletion requires admin. This uses isAdmin() — not canEditNstp() — because
+        // these are two distinct authorization concerns that happen to share the same
+        // role requirement today. Keeping them separate prevents a silent privilege
+        // change if canEditNstp() is ever broadened to non-admin roles.
+        if (! $this->isAdmin()) {
             abort(403, 'Only administrators can delete subjects.');
         }
 
@@ -241,7 +310,7 @@ class SubjectController extends Controller
             ->with('success', "Subject \"{$label}\" deactivated.");
     }
 
-    // ─── Private helpers ──────────────────────────────────────────────────────
+    // ─── Private Helpers ──────────────────────────────────────────────────────
 
     /**
      * Only admin role may set or change the is_nstp flag.
@@ -254,8 +323,20 @@ class SubjectController extends Controller
     }
 
     /**
+     * Whether the current user is an administrator.
+     *
+     * Intentionally separate from canEditNstp() even though both check for
+     * ADMIN today. If NSTP editing is ever delegated to a non-admin role,
+     * the delete guard (isAdmin) must not silently inherit that change.
+     */
+    private function isAdmin(): bool
+    {
+        return auth()->user()?->role === UserRoleEnum::ADMIN;
+    }
+
+    /**
      * Both accounting and admin roles may create new subjects.
-     * canEditNstp() is a stricter gate — admin only — for the NSTP classification flag.
+     * canEditNstp() is a stricter gate — admin only — for the NSTP flag.
      */
     private function canCreate(): bool
     {

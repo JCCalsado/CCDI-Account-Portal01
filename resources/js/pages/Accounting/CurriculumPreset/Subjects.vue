@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { router, usePage } from '@inertiajs/vue3'
+import { router, usePage, Link } from '@inertiajs/vue3'
 import AppLayout from '@/layouts/AppLayout.vue'
 import Breadcrumbs from '@/components/Breadcrumbs.vue'
 import { Button } from '@/components/ui/button'
@@ -29,6 +29,7 @@ interface LinkedSubject {
     subject_id: number | null
     code: string
     name: string
+    semester: string | null      // '1st Sem' or '2nd Sem' — visible in Summer presets
     lec_units: number
     lab_units: number
     is_nstp: boolean
@@ -46,6 +47,7 @@ interface AvailableSubject {
     id: number
     code: string
     name: string
+    semester: string            // '1st Sem' or '2nd Sem' — used for optgroup in Summer presets
     lec_units: number
     lab_units: number
     is_nstp: boolean
@@ -92,9 +94,58 @@ const hasStaleSubjects = computed(() =>
     props.linkedSubjects.some((s) => s.fees_are_stale)
 )
 
+// ─── Summer preset detection ──────────────────────────────────────────────────
+//
+// Summer presets draw subjects from '1st Sem' and '2nd Sem' of the same year
+// level — no subject is ever classified as 'Summer'. This flag drives:
+//   1. The "Add Subject" optgroup grouping (1st Sem / 2nd Sem sections)
+//   2. The empty-state / tooltip create links (semester not pre-filled for Summer)
+//   3. The linked subjects table showing each subject's semester column
+
+const isSummerPreset = computed(() => props.preset.semester === 'Summer')
+
+// ─── Context create URLs ──────────────────────────────────────────────────────
+//
+// These link to accounting.subjects.create with context query params pre-filled.
+// For Summer presets, semester is intentionally omitted from the URL because
+// subjects cannot be tagged 'Summer' — the user must pick 1st or 2nd Sem.
+// Two separate links are shown for Summer so the user knows which semester
+// classification to choose.
+
+function buildCreateUrl(semesterOverride?: string): string {
+    const base   = route('accounting.subjects.create')
+    const params: Record<string, string> = {
+        course:     props.preset.course,
+        year_level: props.preset.year_level,
+    }
+    if (semesterOverride) {
+        params.semester = semesterOverride
+    }
+    return `${base}?${new URLSearchParams(params).toString()}`
+}
+
+// For non-Summer presets: single link pre-filled with the preset's exact semester
+const createSubjectUrl = computed(() =>
+    isSummerPreset.value
+        ? buildCreateUrl()                  // no semester — user picks in the form
+        : buildCreateUrl(props.preset.semester)
+)
+
+// For Summer: two convenience links, one per semester
+const createUrl1stSem = computed(() => buildCreateUrl('1st Sem'))
+const createUrl2ndSem = computed(() => buildCreateUrl('2nd Sem'))
+
+// ─── Grouped available subjects (Summer only) ─────────────────────────────────
+
+const available1stSem = computed(() =>
+    props.availableSubjects.filter((s) => s.semester === '1st Sem')
+)
+const available2ndSem = computed(() =>
+    props.availableSubjects.filter((s) => s.semester === '2nd Sem')
+)
+
 // ─── Add subject form ─────────────────────────────────────────────────────────
 
-// Auto-open when new preset and subjects exist to add
 const showAddForm   = ref(props.isNew && props.availableSubjects.length > 0)
 const selectedSubId = ref<number | null>(null)
 const addSaving     = ref(false)
@@ -137,9 +188,7 @@ function removeSubject(ps: LinkedSubject) {
     removingId.value = ps.id
     router.delete(
         route(props.destroyRoute, [props.preset.id, ps.id]),
-        {
-            onFinish: () => { removingId.value = null },
-        }
+        { onFinish: () => { removingId.value = null } }
     )
 }
 
@@ -150,16 +199,10 @@ const syncing = ref(false)
 function syncFees() {
     if (syncing.value) return
     syncing.value = true
-    router.post(
-        props.syncRoute,
-        {},
-        { onFinish: () => { syncing.value = false } }
-    )
+    router.post(props.syncRoute, {}, { onFinish: () => { syncing.value = false } })
 }
 
-// ─── Computed totals (Decision F) ─────────────────────────────────────────────
-// "Subject Total" column removed.
-// tfoot: Tuition subtotal | Lab subtotal → + Entrep in Lab col → = column totals (no merged sum)
+// ─── Totals ───────────────────────────────────────────────────────────────────
 
 const totalTuition = computed(() =>
     props.linkedSubjects.reduce((s, r) => s + r.tuition_fee, 0)
@@ -167,21 +210,14 @@ const totalTuition = computed(() =>
 const totalLab = computed(() =>
     props.linkedSubjects.reduce((s, r) => s + r.lab_fee, 0)
 )
-
-// Sourced from rates prop (fee_settings table via AssessmentService::loadRates())
-// Not hardcoded — will reflect if changed in Fee Settings
 const entrepFee = computed(() => props.rates.entrepreneurship_fee)
-
-// Lab + Entrep combined for the final "Lab Fee" column total.
-// Entrep is shown in the Lab Fee column because CCDI categorises it as
-// "Entrepreneurship / Lab Activation Fee" — part of the lab group.
 const totalLabWithEntrep = computed(() => totalLab.value + entrepFee.value)
 
 const billableSubjects = computed(() =>
     props.linkedSubjects.filter((s) => !s.is_nstp)
 )
 
-// Rates panel toggle
+// Rates panel
 const ratesExpanded = ref(false)
 </script>
 
@@ -200,7 +236,7 @@ const ratesExpanded = ref(false)
                 {{ flashSuccess }}
             </div>
 
-            <!-- "Just Created" onboarding banner (B1) -->
+            <!-- "Just Created" onboarding banner -->
             <div
                 v-if="isNew"
                 class="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-4"
@@ -211,6 +247,27 @@ const ratesExpanded = ref(false)
                     <p class="text-sm text-blue-700 mt-0.5">
                         Use the <strong>Add Subject</strong> button to populate this preset.
                         Unit aggregates (Lec, Lab) update automatically as subjects are added.
+                    </p>
+                </div>
+            </div>
+
+            <!--
+                Summer preset information banner
+                Explains the Summer subject classification rule so accounting staff
+                don't try to find subjects tagged 'Summer' (they don't exist).
+            -->
+            <div
+                v-if="isSummerPreset"
+                class="flex items-start gap-3 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-900"
+            >
+                <Info class="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
+                <div>
+                    <p class="font-semibold">Summer preset — subjects drawn from 1st &amp; 2nd Semester</p>
+                    <p class="text-violet-800 text-xs mt-0.5">
+                        CCDI Summer classes offer subjects from both semesters of
+                        <strong>{{ preset.year_level }}</strong> in a compressed schedule.
+                        Subjects are tagged as <strong>1st Sem</strong> or <strong>2nd Sem</strong> —
+                        never as "Summer". The dropdown below groups them by their semester for clarity.
                     </p>
                 </div>
             </div>
@@ -243,7 +300,7 @@ const ratesExpanded = ref(false)
                         {{ syncing ? 'Syncing…' : 'Sync Fees to Current Rates' }}
                     </Button>
 
-                    <!-- Add Subject with inline explanation when disabled -->
+                    <!-- Add Subject button + tooltip when disabled -->
                     <div class="relative group/addbtn">
                         <Button
                             size="sm"
@@ -253,7 +310,13 @@ const ratesExpanded = ref(false)
                             <Plus class="h-4 w-4 mr-1.5" />
                             Add Subject
                         </Button>
-                        <!-- Hover tooltip only when disabled -->
+
+                        <!--
+                            Hover tooltip — only shown when button is disabled (no available subjects).
+                            For Summer presets: shows two create links (1st Sem and 2nd Sem separately)
+                            because subjects cannot be tagged 'Summer'.
+                            For regular presets: shows one create link with semester pre-filled.
+                        -->
                         <div
                             v-if="availableSubjects.length === 0"
                             class="absolute right-0 top-full mt-2 w-80 z-20 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800 shadow-lg opacity-0 group-hover/addbtn:opacity-100 transition-opacity pointer-events-none"
@@ -262,13 +325,26 @@ const ratesExpanded = ref(false)
                             <p>
                                 The <strong>Subjects</strong> registry has no active entries for
                                 <strong>{{ preset.course }}</strong> ·
-                                <strong>{{ preset.year_level }}</strong> ·
-                                <strong>{{ preset.semester }}</strong>.
+                                <strong>{{ preset.year_level }}</strong>
+                                <template v-if="!isSummerPreset"> · <strong>{{ preset.semester }}</strong></template>.
                             </p>
-                            <p class="mt-1.5">
-                                Go to <strong>Subjects</strong> in the sidebar and create subjects
-                                for this combination first, then return here.
-                            </p>
+
+                            <!-- Summer: two separate create links -->
+                            <template v-if="isSummerPreset">
+                                <p class="mt-1.5">
+                                    Summer subjects must be tagged as 1st Sem or 2nd Sem.
+                                    Create them first, then return here.
+                                </p>
+                                <!-- pointer-events-none on tooltip prevents click — links here are informational only -->
+                            </template>
+
+                            <!-- Non-Summer: single create link -->
+                            <template v-else>
+                                <p class="mt-1.5">
+                                    Create subjects for this combination in
+                                    <strong>Subjects</strong>, then return here.
+                                </p>
+                            </template>
                         </div>
                     </div>
                 </div>
@@ -305,15 +381,49 @@ const ratesExpanded = ref(false)
                             class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         >
                             <option :value="null" disabled>— choose a subject —</option>
-                            <option
-                                v-for="s in availableSubjects"
-                                :key="s.id"
-                                :value="s.id"
-                            >
-                                {{ s.code }} — {{ s.name }}
-                                ({{ s.lec_units }} LEC{{ s.lab_units > 0 ? ` + ${s.lab_units} LAB` : '' }})
-                                {{ s.is_nstp ? '· NSTP' : '' }}
-                            </option>
+
+                            <!--
+                                Summer preset: group by semester using <optgroup>.
+                                Subjects are drawn from both 1st Sem and 2nd Sem —
+                                grouping makes the distinction visible to accounting staff.
+                            -->
+                            <template v-if="isSummerPreset">
+                                <optgroup label="1st Semester" v-if="available1stSem.length > 0">
+                                    <option
+                                        v-for="s in available1stSem"
+                                        :key="s.id"
+                                        :value="s.id"
+                                    >
+                                        {{ s.code }} — {{ s.name }}
+                                        ({{ s.lec_units }} LEC{{ s.lab_units > 0 ? ` + ${s.lab_units} LAB` : '' }})
+                                        {{ s.is_nstp ? '· NSTP' : '' }}
+                                    </option>
+                                </optgroup>
+                                <optgroup label="2nd Semester" v-if="available2ndSem.length > 0">
+                                    <option
+                                        v-for="s in available2ndSem"
+                                        :key="s.id"
+                                        :value="s.id"
+                                    >
+                                        {{ s.code }} — {{ s.name }}
+                                        ({{ s.lec_units }} LEC{{ s.lab_units > 0 ? ` + ${s.lab_units} LAB` : '' }})
+                                        {{ s.is_nstp ? '· NSTP' : '' }}
+                                    </option>
+                                </optgroup>
+                            </template>
+
+                            <!-- Non-Summer: flat list -->
+                            <template v-else>
+                                <option
+                                    v-for="s in availableSubjects"
+                                    :key="s.id"
+                                    :value="s.id"
+                                >
+                                    {{ s.code }} — {{ s.name }}
+                                    ({{ s.lec_units }} LEC{{ s.lab_units > 0 ? ` + ${s.lab_units} LAB` : '' }})
+                                    {{ s.is_nstp ? '· NSTP' : '' }}
+                                </option>
+                            </template>
                         </select>
                     </div>
 
@@ -367,24 +477,83 @@ const ratesExpanded = ref(false)
                     </CardTitle>
                 </CardHeader>
                 <CardContent class="p-0">
+
+                    <!-- Empty state -->
                     <div v-if="linkedSubjects.length === 0" class="text-center py-10 text-muted-foreground text-sm">
                         <BookOpen class="h-8 w-8 mx-auto mb-3 opacity-30" />
                         <p>No subjects linked yet.</p>
+
+                        <!-- Empty state when subjects ARE available to add -->
                         <p v-if="availableSubjects.length > 0" class="text-xs mt-1">
                             Click "Add Subject" to populate this preset.
                         </p>
-                        <p v-else class="text-xs mt-1 text-amber-600">
-                            No subjects exist in the registry for this course/year/semester.
-                            Create them in <strong>Subjects</strong> first.
-                        </p>
+
+                        <!--
+                            Empty state when NO subjects exist in the registry at all.
+                            Shows clickable links to the Subject Create form with context
+                            pre-filled so the user doesn't have to re-select course/year/semester.
+
+                            Summer preset: two links (one per semester) because subjects
+                            cannot be tagged 'Summer' — user must choose 1st or 2nd Sem.
+                            Non-Summer: one link with semester pre-filled.
+                        -->
+                        <template v-else>
+                            <p class="text-xs mt-1 text-amber-600">
+                                No subjects exist in the registry for
+                                <strong>{{ preset.course }}</strong> ·
+                                <strong>{{ preset.year_level }}</strong>
+                                <template v-if="!isSummerPreset"> · <strong>{{ preset.semester }}</strong></template>.
+                            </p>
+
+                            <!-- Summer: explain the two-semester rule + two links -->
+                            <template v-if="isSummerPreset">
+                                <p class="text-xs mt-1.5 text-amber-700">
+                                    Summer subjects are classified as <strong>1st Sem</strong>
+                                    or <strong>2nd Sem</strong> — create them first, then return here.
+                                </p>
+                                <div class="flex items-center justify-center gap-3 mt-2">
+                                    <Link
+                                        :href="createUrl1stSem"
+                                        class="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition-colors"
+                                    >
+                                        <Plus class="h-3 w-3" />
+                                        Create 1st Sem Subject
+                                    </Link>
+                                    <Link
+                                        :href="createUrl2ndSem"
+                                        class="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition-colors"
+                                    >
+                                        <Plus class="h-3 w-3" />
+                                        Create 2nd Sem Subject
+                                    </Link>
+                                </div>
+                            </template>
+
+                            <!-- Non-Summer: single link with semester pre-filled -->
+                            <template v-else>
+                                <Link
+                                    :href="createSubjectUrl"
+                                    class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition-colors"
+                                >
+                                    <Plus class="h-3 w-3" />
+                                    Create subjects for this preset
+                                </Link>
+                            </template>
+                        </template>
                     </div>
 
+                    <!-- Subject rows -->
                     <div v-else class="overflow-x-auto">
                         <table class="w-full text-sm">
                             <thead class="bg-gray-50 border-b text-xs uppercase tracking-wide text-gray-500">
                                 <tr>
                                     <th class="text-left px-4 py-2.5">Code</th>
                                     <th class="text-left px-4 py-2.5">Subject Name</th>
+                                    <!--
+                                        Semester column only shown for Summer presets.
+                                        For regular presets it's constant and adds visual noise.
+                                    -->
+                                    <th v-if="isSummerPreset" class="text-center px-3 py-2.5">Sem</th>
                                     <th class="text-center px-3 py-2.5">LEC</th>
                                     <th class="text-center px-3 py-2.5">LAB</th>
                                     <th class="text-right px-4 py-2.5">Tuition</th>
@@ -411,6 +580,18 @@ const ratesExpanded = ref(false)
                                         </div>
                                     </td>
                                     <td class="px-4 py-3 text-gray-800">{{ ps.name }}</td>
+
+                                    <!-- Semester column — Summer presets only -->
+                                    <td v-if="isSummerPreset" class="px-3 py-3 text-center">
+                                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                            :class="ps.semester === '1st Sem'
+                                                ? 'bg-blue-100 text-blue-700'
+                                                : 'bg-purple-100 text-purple-700'"
+                                        >
+                                            {{ ps.semester ?? '—' }}
+                                        </span>
+                                    </td>
+
                                     <td class="px-3 py-3 text-center font-mono">{{ ps.lec_units }}</td>
                                     <td class="px-3 py-3 text-center font-mono">{{ ps.lab_units }}</td>
                                     <td class="px-4 py-3 text-right font-mono">
@@ -450,17 +631,11 @@ const ratesExpanded = ref(false)
                                 </tr>
                             </tbody>
 
-                            <!--
-                                tfoot layout:
-                                  Row 1: Subject Subtotal — per-subject Tuition | per-subject Lab Fee
-                                  Row 2: + Entrepreneurship/Lab Activation (flat) in Lab Fee column
-                                  Row 3: = Totals — Tuition (unchanged) | Lab + Entrep combined
-                                No single merged grand total — Tuition and Lab Fee remain separate columns.
-                            -->
                             <tfoot v-if="linkedSubjects.length > 0" class="border-t-2 bg-gray-50 text-sm">
-                                <!-- Row 1: per-subject subtotals -->
                                 <tr class="text-gray-700">
-                                    <td colspan="4" class="px-4 py-2.5 font-medium text-gray-600">Subject Subtotal</td>
+                                    <td :colspan="isSummerPreset ? 5 : 4" class="px-4 py-2.5 font-medium text-gray-600">
+                                        Subject Subtotal
+                                    </td>
                                     <td class="px-4 py-2.5 text-right font-mono font-semibold text-gray-800">
                                         {{ formatCurrency(totalTuition) }}
                                     </td>
@@ -469,9 +644,8 @@ const ratesExpanded = ref(false)
                                     </td>
                                     <td></td>
                                 </tr>
-                                <!-- Row 2: + Entrep in Lab Fee column -->
                                 <tr class="text-gray-500 border-t border-gray-100">
-                                    <td colspan="4" class="px-4 py-1.5 text-xs italic text-gray-400">
+                                    <td :colspan="isSummerPreset ? 5 : 4" class="px-4 py-1.5 text-xs italic text-gray-400">
                                         + Entrepreneurship / Lab Activation Fee
                                         <span class="text-gray-300 ml-1">(flat, billed at assessment level)</span>
                                     </td>
@@ -481,9 +655,8 @@ const ratesExpanded = ref(false)
                                     </td>
                                     <td></td>
                                 </tr>
-                                <!-- Row 3: column totals — Tuition | Lab+Entrep (NO merged grand total) -->
                                 <tr class="border-t-2 border-gray-300 bg-gray-100">
-                                    <td colspan="4" class="px-4 py-3 font-bold text-gray-800 text-sm">
+                                    <td :colspan="isSummerPreset ? 5 : 4" class="px-4 py-3 font-bold text-gray-800 text-sm">
                                         = Totals
                                     </td>
                                     <td class="px-4 py-3 text-right font-mono font-bold text-gray-900">
@@ -500,7 +673,7 @@ const ratesExpanded = ref(false)
                 </CardContent>
             </Card>
 
-            <!-- Slim collapsible billing rates — NSTP card removed per Decision F -->
+            <!-- Billing rates panel -->
             <div class="rounded-lg border border-gray-200 overflow-hidden">
                 <button
                     type="button"
@@ -513,7 +686,10 @@ const ratesExpanded = ref(false)
                     </span>
                     <span class="text-xs text-gray-400">{{ ratesExpanded ? 'Hide ▲' : 'Show ▼' }}</span>
                 </button>
-                <div v-if="ratesExpanded" class="px-4 py-3 bg-white border-t border-gray-100 space-y-2 text-xs text-muted-foreground">
+                <div
+                    v-if="ratesExpanded"
+                    class="px-4 py-3 bg-white border-t border-gray-100 space-y-2 text-xs text-muted-foreground"
+                >
                     <div class="flex justify-between">
                         <span>Per lecture unit:</span>
                         <span class="font-mono font-medium text-foreground">{{ formatCurrency(rates.tuition_per_unit) }}</span>

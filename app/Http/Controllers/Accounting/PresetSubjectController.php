@@ -32,10 +32,24 @@ use Inertia\Response;
  *      Used by: any legacy deep links that still point to fee-settings context.
  *
  * store(), destroy(), sync() are shared — routes in both namespaces point here.
+ *
+ * ── Summer Semester Logic ──────────────────────────────────────────────────────
+ *
+ *   Subjects are classified as '1st Sem' or '2nd Sem' only. Summer is a
+ *   PRESET classification (course_unit_presets.semester = 'Summer'), not a
+ *   subject classification. No subject ever has semester = 'Summer'.
+ *
+ *   CCDI Summer classes offer subjects from both the 1st Sem and 2nd Sem of
+ *   the same year level in a compressed 1–1.5 month schedule. A Summer preset
+ *   therefore draws its availableSubjects from semester IN ('1st Sem', '2nd Sem')
+ *   for the same course and year_level.
+ *
+ *   This is handled exclusively in buildPageData() — nowhere else in the system
+ *   needs to know this rule.
  */
 class PresetSubjectController extends Controller
 {
-    // ─── Curriculum Context (new) ─────────────────────────────────────────────
+    // ─── Curriculum Context (primary) ─────────────────────────────────────────
 
     /**
      * Render the subject management page in the Curriculum Presets context.
@@ -46,15 +60,15 @@ class PresetSubjectController extends Controller
         $data = $this->buildPageData($preset);
 
         return Inertia::render('Accounting/CurriculumPreset/Subjects', array_merge($data, [
-            'backUrl'   => route('accounting.curriculum-presets.index', ['course' => $preset->course]),
-            'isNew'     => $request->boolean('new'),
+            'backUrl'      => route('accounting.curriculum-presets.index', ['course' => $preset->course]),
+            'isNew'        => $request->boolean('new'),
             'storeRoute'   => route('accounting.curriculum-presets.subjects.store', $preset->id),
             'destroyRoute' => 'accounting.curriculum-presets.subjects.destroy',
             'syncRoute'    => route('accounting.curriculum-presets.subjects.sync', $preset->id),
         ]));
     }
 
-    // ─── Legacy Fee-Settings Context ─────────────────────────────────────────
+    // ─── Legacy Fee-Settings Context ──────────────────────────────────────────
 
     /**
      * Render the subject management page in the Fee Settings context (legacy).
@@ -165,20 +179,43 @@ class PresetSubjectController extends Controller
 
     /**
      * Build the shared page data array used by both index() and curriculumIndex().
-     * All data is identical — only the Vue component and navigation props differ.
+     *
+     * ── Summer Preset Handling ────────────────────────────────────────────────
+     *
+     * When $preset->semester === 'Summer', availableSubjects are pulled from
+     * BOTH '1st Sem' and '2nd Sem' of the same year_level. This reflects CCDI
+     * Summer policy: Summer classes are drawn from the full year's subjects,
+     * not a separate Summer subject registry. No subject row ever has
+     * semester = 'Summer'.
+     *
+     * For all other semesters ('1st Sem', '2nd Sem'), the query matches exactly.
+     *
+     * Note: normalizeSemester() has been intentionally removed. preset->semester
+     * is already in long format ('1st Sem', '2nd Sem', 'Summer') — enforced by
+     * CurriculumPresetController validation. Calling normalizeSemester() was a
+     * no-op via the default branch and added false ambiguity.
      */
     private function buildPageData(CourseUnitPreset $preset): array
     {
         $preset->load('presetSubjects.subject');
 
-        $semesterDb = AssessmentService::normalizeSemester($preset->semester);
-
-        $allSubjects = Subject::where('course', $preset->course)
+        // ── Subject query — Summer-aware ───────────────────────────────────────
+        $subjectQuery = Subject::where('course', $preset->course)
             ->where('year_level', $preset->year_level)
-            ->where('semester', $semesterDb)
             ->where('is_active', true)
-            ->orderBy('code')
-            ->get();
+            ->orderBy('semester')   // '1st Sem' before '2nd Sem' alphabetically
+            ->orderBy('code');
+
+        if ($preset->semester === 'Summer') {
+            // Summer presets pool subjects from both regular semesters of
+            // the same year level. Subjects themselves are never tagged 'Summer'.
+            $subjectQuery->whereIn('semester', ['1st Sem', '2nd Sem']);
+        } else {
+            // 1st Sem and 2nd Sem presets match their semester exactly.
+            $subjectQuery->where('semester', $preset->semester);
+        }
+
+        $allSubjects = $subjectQuery->get();
 
         $linkedSubjectIds = $preset->presetSubjects->pluck('subject_id')->toArray();
 
@@ -189,6 +226,7 @@ class PresetSubjectController extends Controller
                 'id'        => $s->id,
                 'code'      => $s->code,
                 'name'      => $s->name,
+                'semester'  => $s->semester,    // expose semester so Vue can group them (1st Sem / 2nd Sem)
                 'lec_units' => $s->lec_units,
                 'lab_units' => $s->lab_units,
                 'is_nstp'   => (bool) $s->is_nstp,
@@ -211,6 +249,7 @@ class PresetSubjectController extends Controller
                 'subject_id'        => $ps->subject_id,
                 'code'              => $ps->subject?->code ?? '—',
                 'name'              => $ps->subject?->name ?? '—',
+                'semester'          => $ps->subject?->semester ?? null,
                 'lec_units'         => $ps->lec_units,
                 'lab_units'         => $ps->lab_units,
                 'is_nstp'           => $isNstp,
@@ -239,10 +278,8 @@ class PresetSubjectController extends Controller
             'linkedSubjects'    => $linkedSubjects,
             'availableSubjects' => $availableSubjects,
             'rates'             => [
-                'tuition_per_unit'    => $rates['tuition_per_unit'],
-                'lab_fee_per_subject' => $rates['lab_fee_per_subject'],
-                // Passed so the Subjects.vue tfoot can show the Entrep add-on row
-                // without hardcoding ₱600 — value comes from fee_settings table.
+                'tuition_per_unit'     => $rates['tuition_per_unit'],
+                'lab_fee_per_subject'  => $rates['lab_fee_per_subject'],
                 'entrepreneurship_fee' => $rates['entrepreneurship_fee'],
             ],
         ];
