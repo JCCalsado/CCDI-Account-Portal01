@@ -17,16 +17,18 @@ use Illuminate\Support\Facades\DB;
  *                         PATHFIT/PE units ARE included in this sum.
  *   - lab_units         → sum of all lab_units in the term (display only)
  *   - lab_subject_count → count of subjects where lab_units > 0 (drives lab fee)
- *   - has_nstp          → true if NSTP subjects are in this term's curriculum.
- *                         Billing adds 1.5 fixed units (₱546) on top of lec_units
- *                         when has_nstp = true. NSTP is excluded from 100% discounts.
  *
- * NSTP presence:
+ * NOTE: has_nstp was dropped from this table by migration
+ *   2026_05_30_195021_drop_has_nstp_from_course_unit_presets.
+ *   NSTP detection now happens at the subject level via Subject::is_nstp.
+ *   AssessmentService reads is_nstp per-subject — it no longer reads a preset flag.
+ *
+ * NSTP presence (for reference only — not stored on the preset):
  *   - 1st Year only (1st Sem + 2nd Sem) for all 6 courses
  *   - NOT present in 2nd Year and above
  *
  * Verified against EnhancedSubjectSeeder on 2026-05-11.
- * Formula: lec_units = Σ(subject.lec_units) where subject is NOT NSTP
+ * Formula: lec_units = Σ(subject.lec_units) where subject.is_nstp = false
  */
 class CourseUnitPresetsSeeder extends Seeder
 {
@@ -41,7 +43,7 @@ class CourseUnitPresetsSeeder extends Seeder
         $presets = $this->allPresets();
 
         $rows = [];
-        foreach ($presets as [$course, $yearLevel, $semester, $lec, $lab, $labCount, $hasNstp]) {
+        foreach ($presets as [$course, $yearLevel, $semester, $lec, $lab, $labCount]) {
             $rows[] = [
                 'course'            => $course,
                 'year_level'        => $yearLevel,
@@ -49,7 +51,6 @@ class CourseUnitPresetsSeeder extends Seeder
                 'lec_units'         => $lec,
                 'lab_units'         => $lab,
                 'lab_subject_count' => $labCount,
-                'has_nstp'          => $hasNstp,
                 'is_active'         => true,
                 'created_at'        => $now,
                 'updated_at'        => $now,
@@ -83,11 +84,14 @@ class CourseUnitPresetsSeeder extends Seeder
 
     // ─────────────────────────────────────────────────────────────────────────
     // COURSE-SPECIFIC PRESETS
-    // Columns: [course, year_level, semester, lec_units, lab_units, lab_subject_count, has_nstp]
+    // Columns: [course, year_level, semester, lec_units, lab_units, lab_subject_count]
+    //
+    // has_nstp was dropped from course_unit_presets on 2026-05-30.
+    // NSTP detection now uses Subject::is_nstp at assessment time.
     //
     // lec_units verification shorthand used in comments:
     //   ✓ PATHFIT = included in sum
-    //   ✗ NSTP    = excluded from sum (billed separately via has_nstp flag)
+    //   ✗ NSTP    = excluded from sum (billed separately via per-subject is_nstp flag)
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
@@ -107,16 +111,16 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $c = 'Associate in Computer Technology - Networking';
         return [
-            // [course, year_level, semester, lec_units, lab_units, lab_subject_count, has_nstp]
-            [$c, '1st Year', '1st Sem', 19, 4, 4, true],   // +PATHFIT(2) -NSTP(1.5)
-            [$c, '1st Year', '2nd Sem', 19, 4, 4, true],   // +PATHFIT(2) -NSTP(1.5)
-            [$c, '2nd Year', '1st Sem', 22, 3, 3, false],  // +PATHFIT(2)
-            [$c, '2nd Year', '2nd Sem', 20, 3, 3, false],  // +PATHFIT(2) | was 18
+            // [course, year_level, semester, lec_units, lab_units, lab_subject_count]
+            [$c, '1st Year', '1st Sem', 19, 4, 4],   // +PATHFIT(2) -NSTP(1.5)
+            [$c, '1st Year', '2nd Sem', 19, 4, 4],   // +PATHFIT(2) -NSTP(1.5)
+            [$c, '2nd Year', '1st Sem', 22, 3, 3],  // +PATHFIT(2)
+            [$c, '2nd Year', '2nd Sem', 20, 3, 3],  // +PATHFIT(2) | was 18
             // ACT is a 2-year program — 3rd/4th year rows kept for schema consistency
-            [$c, '3rd Year', '1st Sem',  0, 0, 0, false],
-            [$c, '3rd Year', '2nd Sem',  0, 0, 0, false],
-            [$c, '4th Year', '1st Sem',  0, 0, 0, false],
-            [$c, '4th Year', '2nd Sem',  0, 0, 0, false],
+            [$c, '3rd Year', '1st Sem',  0, 0, 0],
+            [$c, '3rd Year', '2nd Sem',  0, 0, 0],
+            [$c, '4th Year', '1st Sem',  0, 0, 0],
+            [$c, '4th Year', '2nd Sem',  0, 0, 0],
         ];
     }
 
@@ -136,14 +140,14 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $c = 'BS Computer Science';
         return [
-            [$c, '1st Year', '1st Sem', 17, 3, 3, true],   // +PATHFIT(2) -NSTP(1.5) | was 15
-            [$c, '1st Year', '2nd Sem', 16, 4, 4, true],   // +PATHFIT(2) -NSTP(1.5) | was 14
-            [$c, '2nd Year', '1st Sem', 21, 2, 2, false],  // +PATHFIT(2)             | was 19
-            [$c, '2nd Year', '2nd Sem', 20, 3, 3, false],  // +PATHFIT4(2)            | was 18
-            [$c, '3rd Year', '1st Sem', 17, 4, 4, false],  // no PATHFIT in 3rd year
-            [$c, '3rd Year', '2nd Sem', 17, 4, 4, false],
-            [$c, '4th Year', '1st Sem', 13, 5, 5, false],
-            [$c, '4th Year', '2nd Sem',  6, 3, 2, false],  // Thesis2+Practicum | was 2,1,1
+            [$c, '1st Year', '1st Sem', 17, 3, 3],   // +PATHFIT(2) -NSTP(1.5) | was 15
+            [$c, '1st Year', '2nd Sem', 16, 4, 4],   // +PATHFIT(2) -NSTP(1.5) | was 14
+            [$c, '2nd Year', '1st Sem', 21, 2, 2],  // +PATHFIT(2)             | was 19
+            [$c, '2nd Year', '2nd Sem', 20, 3, 3],  // +PATHFIT4(2)            | was 18
+            [$c, '3rd Year', '1st Sem', 17, 4, 4],  // no PATHFIT in 3rd year
+            [$c, '3rd Year', '2nd Sem', 17, 4, 4],
+            [$c, '4th Year', '1st Sem', 13, 5, 5],
+            [$c, '4th Year', '2nd Sem',  6, 3, 2],  // Thesis2+Practicum | was 2,1,1
         ];
     }
 
@@ -163,14 +167,14 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $c = 'BS Information Technology';
         return [
-            [$c, '1st Year', '1st Sem', 17, 3, 3, true],   // +PATHFIT(2) -NSTP(1.5) | was 15
-            [$c, '1st Year', '2nd Sem', 16, 4, 4, true],   // +PATHFIT(2) -NSTP(1.5) | was 14
-            [$c, '2nd Year', '1st Sem', 17, 3, 3, false],  // already correct
-            [$c, '2nd Year', '2nd Sem', 17, 3, 3, false],  // already correct
-            [$c, '3rd Year', '1st Sem', 18, 3, 3, false],
-            [$c, '3rd Year', '2nd Sem', 17, 4, 4, false],
-            [$c, '4th Year', '1st Sem', 14, 4, 4, false],
-            [$c, '4th Year', '2nd Sem',  6, 3, 2, false],  // Project2+Practicum | was 2,1,1
+            [$c, '1st Year', '1st Sem', 17, 3, 3],   // +PATHFIT(2) -NSTP(1.5) | was 15
+            [$c, '1st Year', '2nd Sem', 16, 4, 4],   // +PATHFIT(2) -NSTP(1.5) | was 14
+            [$c, '2nd Year', '1st Sem', 17, 3, 3],  // already correct
+            [$c, '2nd Year', '2nd Sem', 17, 3, 3],  // already correct
+            [$c, '3rd Year', '1st Sem', 18, 3, 3],
+            [$c, '3rd Year', '2nd Sem', 17, 4, 4],
+            [$c, '4th Year', '1st Sem', 14, 4, 4],
+            [$c, '4th Year', '2nd Sem',  6, 3, 2],  // Project2+Practicum | was 2,1,1
         ];
     }
 
@@ -188,15 +192,15 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $c = 'BS Information Systems';
         return [
-            [$c, '1st Year', '1st Sem', 17, 3, 3, true],   // already correct
-            [$c, '1st Year', '2nd Sem', 18, 2, 2, true],   // already correct
-            [$c, '2nd Year', '1st Sem', 20, 3, 3, false],  // already correct
-            [$c, '2nd Year', '2nd Sem', 19, 1, 1, false],  // +PE4(2) | was 17
-            [$c, '3rd Year', '1st Sem', 16, 2, 2, false],  // no PE in 3rd year
+            [$c, '1st Year', '1st Sem', 17, 3, 3],   // already correct
+            [$c, '1st Year', '2nd Sem', 18, 2, 2],   // already correct
+            [$c, '2nd Year', '1st Sem', 20, 3, 3],  // already correct
+            [$c, '2nd Year', '2nd Sem', 19, 1, 1],  // +PE4(2) | was 17
+            [$c, '3rd Year', '1st Sem', 16, 2, 2],  // no PE in 3rd year
             // 3rd Year 2nd Sem and 4th Year: no subjects defined in EnhancedSubjectSeeder yet
-            [$c, '3rd Year', '2nd Sem',  0, 0, 0, false],
-            [$c, '4th Year', '1st Sem',  0, 0, 0, false],
-            [$c, '4th Year', '2nd Sem',  0, 0, 0, false],
+            [$c, '3rd Year', '2nd Sem',  0, 0, 0],
+            [$c, '4th Year', '1st Sem',  0, 0, 0],
+            [$c, '4th Year', '2nd Sem',  0, 0, 0],
         ];
     }
 
@@ -218,14 +222,14 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $c = 'BS Engineering Technology - Electronics';
         return [
-            [$c, '1st Year', '1st Sem', 24, 3, 3, true],   // +PATHFIT(2) -NSTP(1.5) | was 22
-            [$c, '1st Year', '2nd Sem', 21, 5, 5, true],   // +PATHFIT(2) -NSTP(1.5) | was 19
-            [$c, '2nd Year', '1st Sem', 25, 3, 3, false],  // +PATHFIT(2)             | was 23
-            [$c, '2nd Year', '2nd Sem', 22, 3, 3, false],  // +PE4(2)                 | was 20
-            [$c, '3rd Year', '1st Sem', 23, 3, 3, false],  // no PATHFIT in 3rd year
-            [$c, '3rd Year', '2nd Sem', 20, 5, 4, false],  // lab_units: ECE131(1)+ELXT150(2)+ELXT160(1)+PROJECT1(1)=5
-            [$c, '4th Year', '1st Sem', 16, 3, 2, false],  // lab: ECE132(1)+ELXT170(2)=3, lab_count=2
-            [$c, '4th Year', '2nd Sem', 12, 0, 0, false],  // OJT only
+            [$c, '1st Year', '1st Sem', 24, 3, 3],   // +PATHFIT(2) -NSTP(1.5) | was 22
+            [$c, '1st Year', '2nd Sem', 21, 5, 5],   // +PATHFIT(2) -NSTP(1.5) | was 19
+            [$c, '2nd Year', '1st Sem', 25, 3, 3],  // +PATHFIT(2)             | was 23
+            [$c, '2nd Year', '2nd Sem', 22, 3, 3],  // +PE4(2)                 | was 20
+            [$c, '3rd Year', '1st Sem', 23, 3, 3],  // no PATHFIT in 3rd year
+            [$c, '3rd Year', '2nd Sem', 20, 5, 4],  // lab_units: ECE131(1)+ELXT150(2)+ELXT160(1)+PROJECT1(1)=5
+            [$c, '4th Year', '1st Sem', 16, 3, 2],  // lab: ECE132(1)+ELXT170(2)=3, lab_count=2
+            [$c, '4th Year', '2nd Sem', 12, 0, 0],  // OJT only
         ];
     }
 
@@ -247,14 +251,14 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $c = 'BS Engineering Technology - Electrical';
         return [
-            [$c, '1st Year', '1st Sem', 21, 2, 2, true],   // +PATHFIT(2) -NSTP(1.5) | was 19
-            [$c, '1st Year', '2nd Sem', 21, 3, 3, true],   // +PATHFIT(2) -NSTP(1.5) | was 19
-            [$c, '2nd Year', '1st Sem', 23, 3, 3, false],  // +PATHFIT(2)             | was 21
-            [$c, '2nd Year', '2nd Sem', 26, 4, 4, false],  // +PE4(2)                 | was 24
-            [$c, '3rd Year', '1st Sem', 22, 2, 2, false],  // no PATHFIT in 3rd year
-            [$c, '3rd Year', '2nd Sem', 21, 4, 4, false],
-            [$c, '4th Year', '1st Sem', 17, 5, 4, false],  // lab_units 4→5 (1+2+1+1=5)
-            [$c, '4th Year', '2nd Sem', 12, 0, 0, false],  // OJT only
+            [$c, '1st Year', '1st Sem', 21, 2, 2],   // +PATHFIT(2) -NSTP(1.5) | was 19
+            [$c, '1st Year', '2nd Sem', 21, 3, 3],   // +PATHFIT(2) -NSTP(1.5) | was 19
+            [$c, '2nd Year', '1st Sem', 23, 3, 3],  // +PATHFIT(2)             | was 21
+            [$c, '2nd Year', '2nd Sem', 26, 4, 4],  // +PE4(2)                 | was 24
+            [$c, '3rd Year', '1st Sem', 22, 2, 2],  // no PATHFIT in 3rd year
+            [$c, '3rd Year', '2nd Sem', 21, 4, 4],
+            [$c, '4th Year', '1st Sem', 17, 5, 4],  // lab_units 4→5 (1+2+1+1=5)
+            [$c, '4th Year', '2nd Sem', 12, 0, 0],  // OJT only
         ];
     }
 
@@ -266,7 +270,7 @@ class CourseUnitPresetsSeeder extends Seeder
     {
         $this->command->info('📊 Seeded Presets:');
         $this->command->table(
-            ['Course', 'Year', 'Sem', 'Lec', 'Lab', 'LabSubj', 'NSTP'],
+            ['Course', 'Year', 'Sem', 'Lec', 'Lab', 'LabSubj'],
             array_map(fn($r) => [
                 $r['course'],
                 $r['year_level'],
@@ -274,7 +278,6 @@ class CourseUnitPresetsSeeder extends Seeder
                 $r['lec_units'],
                 $r['lab_units'],
                 $r['lab_subject_count'],
-                $r['has_nstp'] ? '✓' : '—',
             ], $rows)
         );
     }

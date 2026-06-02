@@ -55,14 +55,25 @@ class CourseUnitPresetSubjectsSeeder extends Seeder
 
             $sortOrder = 0;
             foreach ($subjects as $subject) {
-                $isNstp    = stripos($subject->code, 'nstp') !== false;
+                // Use the authoritative is_nstp flag from the subjects table.
+                // This was set by EnhancedSubjectSeeder via the is_nstp column
+                // (migration 2026_05_30_194854_add_is_nstp_to_subjects_table).
+                $isNstp = (bool) $subject->is_nstp;
+
+                // PATHFIT/PE detection — local variable only.
+                // is_pathfit was dropped from course_unit_preset_subjects by migration
+                // 2026_05_30_194939_drop_is_pathfit_from_course_unit_preset_subjects.
+                // We still need this flag to correctly compute lab_fee (PATHFIT subjects
+                // have lab_units > 0 but do NOT incur a lab fee per-subject).
+                // It is used here for calculation only — NOT inserted into the DB.
                 $isPathfit = stripos($subject->code, 'pathfit') !== false
                           || stripos($subject->code, 'pe ') === 0;
 
                 // NSTP: billed separately at NSTP_MINIMUM_UNITS override — no tuition here
                 $tuitionFee = $isNstp ? 0 : ($subject->lec_units * $tuitionRate);
 
-                // Lab fee: per-subject flat rate when lab_units > 0, except PATHFIT/PE
+                // Lab fee: per-subject flat rate when lab_units > 0, except PATHFIT/PE.
+                // PATHFIT has a non-zero lab_units for timetabling but is not lab-billed.
                 $labFee = ($subject->lab_units > 0 && !$isPathfit) ? $labFeePerSubject : 0;
 
                 CourseUnitPresetSubject::create([
@@ -74,7 +85,7 @@ class CourseUnitPresetSubjectsSeeder extends Seeder
                     'lab_fee'               => $labFee,
                     'total_fee'             => $tuitionFee + $labFee,
                     'is_nstp'               => $isNstp,
-                    'is_pathfit'            => $isPathfit,
+                    // is_pathfit intentionally omitted — column dropped from this table.
                     'sort_order'            => $sortOrder++,
                 ]);
 
