@@ -140,6 +140,8 @@
         .alloc-badge-paid      { background: #d1fae5; color: #065f46; }
         .alloc-badge-processed { background: #dbeafe; color: #1e40af; }
         .alloc-badge-partial   { background: #fef3c7; color: #92400e; }
+        /* underpaid: final term with remaining balance — amber/orange */
+        .alloc-badge-underpaid { background: #fffbeb; color: #92400e; border: 1px solid #d97706; }
 
         /* Carry-forward note */
         .carry-note {
@@ -337,7 +339,8 @@
                 The 'status_after' field drives the badge and carry note:
                   'paid'      → term fully settled by this payment
                   'processed' → partial payment; remaining balance carried forward
-                  'partial'   → balance remains (final active term in the chain)
+                  'partial'   → LEGACY: balance remains on this term (pre-carry-rule rows)
+                  'underpaid' → final term received partial payment; balance stays here
             --}}
             @if (!empty($allocation))
                 <table class="allocation-table" style="margin-top: 10px;">
@@ -364,6 +367,8 @@
                                 <td class="amount-col">
                                     @if ($statusAfter === 'processed' || $statusAfter === 'paid')
                                         <span style="color:#065f46; font-weight:bold;">&#8369;0.00</span>
+                                    @elseif ($statusAfter === 'underpaid')
+                                        <span style="color:#92400e; font-weight:bold;">&#8369;{{ number_format($balanceAfter, 2) }}</span>
                                     @else
                                         <span style="color:#b45309;">&#8369;{{ number_format($balanceAfter, 2) }}</span>
                                     @endif
@@ -381,6 +386,11 @@
                                         @endif
                                     @elseif ($statusAfter === 'partial')
                                         <span class="alloc-badge alloc-badge-partial">Partial</span>
+                                    @elseif ($statusAfter === 'underpaid')
+                                        <span class="alloc-badge alloc-badge-underpaid">Underpaid</span>
+                                        <div class="carry-note" style="color:#92400e;">
+                                            &#8369;{{ number_format($balanceAfter, 2) }} still due &mdash; final term
+                                        </div>
                                     @else
                                         <span style="color:#6b7280;">{{ ucfirst($statusAfter) }}</span>
                                     @endif

@@ -162,20 +162,24 @@ const formatDate = (date: string | null | undefined): string => {
 
 const formatStatus = (status: string): string => {
     const statuses: Record<string, string> = {
-        pending: 'Pending',
-        partial: 'Partial',
-        paid: 'Paid',
-        overdue: 'Overdue',
+        pending:   'Pending',
+        partial:   'Partial',       // legacy
+        underpaid: 'Underpaid',     // final term with remaining balance
+        paid:      'Paid',
+        overdue:   'Overdue',
+        processed: 'Carried Fwd',
     };
     return statuses[status] || status;
 };
 
 const statusClasses = (status: string): string => {
     const classes: Record<string, string> = {
-        pending: 'bg-yellow-100 text-yellow-800',
-        partial: 'bg-blue-100 text-blue-800',
-        paid: 'bg-green-100 text-green-800',
-        overdue: 'bg-red-100 text-red-800',
+        pending:   'bg-yellow-100 text-yellow-800',
+        partial:   'bg-orange-100 text-orange-800',   // legacy
+        underpaid: 'bg-amber-50 text-amber-700',      // final term, balance remains
+        paid:      'bg-green-100 text-green-800',
+        overdue:   'bg-red-100 text-red-800',
+        processed: 'bg-sky-100 text-sky-800',
     };
     return classes[status] || 'bg-gray-100 text-gray-800';
 };
@@ -206,7 +210,14 @@ const remainingBalance = computed(() => {
 });
 
 const hasCarryover = computed(() => {
-    return props.terms.some((term) => term.remarks && term.remarks.includes('carryover'));
+    // PHP writes 'Carry-over of ₱...' (capital C, hyphenated) in the receiving
+    // term's remarks, and 'X carried to Y' in the closed term's remarks.
+    // We must check for both patterns case-insensitively.
+    return props.terms.some((term) => {
+        if (!term.remarks) return false;
+        const r = term.remarks.toLowerCase();
+        return r.includes('carry-over') || r.includes('carried to');
+    });
 });
 </script>
 

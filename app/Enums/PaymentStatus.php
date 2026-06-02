@@ -13,17 +13,21 @@ namespace App\Enums;
  *
  * STATUS VOCABULARY (student_payment_terms.status)
  * ------------------------------------------------
- * 'unpaid'    → term created, no payment ever attempted (legacy/initial value
- *               produced by AssessmentService::buildPaymentTerms). Treated as
+ * 'unpaid'    → legacy initial value (pre-normalisation migration). Treated as
  *               fully unpaid — equivalent to 'pending' for all balance queries.
- * 'pending'   → same as above; the normalised form going forward.
- * 'partial'   → LEGACY: payment applied but balance > 0 remains on this term
- *               (only appears on the final active term in a payment chain).
- *               New code produces 'processed' instead for intermediate terms.
+ * 'pending'   → canonical initial value; term not yet paid.
+ * 'partial'   → LEGACY: partial payment applied but balance > 0 remains.
+ *               Only appears on mid-terms before the carry rule ran. New code
+ *               does NOT produce this status — it produces 'processed' for
+ *               mid-terms and 'underpaid' for the final term.
+ * 'underpaid' → the FINAL term in an assessment received a partial payment.
+ *               The remaining balance stays on this term — there is no next
+ *               term to carry to. Student must pay the remainder in a future
+ *               transaction. balance > 0 always.
  * 'paid'      → balance = 0, fully settled by an exact or excess payment.
  * 'processed' → balance = 0, a partial payment was applied and the remaining
  *               balance was carried forward to the next term. Term is closed.
- *               This is the one-time term processing rule in action.
+ *               ONE-TIME TERM PROCESSING RULE: once processed, never re-opened.
  */
 enum PaymentStatus: string
 {
@@ -45,11 +49,22 @@ enum PaymentStatus: string
     case CANCELLED = 'cancelled';
 
     /**
-     * Legacy: partial payment applied, balance > 0 remains on this specific term.
-     * In new flows, intermediate terms become PROCESSED and only the final
-     * active term in a chain uses PARTIAL.
+     * LEGACY: partial payment applied, balance > 0 remains on this mid-term.
+     * Pre-dates the carry-forward rule. New code produces PROCESSED for
+     * mid-terms and UNDERPAID for the final term.
+     *
+     * @deprecated New allocations produce PROCESSED (mid-term) or UNDERPAID (final term).
+     *             This value is retained for backward compatibility with existing rows.
      */
     case PARTIAL = 'partial';
+
+    /**
+     * The final term in an assessment received a partial payment.
+     * Remaining balance stays on this term — no next term to carry to.
+     * Student must pay the remainder in a future transaction.
+     * balance > 0 always. Term is NOT closed.
+     */
+    case UNDERPAID = 'underpaid';
 
     /** Payment gateway returned an error and payment was not processed. */
     case FAILED = 'failed';
@@ -84,6 +99,7 @@ enum PaymentStatus: string
             self::AWAITING_APPROVAL => 'Awaiting Approval',
             self::CANCELLED         => 'Cancelled',
             self::PARTIAL           => 'Partial',
+            self::UNDERPAID         => 'Underpaid',
             self::FAILED            => 'Failed',
             self::COMPLETED         => 'Completed',
             self::AWAITING_PROOF    => 'Awaiting Proof',
@@ -103,7 +119,10 @@ enum PaymentStatus: string
             self::AWAITING_PROOF               => 'text-purple-600 bg-purple-50',
             self::CANCELLED, self::FAILED      => 'text-red-600 bg-red-50',
             self::PARTIAL                      => 'text-orange-600 bg-orange-50',
-            // PROCESSED = blue — closed & carried forward; not a failure, not a success
+            // UNDERPAID = amber — final term with outstanding balance; distinct
+            // from orange (legacy partial) and red (error states).
+            self::UNDERPAID                    => 'text-amber-700 bg-amber-50',
+            // PROCESSED = blue — closed & carried forward; not a failure, not a success.
             self::PROCESSED                    => 'text-blue-700 bg-blue-50',
         };
     }
@@ -111,14 +130,12 @@ enum PaymentStatus: string
     /**
      * Returns status values that represent "still owes money" for StudentPaymentTerm.
      *
-     * ✅ INCLUDES 'unpaid': AssessmentService::buildPaymentTerms() sets status='unpaid'
-     * for newly created terms. This is the legacy initial value. All balance queries
-     * MUST include 'unpaid' or they will return ₱0 for fresh assessments.
+     * ✅ INCLUDES 'unpaid': legacy initial value; treated as fully unpaid.
+     * ✅ INCLUDES 'partial': legacy mid-term rows with balance > 0.
+     * ✅ INCLUDES 'underpaid': final term with remaining balance after partial payment.
      *
-     * ✅ INCLUDES 'partial': legacy terms where balance > 0 remains.
-     *
-     * ❌ EXCLUDES 'processed': processed terms have balance = 0.
-     *    They are closed. Querying for them would return no balance.
+     * ❌ EXCLUDES 'processed': processed terms have balance = 0 (closed, carried).
+     * ❌ EXCLUDES 'paid': fully settled, balance = 0.
      *
      * ⚠️  NOTE: Do not use this to filter term balance queries. Use
      *    ->where('balance', '>', 0) instead — balance is the authoritative
@@ -129,9 +146,10 @@ enum PaymentStatus: string
     public static function unpaidValues(): array
     {
         return [
-            'unpaid',                // initial status from AssessmentService::buildPaymentTerms()
-            self::PENDING->value,
-            self::PARTIAL->value,
+            'unpaid',                  // legacy initial status
+            self::PENDING->value,      // canonical initial status
+            self::PARTIAL->value,      // legacy mid-term partial
+            self::UNDERPAID->value,    // final term with remaining balance
             // PROCESSED is NOT here — processed terms have balance = 0
         ];
     }

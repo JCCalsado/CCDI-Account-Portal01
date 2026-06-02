@@ -82,10 +82,27 @@ class WorkflowApprovalController extends Controller
                 $assessment = StudentAssessment::find($assessmentId);
             }
 
+            // Fetch all terms with outstanding balances for the approval sidebar.
+            //
+            // TWO FILTERS APPLIED TOGETHER — both required:
+            //
+            // 1. ->where('balance', '>', 0)
+            //    The AUTHORITATIVE filter. balance is always the source of truth
+            //    for whether a student owes money. status can be stale; balance
+            //    cannot. This is the canonical invariant across the entire codebase.
+            //
+            // 2. ->whereIn('status', ['pending', 'partial', 'underpaid'])
+            //    A SECONDARY display-correctness filter. Excludes 'processed' and
+            //    'paid' terms — which have balance = 0 by design but may briefly
+            //    appear with balance > 0 if a DB write partially fails mid-transaction.
+            //    Defense in depth: if status and balance are ever out of sync, this
+            //    prevents a processed/paid term from appearing as payable in the UI.
+            //    It does NOT replace the balance check — it complements it.
             $unpaidTerms = StudentPaymentTerm::whereHas('assessment', function ($q) use ($transaction) {
                     $q->where('user_id', $transaction->user_id);
                 })
-                ->whereIn('status', ['pending', 'partial'])
+                ->whereIn('status', ['pending', 'partial', 'underpaid'])
+                ->where('balance', '>', 0)
                 ->orderBy('due_date', 'asc')
                 ->get();
 

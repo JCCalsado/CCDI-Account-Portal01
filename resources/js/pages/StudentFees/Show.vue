@@ -912,7 +912,11 @@ const getTermStatusConfig = (status: string) => {
     const map: Record<string, { bg: string; text: string; label: string }> = {
         unpaid:    { bg: 'bg-yellow-100',  text: 'text-yellow-800',  label: 'Unpaid' },
         pending:   { bg: 'bg-yellow-100',  text: 'text-yellow-800',  label: 'Unpaid' },
+        // partial = LEGACY: balance remains on this term (pre-carry-rule rows)
         partial:   { bg: 'bg-orange-100',  text: 'text-orange-800',  label: 'Partial' },
+        // underpaid = final term received partial payment; balance stays here;
+        // no next term to carry to. Amber signals "needs attention".
+        underpaid: { bg: 'bg-amber-50',    text: 'text-amber-700',   label: 'Underpaid' },
         paid:      { bg: 'bg-green-100',   text: 'text-green-800',   label: 'Paid' },
         overdue:   { bg: 'bg-red-100',     text: 'text-red-800',     label: 'Overdue' },
         // processed = term closed; balance was carried forward to the next term.
@@ -1662,7 +1666,7 @@ const academicTotals = computed(() => {
                                     'rounded-xl border p-3 text-center text-xs transition-all',
                                     term.status === 'paid'
                                         ? 'border-emerald-200 bg-emerald-50'
-                                        : term.status === 'partial'
+                                        : ['partial', 'underpaid'].includes(term.status)
                                           ? 'border-amber-200 bg-amber-50'
                                           : term.status === 'overdue'
                                             ? 'border-red-200 bg-red-50'
@@ -1685,7 +1689,7 @@ const academicTotals = computed(() => {
                                     :class="
                                         term.status === 'overdue'
                                             ? 'text-red-500'
-                                            : term.status === 'partial'
+                                            : ['partial', 'underpaid'].includes(term.status)
                                               ? 'text-amber-600'
                                               : 'text-gray-500'
                                     "
@@ -1925,6 +1929,7 @@ const academicTotals = computed(() => {
                                                         'bg-green-50 text-green-800':  term.status === 'paid',
                                                         'bg-blue-50  text-blue-800':   term.status === 'processed',
                                                         'bg-amber-50 text-amber-800':  term.status === 'partial',
+                                                        'bg-amber-50 text-amber-700':  term.status === 'underpaid',
                                                         'bg-gray-50  text-gray-600':   ['pending','unpaid'].includes(term.status),
                                                         'bg-red-50   text-red-700':    term.status === 'overdue',
                                                     }"
@@ -1938,11 +1943,12 @@ const academicTotals = computed(() => {
                                                                 'bg-green-200 text-green-900':  term.status === 'paid',
                                                                 'bg-blue-200  text-blue-900':   term.status === 'processed',
                                                                 'bg-amber-200 text-amber-900':  term.status === 'partial',
+                                                                'bg-amber-100 text-amber-800':  term.status === 'underpaid',
                                                                 'bg-gray-200  text-gray-700':   ['pending','unpaid'].includes(term.status),
                                                                 'bg-red-200   text-red-800':    term.status === 'overdue',
                                                             }"
                                                         >
-                                                            {{ term.status === 'processed' ? 'Carried Fwd' : term.status }}
+                                                            {{ term.status === 'processed' ? 'Carried Fwd' : term.status === 'underpaid' ? 'Underpaid' : term.status }}
                                                         </span>
                                                     </span>
                                                 </div>

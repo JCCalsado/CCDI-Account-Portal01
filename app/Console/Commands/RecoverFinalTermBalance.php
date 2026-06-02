@@ -15,25 +15,23 @@ use Illuminate\Support\Facades\Log;
 /**
  * RecoverFinalTermBalance
  *
- * ONE-TIME recovery command for the specific bug where the close-and-carry
- * rule in StudentPaymentService::allocatePaymentAcrossTerms() Step 2
- * incorrectly zeroed the LAST term of an assessment (usually "Final") when
- * no next term existed.
+ * Recovery command for the specific bug where the close-and-carry rule in
+ * StudentPaymentService::allocatePaymentAcrossTerms() Step 2 incorrectly
+ * zeroed the LAST term of an assessment when no next term existed.
  *
- * THE BUG
- * ───────
- * Step 2 of allocatePaymentAcrossTerms() called $closedTerm->update([
- *     'balance' => '0.00',
- *     'status'  => PaymentStatus::PROCESSED->value,
- * ]) on the last term even when there was no next term to receive the carry.
- * This destroyed the remaining balance permanently: AccountService::recalculate()
- * then reported ₱0.00 outstanding, blocking further payments.
+ * THE BUG (now fixed)
+ * ───────────────────
+ * Step 2 unconditionally called $closedTerm->update(['balance' => '0.00',
+ * 'status' => 'processed']) on the last term even when $nextTerm was null.
+ * This destroyed the remaining balance. AccountService::recalculate() then
+ * reported ₱0.00 outstanding, blocking further payments.
  *
- * ROOT CAUSE FIX (applied separately)
- * ────────────────────────────────────
- * StudentPaymentService::allocatePaymentAcrossTerms() Step 2 now guards:
- *   if ($alloc['term_order'] === (int) $maxTermOrder) { continue; }
- * This command recovers data for assessments corrupted BEFORE that fix.
+ * ROOT CAUSE FIX
+ * ──────────────
+ * StudentPaymentService::allocatePaymentAcrossTerms() Step 2 now guards on
+ * $nextTerm === null: the last term is set to 'underpaid' instead of being
+ * closed. Balance is preserved. This command recovers assessments corrupted
+ * BEFORE that fix was deployed.
  *
  * HOW TO USE
  * ──────────
@@ -59,7 +57,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Restores:
  *   last_term.balance   = missing  (the balance the bug destroyed)
- *   last_term.status    = 'partial'
+ *   last_term.status    = 'underpaid'  (← was 'partial' before the UNDERPAID migration)
  *   last_term.paid_date = null
  *   last_term.remarks   = audit note with recovery timestamp
  *
@@ -67,7 +65,8 @@ use Illuminate\Support\Facades\Log;
  *
  * IDEMPOTENT
  * ──────────
- * A term with status = 'partial' and balance > 0 is skipped automatically.
+ * Terms already in 'underpaid' status with the correct balance are skipped.
+ * Terms in 'partial' status with balance > 0 are also skipped (already recovered).
  * Safe to re-run: already-recovered terms are never double-counted.
  */
 class RecoverFinalTermBalance extends Command
@@ -138,13 +137,35 @@ class RecoverFinalTermBalance extends Command
             // The final term is the one with the highest term_order.
             $lastTerm = $terms->last();
 
-            // ── Skip guard: only target PROCESSED terms with zero balance ─────
-            // A legitimately PROCESSED term (a non-last term that was correctly
-            // closed and carried) also has status='processed' and balance=0.
-            // We discriminate by checking that it IS the last term (already done
-            // by taking $terms->last()) AND that it has no incoming carry target
-            // (because the bug fires only when there is no next term).
+            // ── Skip guard ────────────────────────────────────────────────────
+            //
+            // We have two legitimate skip conditions:
+            //
+            // (A) Status is UNDERPAID — the term was already correctly handled
+            //     by the new allocation engine or by a previous recovery run.
+            //     If its balance is correct (matches the missing amount we'd
+            //     calculate), it needs no intervention.
+            //
+            // (B) Status is PARTIAL with balance > 0 — recovered by a previous
+            //     run of this command before the UNDERPAID migration. Still has
+            //     the correct balance; skip safely. The migration will have
+            //     already converted these to UNDERPAID if it ran first.
+            //
+            // We only target PROCESSED terms with balance = 0 — those are the
+            // ones the bug corrupted.
+            if ($lastTerm->status === PaymentStatus::UNDERPAID->value) {
+                $totalSkipped++;
+                continue;
+            }
+
+            if ($lastTerm->status === PaymentStatus::PARTIAL->value
+                && MoneyService::toCents($lastTerm->balance) > 0) {
+                $totalSkipped++;
+                continue;
+            }
+
             if ($lastTerm->status !== PaymentStatus::PROCESSED->value) {
+                // Any other non-processed status (pending, paid) — not our target.
                 $totalSkipped++;
                 continue;
             }
@@ -159,7 +180,6 @@ class RecoverFinalTermBalance extends Command
             $totalAssessmentCents = MoneyService::toCents($assessment->total_assessment);
 
             if ($totalAssessmentCents <= 0) {
-                // Zero-amount assessment — nothing to recover.
                 $totalSkipped++;
                 continue;
             }
@@ -177,14 +197,10 @@ class RecoverFinalTermBalance extends Command
                     ->sum('amount')
             );
 
-            // FALLBACK: if the JSON query returns 0 paid (which can happen for
-            // older transactions that pre-date the assessment_id meta field, or
-            // when recorded via StudentFeeController which uses a different flow),
-            // fall back to matching by user + year + semester.
-            // We extract the start year from school_year (e.g. '2026' from '2026-2027').
+            // FALLBACK: older transactions that pre-date the assessment_id meta field.
             if ($totalPaidCents === 0) {
-                $yearStart  = explode('-', $assessment->school_year, 2)[0] ?? null;
-                $semester   = $assessment->semester;
+                $yearStart = explode('-', $assessment->school_year, 2)[0] ?? null;
+                $semester  = $assessment->semester;
 
                 if ($yearStart && $semester) {
                     $totalPaidCents = MoneyService::sumFromDb(
@@ -199,39 +215,29 @@ class RecoverFinalTermBalance extends Command
             }
 
             // ── Derive correct remaining balance ──────────────────────────────
-            // What the student should still owe = assessed total − all confirmed payments.
             $correctRemainingCents = $totalAssessmentCents - $totalPaidCents;
 
             if ($correctRemainingCents <= 0) {
-                // Student paid in full. The last term was correctly zeroed by payment —
-                // this is NOT the bug scenario. Skip.
+                // Student paid in full. The last term was correctly zeroed.
                 $totalSkipped++;
                 continue;
             }
 
             // ── Sum of balances currently recorded on non-zero terms ──────────
-            // If other terms already hold some of the remaining balance (e.g., a
-            // midterm partial-pay scenario where carry IS correct), we must only
-            // restore what is genuinely missing from the last term.
             $currentTermBalanceCents = MoneyService::sumFromDb(
                 StudentPaymentTerm::where('student_assessment_id', $assessment->id)
                     ->where('balance', '>', 0)
                     ->sum('balance')
             );
 
-            // The balance that should be on the last term but was destroyed by the bug.
             $missingCents = $correctRemainingCents - $currentTermBalanceCents;
 
             if ($missingCents <= 0) {
-                // The correct balance is already distributed across other terms.
-                // Last term was zeroed correctly (or another mechanism compensated).
                 $totalSkipped++;
                 continue;
             }
 
-            // ── Sanity check: warn if the discrepancy is suspiciously large ───
-            // Missing more than the original last-term amount is a red flag —
-            // it could indicate double-payment records or other data corruption.
+            // ── Sanity check ──────────────────────────────────────────────────
             $originalLastTermAmountCents = MoneyService::toCents($lastTerm->amount);
             if ($missingCents > $originalLastTermAmountCents) {
                 $this->warn(sprintf(
@@ -280,7 +286,7 @@ class RecoverFinalTermBalance extends Command
 
             if ($isDryRun) {
                 $this->warn(sprintf(
-                    '    [DRY RUN] Would set "%s" → balance=%s, status=partial',
+                    '    [DRY RUN] Would set "%s" → balance=%s, status=underpaid',
                     $lastTerm->term_name,
                     MoneyService::formatFromCents($missingCents)
                 ));
@@ -293,34 +299,35 @@ class RecoverFinalTermBalance extends Command
             try {
                 DB::transaction(function () use ($lastTerm, $missingCents, $assessment) {
 
-                    // Re-lock the term row for the duration of this transaction.
                     $locked = StudentPaymentTerm::lockForUpdate()->findOrFail($lastTerm->id);
 
                     // Idempotency guard: if another process already recovered this
                     // term between our read and the lock, skip the update.
-                    if (MoneyService::toCents($locked->balance) > 0
-                        && $locked->status !== PaymentStatus::PROCESSED->value) {
+                    if (in_array($locked->status, [
+                            PaymentStatus::UNDERPAID->value,
+                            PaymentStatus::PARTIAL->value,
+                        ], true)
+                        && MoneyService::toCents($locked->balance) > 0
+                    ) {
                         Log::info('RecoverFinalTermBalance: term already recovered, skipping', [
                             'term_id'   => $locked->id,
                             'term_name' => $locked->term_name,
+                            'status'    => $locked->status,
                         ]);
                         return;
                     }
 
                     $locked->update([
                         'balance'   => MoneyService::toPesos($missingCents),
-                        'status'    => PaymentStatus::PARTIAL->value,
+                        'status'    => PaymentStatus::UNDERPAID->value,
                         'paid_date' => null,
-                        // Leave an audit trail — the original bug remark will be overwritten.
                         'remarks'   => sprintf(
                             'Balance restored by payments:recover-final-term on %s. ' .
-                            'Was incorrectly zeroed by carry-forward bug (no next term).',
+                            'Was incorrectly zeroed by close-and-carry bug (no next term).',
                             now()->toDateTimeString()
                         ),
                     ]);
 
-                    // Resync accounts.balance so the student portal shows the correct
-                    // outstanding amount immediately after recovery.
                     AccountService::recalculate($assessment->user);
 
                     Log::info('RecoverFinalTermBalance: restored', [
@@ -329,11 +336,10 @@ class RecoverFinalTermBalance extends Command
                         'assessment_id' => $assessment->id,
                         'user_id'       => $assessment->user_id,
                         'restored'      => MoneyService::formatFromCents($missingCents),
-                        'new_status'    => PaymentStatus::PARTIAL->value,
+                        'new_status'    => PaymentStatus::UNDERPAID->value,
                     ]);
                 });
 
-                // ── Post-fix verification: read back the saved value ──────────
                 $lastTerm->refresh();
                 $verifiedCents = MoneyService::toCents($lastTerm->balance);
 
@@ -398,7 +404,7 @@ class RecoverFinalTermBalance extends Command
         if ($isExecute && $totalFixed > 0) {
             $this->line('');
             $this->info('  Recovery complete. accounts.balance has been resynced for all affected students.');
-            $this->info('  Verify in the student portal: Student Account → Term Breakdown → Final should now show balance.');
+            $this->info('  Verify: Student Account → Term Breakdown → Final term should now show balance as Underpaid.');
         }
 
         $this->line('');

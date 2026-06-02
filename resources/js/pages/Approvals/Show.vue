@@ -67,10 +67,10 @@ interface AllocatedTerm extends UnpaidTerm {
      * derivedStatus — what this term's status will be AFTER approval.
      *   'paid'      → fully settled by this payment
      *   'processed' → partial payment applied; remaining balance carried forward
-     *   'partial'   → balance remains (only for the final active term)
+     *   'underpaid' → final term received partial payment; balance stays here (no next term)
      *   'pending'   → not affected by this payment
      */
-    derivedStatus: 'paid' | 'partial' | 'pending' | 'processed';
+    derivedStatus: 'paid' | 'underpaid' | 'pending' | 'processed';
     isAffected: boolean;
     isStartingTerm: boolean;
     // Carry-forward fields (one-time term processing rule)
@@ -243,7 +243,10 @@ const allocationPreview = computed((): AllocatedTerm[] => {
 
         let derivedStatus: AllocatedTerm['derivedStatus'] = 'pending';
         if (appliedCents >= balBeforeCents) derivedStatus = 'paid';
-        else if (appliedCents > 0)          derivedStatus = 'partial';
+        // 'partial' is used internally as a sentinel during Step 1 only.
+        // Step 2 will resolve it to either 'processed' (mid-term, carry out)
+        // or 'underpaid' (final term, balance retained). It is never the final value.
+        else if (appliedCents > 0)          derivedStatus = 'pending'; // Step 2 triggers on isAffected && projectedBalance > 0, not this value
 
         return {
             ...term,
@@ -258,32 +261,52 @@ const allocationPreview = computed((): AllocatedTerm[] => {
     });
 
     // ── STEP 2: Close-and-carry (one-time term processing rule) ───────────────
-    // For any term that ended Step 1 with derivedStatus = 'partial' (balance > 0):
-    //   - Find the next term in the result array (by position, since terms are
-    //     already sorted by term_order from props.unpaidTerms).
-    //   - Annotate the carry details on the current term's result entry.
-    //   - Close the current term: projectedBalance = 0, derivedStatus = 'processed'.
+    // For any term that was isAffected but ended Step 1 with projectedBalance > 0
+    // (partial payment — applied > 0 but did not fully clear the balance):
     //
-    // Note: we do NOT add the carry amount to the next term's projectedBalance
-    // in the preview because that would require cascading recalculation. The
-    // accounting reviewer sees the carry annotation and understands the effect.
+    //   IF a next unpaid term exists:
+    //     → Mid-term path: carry forward. Close this term (processed, balance → 0).
+    //     → Annotate carriedForward and carriedToTerm for the accounting reviewer.
+    //
+    //   IF NO next term exists (this IS the last term):
+    //     → Final-term path: set derivedStatus = 'underpaid'. Balance stays.
+    //     → Student must pay the remainder in a future transaction.
+    //
+    // NOTE: we do NOT add the carry amount to the next term's projectedBalance
+    // in the preview. The accounting reviewer sees the carry annotation.
     // The actual balance transfer happens server-side on approval.
     for (let i = 0; i < result.length; i++) {
         const entry = result[i];
-        if (entry.derivedStatus !== 'partial' || entry.projectedBalance <= 0) continue;
+
+        // Only process terms that received a partial payment.
+        if (
+            !entry.isAffected
+            || entry.projectedBalance <= 0
+            || entry.derivedStatus === 'paid'
+            || entry.derivedStatus === 'processed'
+        ) {
+            continue;
+        }
 
         const carryoverCents = _toCents(entry.projectedBalance);
 
-        // Find the next unpaid term in the list (may not be adjacent if terms
-        // before the start were already paid/processed).
+        // Find the next unpaid term after position i.
         const nextEntry = result.slice(i + 1).find(
-            (t) => t.isAffected || (_toCents(t.balance) > 0 && !t.isAffected)
-        ) ?? result[i + 1] ?? null;
+            (t) => _toCents(t.balance) > 0 && t.derivedStatus !== 'paid'
+        ) ?? null;
 
-        entry.derivedStatus    = 'processed';
-        entry.carriedForward   = _fromCents(carryoverCents);
-        entry.carriedToTerm    = nextEntry?.term_name ?? null;
-        entry.projectedBalance = 0;  // backend will zero this term
+        if (nextEntry) {
+            // Mid-term: carry forward and close.
+            entry.derivedStatus    = 'processed';
+            entry.carriedForward   = _fromCents(carryoverCents);
+            entry.carriedToTerm    = nextEntry.term_name;
+            entry.projectedBalance = 0;
+        } else {
+            // Final term: balance stays, student still owes.
+            entry.derivedStatus  = 'underpaid';
+            entry.carriedForward = 0;
+            entry.carriedToTerm  = null;
+        }
     }
 
     return result;
@@ -609,7 +632,7 @@ const processedTermCount = computed((): number =>
                                     :class="{
                                         'bg-green-50 hover:bg-green-100/70':  term.isAffected && term.derivedStatus === 'paid',
                                         'bg-blue-50  hover:bg-blue-100/70':   term.isAffected && term.derivedStatus === 'processed',
-                                        'bg-amber-50 hover:bg-amber-100/70':  term.isAffected && term.derivedStatus === 'partial',
+                                        'bg-amber-50 hover:bg-amber-100/70':  term.isAffected && term.derivedStatus === 'underpaid',
                                         'hover:bg-gray-50':                   !term.isAffected,
                                     }"
                                 >
@@ -624,7 +647,7 @@ const processedTermCount = computed((): number =>
                                                 Selected
                                             </span>
                                         </div>
-                                        <!-- Carry-forward annotation -->
+                                        <!-- Carry-forward annotation (mid-term: balance carried to next term) -->
                                         <div
                                             v-if="approval.status === 'pending' && term.derivedStatus === 'processed' && term.carriedForward > 0"
                                             class="mt-1 flex items-center gap-1 text-xs text-blue-600"
@@ -633,6 +656,16 @@ const processedTermCount = computed((): number =>
                                             <span>
                                                 {{ formatCurrency(term.carriedForward) }} carried to
                                                 <strong>{{ term.carriedToTerm ?? 'next term' }}</strong>
+                                            </span>
+                                        </div>
+                                        <!-- Underpaid annotation (final term: balance remains here) -->
+                                        <div
+                                            v-if="approval.status === 'pending' && term.derivedStatus === 'underpaid'"
+                                            class="mt-1 flex items-center gap-1 text-xs text-amber-700"
+                                        >
+                                            <span>⚠</span>
+                                            <span>
+                                                {{ formatCurrency(term.projectedBalance) }} still due — final term, no carry
                                             </span>
                                         </div>
                                     </td>
@@ -664,7 +697,7 @@ const processedTermCount = computed((): number =>
                                             :class="{
                                                 'text-green-600':  (approval.status === 'pending' ? term.projectedBalance : term.balance) === 0,
                                                 'text-blue-600':   approval.status === 'pending' && term.derivedStatus === 'processed',
-                                                'text-amber-600':  approval.status === 'pending' && term.projectedBalance > 0 && term.projectedBalance < term.balance && term.derivedStatus !== 'processed',
+                                                'text-amber-600':  approval.status === 'pending' && term.derivedStatus === 'underpaid',
                                                 'text-orange-600': (approval.status === 'pending' ? term.projectedBalance : term.balance) > 0 && term.derivedStatus === 'pending',
                                             }"
                                         >
@@ -692,6 +725,7 @@ const processedTermCount = computed((): number =>
                                                 'bg-green-100  text-green-800':  (approval.status === 'pending' ? term.derivedStatus : term.status) === 'paid',
                                                 'bg-blue-100   text-blue-800':   (approval.status === 'pending' ? term.derivedStatus : term.status) === 'processed',
                                                 'bg-amber-100  text-amber-800':  (approval.status === 'pending' ? term.derivedStatus : term.status) === 'partial',
+                                                'bg-amber-50   text-amber-700':  (approval.status === 'pending' ? term.derivedStatus : term.status) === 'underpaid',
                                                 'bg-yellow-100 text-yellow-800': ['pending', 'unpaid'].includes(approval.status === 'pending' ? term.derivedStatus : term.status),
                                                 'bg-orange-100 text-orange-800': (approval.status === 'pending' ? term.derivedStatus : term.status) === 'overdue',
                                             }"
@@ -701,6 +735,7 @@ const processedTermCount = computed((): number =>
                                                     paid:      'Paid',
                                                     processed: 'Carried Forward',
                                                     partial:   'Partial',
+                                                    underpaid: 'Underpaid',
                                                     pending:   'Unpaid',
                                                     unpaid:    'Unpaid',
                                                     overdue:   'Overdue',

@@ -37,7 +37,8 @@ class StudentPaymentTerm extends Model
     // StudentPaymentTerm::STATUS_*. New code should use PaymentStatus::* directly.
 
     const STATUS_PENDING   = PaymentStatus::PENDING->value;    // 'pending'
-    const STATUS_PARTIAL   = PaymentStatus::PARTIAL->value;    // 'partial'
+    const STATUS_PARTIAL   = PaymentStatus::PARTIAL->value;    // 'partial'   (legacy)
+    const STATUS_UNDERPAID = PaymentStatus::UNDERPAID->value;  // 'underpaid' (final term, balance remains)
     const STATUS_PAID      = PaymentStatus::PAID->value;       // 'paid'
     const STATUS_PROCESSED = PaymentStatus::PROCESSED->value;  // 'processed'
     const STATUS_OVERDUE   = 'overdue';                        // display-only flag
@@ -88,14 +89,23 @@ class StudentPaymentTerm extends Model
 
     /**
      * Check if this term is overdue.
-     * A PROCESSED term is never overdue — it is closed.
+     *
+     * PROCESSED and PAID terms are never overdue — they are closed.
+     * UNDERPAID terms CAN be overdue — the student still owes money and the
+     * due date may have passed.
      */
     public function isOverdue(): bool
     {
         if ($this->status === self::STATUS_PROCESSED || $this->status === self::STATUS_PAID) {
             return false;
         }
-        return $this->status === self::STATUS_PENDING
+
+        return in_array($this->status, [
+                self::STATUS_PENDING,
+                self::STATUS_PARTIAL,
+                self::STATUS_UNDERPAID,
+                'unpaid',
+            ], true)
             && $this->due_date !== null
             && now()->isAfter($this->due_date);
     }
@@ -112,9 +122,11 @@ class StudentPaymentTerm extends Model
     /**
      * Check if this term received a carry-over from a previous term.
      *
-     * FIX: the previous implementation used str_contains($remarks, 'carries')
-     * which never matched because remarks use 'Carry-over' or 'carried to'.
-     * This version checks both patterns correctly.
+     * NOTE: UNDERPAID terms do NOT have a carry-over — the balance stays
+     * on the term itself, it is not carried FROM anywhere. This method
+     * correctly returns false for UNDERPAID terms because:
+     *   - their remarks will contain 'Partial payment received' (not 'Carry-over')
+     *   - carryover_from_term_id will be null
      */
     public function hasCarryover(): bool
     {
@@ -128,7 +140,10 @@ class StudentPaymentTerm extends Model
     }
 
     /**
-     * Whether this term is closed — either fully paid or processed (carried forward).
+     * Whether this term is closed — fully paid or processed (carried forward).
+     *
+     * UNDERPAID is NOT closed — the student still owes money on this term.
+     * PARTIAL  is NOT closed — legacy status, balance > 0 remains.
      */
     public function isClosed(): bool
     {
@@ -138,15 +153,20 @@ class StudentPaymentTerm extends Model
 
     /**
      * Human-readable display status.
-     * PROCESSED shows as "Processed" not "Partial" — they are semantically different:
-     *   PARTIAL  → balance remains on THIS term; it is still payable
+     *
+     * Status semantics:
+     *   PAID      → fully settled
      *   PROCESSED → balance was moved to the NEXT term; this term is closed
+     *   UNDERPAID → final term received partial payment; balance remains here
+     *   PARTIAL   → legacy: balance remains on this term (same as UNDERPAID semantics)
+     *   PENDING   → no payment yet received
      */
     public function getDisplayStatusAttribute(): string
     {
         return match ($this->status) {
             self::STATUS_PAID      => 'Paid',
             self::STATUS_PROCESSED => 'Processed',
+            self::STATUS_UNDERPAID => 'Underpaid',
             self::STATUS_PARTIAL   => 'Partial',
             self::STATUS_PENDING   => $this->isOverdue() ? 'Overdue' : 'Pending',
             'unpaid'               => 'Pending',

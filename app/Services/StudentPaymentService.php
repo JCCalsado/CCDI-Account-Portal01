@@ -24,11 +24,15 @@ class StudentPaymentService
      *   1. Apply payment to selected term first.
      *   2. If payment > selected term balance, excess flows to next terms
      *      sequentially by term_order (ascending).
-     *   3. If payment < selected term balance, the remaining unpaid balance is
-     *      carried forward to the next term. The current term is CLOSED
-     *      (status = 'processed', balance = 0). This is the one-time term
-     *      processing rule.
-     *   4. Payment MUST NOT exceed total outstanding balance across all terms.
+     *   3. If payment < selected term balance AND a next term exists, the
+     *      remaining unpaid balance is carried forward to the next term. The
+     *      current term is CLOSED (status = 'processed', balance = 0). This
+     *      is the one-time term processing rule.
+     *   4. If payment < selected term balance AND this is the FINAL term (no
+     *      next term), the remaining balance stays on this term with status =
+     *      'underpaid'. The term is NOT closed. The student must pay the
+     *      remainder in a future transaction.
+     *   5. Payment MUST NOT exceed total outstanding balance across all terms.
      *
      * PRECISION: All arithmetic is performed in integer cents via MoneyService.
      * No floating-point arithmetic occurs in this method or its callees.
@@ -379,13 +383,22 @@ class StudentPaymentService
      *
      * ── STEP 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE) ─────────────
      * After the loop, any term that received a partial payment (balance > 0 remains)
-     * is CLOSED: its remaining balance is carried forward to the next term,
-     * and the current term's balance is set to ₱0.00 with status = 'processed'.
+     * is evaluated:
      *
-     * INVARIANT: SUM(all term balances) is unchanged by Step 2.
-     * We zero one term and add the same amount to the next term — no money
-     * is created or destroyed. AccountService::recalculate() will see the
-     * same total outstanding before and after the carry.
+     *   IF a next term exists with balance > 0:
+     *     → Carry the remaining balance to that next term.
+     *     → Close THIS term: balance = 0, status = 'processed'.
+     *     → SUM(all term balances) is unchanged — money moved, not destroyed.
+     *
+     *   IF NO next term exists (this IS the final term):
+     *     → DO NOT close. DO NOT zero the balance.
+     *     → Set status = 'underpaid'.
+     *     → The remaining balance stays on this term. The student must pay
+     *       it in a future transaction.
+     *     → SUM(all term balances) is unchanged — nothing moved, nothing lost.
+     *
+     * INVARIANT: SUM(all term balances) is identical before and after Step 2.
+     * AccountService::recalculate() will always see the correct total.
      *
      * ALL ARITHMETIC IS INTEGER-CENTS. Zero float error possible.
      *
@@ -430,8 +443,10 @@ class StudentPaymentService
             $balanceAfterCents  = $balanceBeforeCents - $appliedCents; // exact integer subtraction
 
             // Determine status after Step 1.
-            // PARTIAL here means "balance remains on this term after payment."
-            // Step 2 will convert PARTIAL → PROCESSED by carrying the balance forward.
+            // PARTIAL here is a temporary internal marker meaning "balance remains
+            // on this term after payment." Step 2 will resolve PARTIAL to either:
+            //   → PROCESSED (if a next term exists, carry the balance forward), or
+            //   → UNDERPAID  (if this is the final term, balance stays here).
             $statusAfterStep1 = $balanceAfterCents === 0
                 ? PaymentStatus::PAID->value
                 : PaymentStatus::PARTIAL->value;
@@ -467,22 +482,18 @@ class StudentPaymentService
 
         // ── STEP 2: Close-and-carry (ONE-TIME TERM PROCESSING RULE) ─────────
         //
-        // For each allocation entry that ended Step 1 with PARTIAL status:
-        //   a. Find the next term in the sequence with balance > 0 (including
-        //      terms that did NOT appear in the Step 1 loop — they already had
-        //      their own balance from previous carries or the original assessment).
-        //   b. Add the carry amount to that next term's balance.
-        //   c. Zero the current term's balance and set status = 'processed'.
+        // For each allocation entry that ended Step 1 with PARTIAL status,
+        // determine whether this is a mid-term (carry forward) or the final
+        // term (leave as UNDERPAID).
         //
-        // Processing order: we iterate allocation entries in the order they
-        // were created (term_order ASC), so chain carries work correctly:
-        //   Prelim → PARTIAL → carries to Midterm
-        //   Midterm already in allocation → PARTIAL → carries to Semi-Final
-        // In a single payment, multiple terms can be chain-carried.
+        // Processing order: we iterate allocation entries in term_order ASC,
+        // so chain carries work correctly:
+        //   Prelim → PARTIAL → next term exists → PROCESSED + carry to Midterm
+        //   Midterm → PARTIAL → next term exists → PROCESSED + carry to Semi-Final
+        // Multiple terms can be chain-carried in a single payment.
         //
         // After Step 2, the allocation entry is updated to reflect the final
-        // status ('processed') and the carry details, so receipt PDFs and
-        // audit logs have the complete picture.
+        // status, so receipt PDFs and audit logs have the complete picture.
 
         foreach ($allocation as &$alloc) {
             // Only process entries that ended Step 1 with remaining balance.
@@ -510,9 +521,8 @@ class StudentPaymentService
                 ->where(function ($q) {
                     // The next term either:
                     //   (a) already has balance > 0 (not yet reached by payment), OR
-                    //   (b) was paid in Step 1 (balance now 0, status = 'paid') but
-                    //       we SKIP those — they were fully settled.
-                    // We intentionally DO NOT carry into a PAID term.
+                    //   (b) had balance carried into it earlier in this same Step 2 loop.
+                    // We intentionally DO NOT carry into a PAID term (fully settled).
                     // We also do not carry into a PROCESSED term (they have balance = 0).
                     $q->where('balance', '>', 0);
                 })
@@ -520,12 +530,17 @@ class StudentPaymentService
                 ->lockForUpdate()
                 ->first();
 
-            // ── Edge case: no next term with balance ──────────────────────────
-            // This happens only when the carry target would be a term that was
-            // also fully paid in this same payment (excess scenario). In that case,
-            // the excess has already been applied in Step 1. No carry needed.
-            // We still close the current term below.
             if ($nextTerm) {
+                // ── MID-TERM PATH: carry forward and close this term ──────────
+                //
+                // A next term exists. Apply the carry-forward rule:
+                //   1. Add the carry amount to the next term's balance.
+                //   2. Zero this term's balance and mark it PROCESSED.
+                //
+                // BALANCE INVARIANT: we add $carryoverCents to the next term
+                // and subtract it from this term (→ 0). Net change = 0.
+                // AccountService::recalculate() sees the same total outstanding.
+
                 $nextBalanceBefore = MoneyService::toCents($nextTerm->balance);
                 $nextBalanceAfter  = $nextBalanceBefore + $carryoverCents;
 
@@ -538,54 +553,72 @@ class StudentPaymentService
                     'carryover_amount'       => MoneyService::toPesos($carryoverCents),
                 ]);
 
+                $closedTerm = StudentPaymentTerm::lockForUpdate()->find($alloc['term_id']);
+                if ($closedTerm) {
+                    $closedTerm->update([
+                        'balance'   => '0.00',
+                        'status'    => PaymentStatus::PROCESSED->value,
+                        'paid_date' => null,  // not fully paid — do not stamp paid_date
+                        'remarks'   => MoneyService::formatFromCents($carryoverCents)
+                                       . ' carried to ' . $nextTerm->term_name,
+                    ]);
+                }
+
+                $alloc['status_after']          = PaymentStatus::PROCESSED->value;
+                $alloc['balance_after_cents']   = 0;
+                $alloc['balance_after']         = '0.00';
+                $alloc['balance_after_float']   = 0.0;
+                $alloc['carried_forward_cents'] = $carryoverCents;
+                $alloc['carried_to_term_name']  = $nextTerm->term_name;
+
                 Log::info('allocatePaymentAcrossTerms: carry-forward applied', [
                     'from_term'          => $alloc['term_name'],
                     'to_term'            => $nextTerm->term_name,
                     'carryover_cents'    => $carryoverCents,
                     'next_balance_after' => MoneyService::toPesos($nextBalanceAfter),
                 ]);
+
             } else {
-                // No eligible next term found. This is expected when the very last
-                // term in the assessment receives a partial payment. The balance
-                // cannot be carried forward — log it for accounting review.
-                Log::warning('allocatePaymentAcrossTerms: no next term for carry-forward', [
-                    'from_term'       => $alloc['term_name'],
-                    'term_order'      => $alloc['term_order'],
-                    'carryover_cents' => $carryoverCents,
-                    'assessment_id'   => $startTerm->student_assessment_id,
-                    'note'            => 'Carry amount is on the last term; balance is final.',
+                // ── FINAL-TERM PATH: leave balance here, set UNDERPAID ────────
+                //
+                // No next term exists — this IS the last term in the assessment.
+                // The one-time processing rule does NOT apply here.
+                //
+                // DO NOT zero the balance. DO NOT set status = 'processed'.
+                // The student still owes $carryoverCents on this term.
+                // Set status = 'underpaid' so the UI, queries, and audit logs
+                // can clearly distinguish this from a closed/carried mid-term.
+                //
+                // BALANCE INVARIANT: nothing moves. The $carryoverCents remain
+                // exactly where they are. AccountService::recalculate() will
+                // correctly sum this term's balance as outstanding.
+
+                $underpaidTerm = StudentPaymentTerm::lockForUpdate()->find($alloc['term_id']);
+                if ($underpaidTerm) {
+                    $underpaidTerm->update([
+                        // balance stays as-is — DO NOT write '0.00'
+                        'status'  => PaymentStatus::UNDERPAID->value,
+                        'remarks' => 'Partial payment received. Remaining '
+                                     . MoneyService::formatFromCents($carryoverCents)
+                                     . ' is due — this is the final payment term.',
+                    ]);
+                }
+
+                // Update the ledger entry — status is now UNDERPAID, balance retained.
+                // balance_after_cents / balance_after / balance_after_float remain
+                // as their Step 1 values ($carryoverCents) — do NOT zero them.
+                $alloc['status_after']          = PaymentStatus::UNDERPAID->value;
+                $alloc['carried_forward_cents'] = 0;   // nothing was carried
+                $alloc['carried_to_term_name']  = null;
+
+                Log::info('allocatePaymentAcrossTerms: final-term underpaid — balance retained', [
+                    'term_id'        => $alloc['term_id'],
+                    'term_name'      => $alloc['term_name'],
+                    'remaining_cents'=> $carryoverCents,
+                    'assessment_id'  => $startTerm->student_assessment_id,
+                    'note'           => 'This is the last term. No carry-forward. Student must pay the remainder.',
                 ]);
             }
-
-            // ── Close the partially-paid term ─────────────────────────────────
-            // Regardless of whether a next term was found, zero this term and
-            // set status = 'processed'. This enforces the one-time rule.
-            //
-            // IMPORTANT: Do NOT set paid_date. This term was not "paid" —
-            // it received a partial payment that was carried forward.
-            $closedTerm = StudentPaymentTerm::lockForUpdate()->find($alloc['term_id']);
-            if ($closedTerm) {
-                $closedTerm->update([
-                    'balance'   => '0.00',
-                    'status'    => PaymentStatus::PROCESSED->value,
-                    'paid_date' => null,  // not fully paid — do not stamp paid_date
-                    'remarks'   => $nextTerm
-                        ? MoneyService::formatFromCents($carryoverCents)
-                          . ' carried to ' . $nextTerm->term_name
-                        : MoneyService::formatFromCents($carryoverCents)
-                          . ' — final term, no further carry (contact accounting)',
-                ]);
-            }
-
-            // ── Update the allocation ledger entry with Step 2 results ────────
-            // These fields are written to transaction.meta.allocation and used
-            // by receipt PDFs and accounting audit views.
-            $alloc['status_after']          = PaymentStatus::PROCESSED->value;
-            $alloc['balance_after_cents']   = 0;
-            $alloc['balance_after']         = '0.00';
-            $alloc['balance_after_float']   = 0.0;
-            $alloc['carried_forward_cents'] = $carryoverCents;
-            $alloc['carried_to_term_name']  = $nextTerm?->term_name;
         }
         unset($alloc); // break the reference to avoid accidental mutation
 
@@ -614,6 +647,8 @@ class StudentPaymentService
             }
 
             // Trust balance, not status. status can be stale; balance is authoritative.
+            // An UNDERPAID term has balance > 0, so this check correctly returns false
+            // when the final term still has an outstanding amount.
             $allPaid = $assessment->paymentTerms->isNotEmpty()
                 && $assessment->paymentTerms->every(
                     fn ($t) => (float) $t->balance === 0.0

@@ -36,9 +36,10 @@
             letter-spacing: 1px;
             text-transform: uppercase;
         }
-        .stamp-paid    { background: #d1fae5; color: #065f46; border: 2px solid #065f46; }
-        .stamp-partial { background: #fef3c7; color: #92400e; border: 2px solid #d97706; }
-        .stamp-unpaid  { background: #fee2e2; color: #991b1b; border: 2px solid #dc2626; }
+        .stamp-paid      { background: #d1fae5; color: #065f46; border: 2px solid #065f46; }
+        .stamp-partial   { background: #fef3c7; color: #92400e; border: 2px solid #d97706; }
+        .stamp-underpaid { background: #fffbeb; color: #92400e; border: 2px solid #d97706; }
+        .stamp-unpaid    { background: #fee2e2; color: #991b1b; border: 2px solid #dc2626; }
 
         /* ── Info sections ── */
         .section { margin-bottom: 14px; }
@@ -118,7 +119,10 @@
         <table>
             <tr>
                 <td style="width:56px; vertical-align:middle;">
-                    <img src="file://{{ str_replace('\\', '/', public_path('images/logo.png')) }}"
+                    {{-- ⚠ Do NOT use file:// prefix. dompdf reads directly from the filesystem
+                         via public_path(). Adding file:// breaks rendering on Hostinger.
+                         Canonical filename: ccdilogo.png — matches receipt.blade.php. --}}
+                    <img src="{{ public_path('images/ccdilogo.png') }}"
                          width="48" height="48" style="display:block;">
                 </td>
                 <td style="vertical-align:middle; padding-left:10px;">
@@ -131,6 +135,7 @@
                         $stampClass = match($status) {
                             'Fully Paid' => 'stamp-paid',
                             'Partial'    => 'stamp-partial',
+                            'Underpaid'  => 'stamp-underpaid',
                             default      => 'stamp-unpaid',
                         };
                     @endphp
